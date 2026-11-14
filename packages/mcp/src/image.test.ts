@@ -160,16 +160,20 @@ describe("sniffImageType", () => {
 })
 
 describe("CANDLE_IMAGE_DIR selects the launch schema", () => {
-  test("unset or blank: imagePath is absent and imageUrl stays required, on both tools", () => {
+  test("unset or blank: imagePath is absent; check needs no image but execution still requires it", async () => {
     expect(configuredImageDir({})).toBeUndefined()
     expect(configuredImageDir({ CANDLE_IMAGE_DIR: "   " })).toBeUndefined()
     for (const env of [undefined, {}, { CANDLE_IMAGE_DIR: "" }, { CANDLE_IMAGE_DIR: "  " }]) {
-      const { token, seed } = launchTools(env, recordingFetch({}))
+      const fetch = recordingFetch({})
+      const { token, seed } = launchTools(env, fetch)
       for (const tool of [token, seed]) {
         expect(Object.keys(tool.config.inputSchema)).not.toContain("imagePath")
-        expect((tool.config.inputSchema.imageUrl as { isOptional(): boolean }).isOptional()).toBe(false)
+        // P9: check: true needs no image. The handler enforces image presence on the write path.
+        expect((tool.config.inputSchema.imageUrl as { isOptional(): boolean }).isOptional()).toBe(true)
+        expect((await tool.handler(TOKEN)).isError).toBe(true)
         expect(tool.config.description).not.toContain("imagePath")
       }
+      expect(fetch.calls).toEqual([])
     }
   })
 

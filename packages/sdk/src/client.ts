@@ -137,6 +137,13 @@ import { describeRpcEndpoint } from "./internal/rpc-endpoint"
 import type { GeneratedLaunchFields } from "./launch-definition"
 import { embeddedLaunchWallet, launchBody, launchInputError, validateLaunchInput } from "./launch-input"
 import {
+  LaunchCheckError,
+  type LaunchCheckRequest,
+  type LaunchCheckResult,
+  launchCheckPath,
+  readLaunchCheck,
+} from "./launch-preflight"
+import {
   type PerpsFillsPage,
   type PerpsFundingPage,
   type PerpsHistoryOptions,
@@ -360,6 +367,8 @@ export interface LaunchCurve {
 
 /** Shared launch fields, plus SDK wallet identifiers and the legacy raw first buy. */
 export interface LaunchRequest extends Omit<GeneratedLaunchFields, "wallet" | "dryRun"> {
+  /** Featured symbol or token address. New quotes currently support check: true only. */
+  quote?: string
   /** Omitted means embedded. A TEE wallet may be named by label, address or id. */
   wallet?: string | { linkedWalletId: string; privyWalletId: string }
   /** @deprecated Use buy, a decimal string in whole quote units, for one release. */
@@ -402,7 +411,7 @@ export interface AllowlistProofResult {
 }
 
 /** POST /api/v1/launch/self/build request body. Extends LaunchRequest with linkedWalletId. */
-export interface BuildSelfLaunchRequest extends Omit<LaunchRequest, "wallet" | "buy"> {
+export interface BuildSelfLaunchRequest extends Omit<LaunchRequest, "wallet" | "buy" | "quote"> {
   linkedWalletId: string
 }
 
@@ -3636,7 +3645,7 @@ export interface AtomicFirstBuyRequest {
  * buy via `firstBuys` instead, so it lands as bundle leg 1 against a still-virgin curve) plus the
  * creator's own payer and 1-4 first-buy legs.
  */
-export interface BuildAtomicLaunchRequest extends Omit<LaunchRequest, "buyAmount" | "buy" | "wallet"> {
+export interface BuildAtomicLaunchRequest extends Omit<LaunchRequest, "buyAmount" | "buy" | "wallet" | "quote"> {
   payer: AtomicLaunchPayer
   /** 1 to 4 buy legs, sharing the launch transaction's own recent blockhash and landing atomically with it (Jito's 5-transaction bundle cap: 1 launch + up to 4 buys). */
   firstBuys: AtomicFirstBuyRequest[]
@@ -4675,8 +4684,12 @@ export class CandleClient {
    * store it before the call when you can: an error can carry the id only if the process is
    * still running to catch it.
    */
-  async launch(req: LaunchRequest): Promise<LaunchResult> {
+  async launch(req: LaunchCheckRequest): Promise<LaunchCheckResult>
+  async launch(req: LaunchRequest): Promise<LaunchResult>
+  async launch(req: LaunchRequest | LaunchCheckRequest): Promise<LaunchResult | LaunchCheckResult> {
     this.requireKey("launch()")
+    if ("check" in req && req.check === true) return this.checkLaunch(req)
+    req = req as LaunchRequest
     const prepared = await this.prepareLaunch(req)
     if (prepared.wallet) return this.selfLaunch({ ...prepared.body, ...prepared.wallet })
     const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId()
@@ -4695,6 +4708,18 @@ export class CandleClient {
       }
       throw lastError
     })
+  }
+
+  /** CLI --check parity: one authenticated GET, no upload, discovery, build, id claim or signing. */
+  async checkLaunch(req: LaunchCheckRequest): Promise<LaunchCheckResult> {
+    this.requireKey("checkLaunch()")
+    try {
+      const path = launchCheckPath(req)
+      return readLaunchCheck(await this.requestJson<unknown>("GET", path), req)
+    } catch (error) {
+      if (error instanceof LaunchCheckError) throw launchInputError(error.field ?? "quote", error.message, error.code)
+      throw error
+    }
   }
 
   /**

@@ -6555,6 +6555,9 @@ var init_launch_definition = __esm(() => {
     },
     quoteSelection: {
       flag: "--quote",
+      key: "quote",
+      checkKey: "check",
+      checkHelp: "Read launch paths and quote admission without uploading, building, signing or sending. No name, image or launch id is needed. Pass check or dryRun, never both. Admission is separate from executionEnabled; a successful check does not enable a new quote.",
       value: "<symbol|address>",
       help: "Select a quote by featured symbol or token address. With --check, show admission checks, curve figures, graduation raise and issuer disclosure. New quotes require server launch support; --quote-asset remains supported for fixed pairs.",
       fixedPairs: [
@@ -7530,6 +7533,159 @@ var init_launch_definition = __esm(() => {
   };
 });
 
+// ../mcp/src/launch-preflight.ts
+function fixedLaunchQuote(input) {
+  if (input.quote === undefined)
+    return input.quoteAsset;
+  if (typeof input.quote !== "string" || !input.quote.trim() || input.quote.trim().length > 120)
+    throw new LaunchCheckError("VALIDATION_FAILED", "quote needs a symbol or token address.", "quote");
+  if (input.quoteAsset !== undefined)
+    throw new LaunchCheckError("VALIDATION_FAILED", "Pass quote or quoteAsset, never both.", "quote");
+  const value = input.quote.trim();
+  const pair = LAUNCH_DEFINITION.quoteSelection.fixedPairs.find((p) => p.id === value.toLowerCase() || p.address === value || p.chain === "hood" && p.address.toLowerCase() === value.toLowerCase());
+  if (!pair)
+    throw new LaunchCheckError("QUOTE_LAUNCH_UNAVAILABLE", "New-quote execution is unavailable. Use check: true for admission and economics only.", "quote");
+  if (input.chain !== undefined && input.chain !== pair.chain)
+    throw new LaunchCheckError("CHAIN_MISMATCH", "The quote disagrees with the launch chain.", "quote");
+  return pair.id;
+}
+function launchCheckPath(input) {
+  if (input.dryRun)
+    throw new LaunchCheckError("VALIDATION_FAILED", "Pass check or dryRun, never both.", "check");
+  if (input.quote !== undefined && input.quoteAsset !== undefined)
+    throw new LaunchCheckError("VALIDATION_FAILED", "Pass quote or quoteAsset, never both.", "quote");
+  const query2 = new URLSearchParams;
+  if (input.quote !== undefined) {
+    if (typeof input.quote !== "string" || !input.quote.trim() || input.quote.trim().length > 120)
+      throw new LaunchCheckError("VALIDATION_FAILED", "quote needs a symbol or token address.", "quote");
+    query2.set("quote", input.quote.trim());
+    for (const key of ["chain", "mode", "stakerAllocationBps", "dexVersion"])
+      if (input[key] !== undefined)
+        query2.set(key, String(input[key]));
+  }
+  return `/api/v1/launch/preflight${query2.size ? `?${query2}` : ""}`;
+}
+function object(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function readLaunchCheck(value, input) {
+  const fail2 = (message) => {
+    throw new LaunchCheckError("QUOTE_CHECK_UNAVAILABLE", message);
+  };
+  if (!object(value) || value.success !== true || !object(value.key) || !object(value.switches) || !Array.isArray(value.wallets))
+    return fail2("The server returned an invalid launch preflight.");
+  const { key, switches } = value;
+  if (typeof key.keyPrefix !== "string" || typeof key.tier !== "string" || !Array.isArray(key.scopes) || !key.scopes.every((s) => typeof s === "string") || typeof key.selfLaunch !== "boolean" || !["allowed", "denied"].includes(String(key.embeddedWalletPermission)) || ["headlessLaunch", "agentTrading", "teeLaunchBuys"].some((k) => typeof switches[k] !== "boolean"))
+    return fail2("The server returned incomplete launch permissions.");
+  for (const wallet of value.wallets)
+    if (!object(wallet) || ["id", "address", "chain"].some((k) => typeof wallet[k] !== "string") || !(wallet.label === null || typeof wallet.label === "string") || typeof wallet.allowLaunch !== "boolean" || typeof wallet.active !== "boolean")
+      return fail2("The server returned an invalid launch wallet.");
+  if (value.embedded !== undefined) {
+    if (!object(value.embedded))
+      return fail2("The server returned invalid embedded wallets.");
+    for (const chain2 of ["solana", "evm"]) {
+      const wallet = value.embedded[chain2];
+      if (wallet != null && (!object(wallet) || typeof wallet.address !== "string" || wallet.delegated !== undefined && typeof wallet.delegated !== "boolean"))
+        return fail2("The server returned an invalid embedded wallet.");
+    }
+  }
+  const q = value.quote;
+  if (input.quote !== undefined) {
+    if (!object(q) || q.requested !== input.quote.trim() || typeof q.ok !== "boolean" || typeof q.executionEnabled !== "boolean" || !(q.disclosure === null || typeof q.disclosure === "string") || !Array.isArray(q.checks) || q.checks.length === 0 || q.checks.some((c) => !object(c) || typeof c.check !== "string" || typeof c.message !== "string" || !["pass", "skip", "refuse"].includes(String(c.status)) || c.code !== undefined && typeof c.code !== "string") || q.chain !== undefined && q.chain !== "solana" && q.chain !== "hood" || ["address", "symbol"].some((k) => q[k] !== undefined && typeof q[k] !== "string") || q.decimals !== undefined && (!Number.isInteger(q.decimals) || Number(q.decimals) < 0 || Number(q.decimals) > 255) || q.classification !== undefined && !["ordinary", "featured", "trusted", "stock"].includes(String(q.classification)))
+      return fail2("The server did not return a valid check for the requested quote.");
+    const e = q.economics;
+    if (e !== undefined && (!object(e) || !["fixed", "derived"].includes(String(e.kind)) || typeof e.economicsDigest !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(e.economicsDigest) || !raw(e.thresholdRaw) || !positive(e.startFdv) || !positive(e.bondingFdv) || !object(e.curve) || !Object.values(e.curve).every(raw) || e.priceUsd !== undefined && !positive(e.priceUsd) || e.raiseUsd !== undefined && !positive(e.raiseUsd)))
+      return fail2("The server returned invalid quote economics.");
+    const refused = q.checks.some((c) => c.status === "refuse");
+    if (q.ok && (!e || !q.chain || !q.address || q.decimals === undefined || refused) || !q.ok && !refused)
+      return fail2("The server returned contradictory quote admission.");
+    if (input.chain && q.chain && input.chain !== q.chain)
+      throw new LaunchCheckError("CHAIN_MISMATCH", "The checked quote disagrees with the launch chain.");
+  }
+  const answer = value;
+  const chain = input.chain ?? answer.quote?.chain;
+  const embeddedOnly = input.wallet !== undefined && LAUNCH_DEFINITION.wallet.embeddedNames.includes(input.wallet);
+  const named = input.wallet === undefined || embeddedOnly ? answer.wallets : answer.wallets.filter((w) => w.id === input.wallet || w.address === input.wallet || w.label === input.wallet);
+  if (input.wallet !== undefined && !embeddedOnly && named.length !== 1)
+    throw new LaunchCheckError("TEE_WALLET_REQUIRED", "Name exactly one bound TEE wallet by id, address or label.", "wallet");
+  const embedded = (chain ? [chain] : ["solana", "hood"]).some((c) => {
+    const wallet = c === "solana" ? answer.embedded?.solana : answer.embedded?.evm;
+    return wallet != null && wallet.delegated !== false;
+  });
+  const walletWorks = key.scopes.includes("launch:write") && switches.headlessLaunch === true && ((input.wallet === undefined || embeddedOnly) && key.embeddedWalletPermission === "allowed" && embedded || !embeddedOnly && key.selfLaunch === true && named.some((w) => w.active && w.allowLaunch && (!chain || (w.chain === "evm" ? "hood" : w.chain) === chain)));
+  return {
+    ...answer,
+    check: true,
+    walletWorks,
+    works: walletWorks && (input.quote === undefined || answer.quote?.ok === true)
+  };
+}
+var LaunchCheckError, positive = (value) => typeof value === "number" && Number.isFinite(value) && value > 0, raw = (value) => typeof value === "string" && /^\d+$/.test(value);
+var init_launch_preflight = __esm(() => {
+  init_launch_definition();
+  LaunchCheckError = class LaunchCheckError extends Error {
+    code;
+    field;
+    constructor(code, message, field) {
+      super(message);
+      this.code = code;
+      this.field = field;
+    }
+  };
+});
+
+// ../mcp/src/launch-check.ts
+async function launchCheck(args, cfg, fetch2) {
+  try {
+    if (!cfg.apiKey)
+      throw new LaunchCheckError("UNAUTHORIZED", "An API key is required for launch checks.");
+    const input = args;
+    const path = launchCheckPath(input);
+    const response = await fetch2(`${cfg.apiUrl.replace(/\/$/, "")}${path}`, {
+      method: "GET",
+      headers: { "x-api-key": cfg.apiKey }
+    });
+    const text = await response.text();
+    if (!response.ok)
+      return { content: [{ type: "text", text }], isError: true };
+    const result2 = readLaunchCheck(JSON.parse(text), { ...input, wallet: "embedded" });
+    return {
+      content: [{ type: "text", text: JSON.stringify(result2) }],
+      ...!result2.works ? { isError: true } : {}
+    };
+  } catch (error) {
+    return launchControlError(error);
+  }
+}
+function launchControlError(error) {
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          success: false,
+          error: {
+            code: error instanceof LaunchCheckError ? error.code : "QUOTE_CHECK_UNAVAILABLE",
+            message: error instanceof Error ? error.message : "Launch check unavailable.",
+            ...error instanceof LaunchCheckError && error.field ? { field: error.field } : {}
+          }
+        })
+      }
+    ],
+    isError: true
+  };
+}
+function launchExecutionArgs(args) {
+  const { quote, check: _check, ...body } = args;
+  const quoteAsset = fixedLaunchQuote({ quote, quoteAsset: args.quoteAsset, chain: args.chain });
+  const chain = quote === undefined || body.chain !== undefined ? body.chain : LAUNCH_DEFINITION.quoteChains[quoteAsset];
+  return { ...body, ...quoteAsset === undefined ? {} : { quoteAsset }, ...chain === undefined ? {} : { chain } };
+}
+var init_launch_check = __esm(() => {
+  init_launch_definition();
+  init_launch_preflight();
+});
+
 // ../mcp/src/launch-schema.ts
 function mcpKey(field) {
   const surface = field.surfaces.mcp;
@@ -7680,6 +7836,8 @@ function scalarSchema(field) {
 }
 function buildLaunchTokenShape() {
   const shape = {};
+  shape[LAUNCH_DEFINITION.quoteSelection.key] = exports_external.string().optional().describe(LAUNCH_DEFINITION.quoteSelection.help);
+  shape[LAUNCH_DEFINITION.quoteSelection.checkKey] = exports_external.boolean().optional().describe(LAUNCH_DEFINITION.quoteSelection.checkHelp);
   for (const field of mcpLaunchFields()) {
     const key = mcpKey(field);
     if (!key)
@@ -7696,13 +7854,24 @@ function buildLaunchTokenShape() {
   shape.buyAmount = exports_external.union([exports_external.string(), exports_external.number()]).optional().describe(BUY_AMOUNT_DESCRIPTION);
   return shape;
 }
-var M2_TOP_KEYS, GROUPED_TOP_KEYS, LAUNCH_SHARED_SENTENCES, SOCIAL_KEYS, SOCIALS_ONLY, BUY_AMOUNT_DESCRIPTION = "Initial buy, in quote base units (string or number)", DEV_BUY_DESCRIPTION, launchTokenShape, launchAndSeedShape;
+function checkableLaunchShape(shape) {
+  return Object.fromEntries(Object.entries(shape).map(([key, value]) => [key, value.optional().describe(value.description ?? "")]));
+}
+var M2_TOP_KEYS, GROUPED_TOP_KEYS, MCP_QUOTE_CONTROL_KEYS, LAUNCH_SHARED_SENTENCES, SOCIAL_KEYS, SOCIALS_ONLY, BUY_AMOUNT_DESCRIPTION = "Initial buy, in quote base units (string or number)", DEV_BUY_DESCRIPTION, launchTokenShape, launchAndSeedShape;
 var init_launch_schema = __esm(() => {
   init_zod();
   init_launch_definition();
   M2_TOP_KEYS = new Set(["wallet", "buy", "feeWallet", "feeWalletMultisig"]);
   GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee", "launchRules"]);
-  LAUNCH_SHARED_SENTENCES = mcpLaunchFields().map((field) => field.help).join(" ");
+  MCP_QUOTE_CONTROL_KEYS = [
+    LAUNCH_DEFINITION.quoteSelection.key,
+    LAUNCH_DEFINITION.quoteSelection.checkKey
+  ];
+  LAUNCH_SHARED_SENTENCES = [
+    ...mcpLaunchFields().map((field) => field.help),
+    LAUNCH_DEFINITION.quoteSelection.help,
+    LAUNCH_DEFINITION.quoteSelection.checkHelp
+  ].join(" ");
   SOCIAL_KEYS = mcpLaunchFields().flatMap((field) => {
     const key = mcpKey(field);
     return key?.startsWith("socials.") ? [key.slice("socials.".length)] : [];
@@ -8993,10 +9162,10 @@ function actionShapeProblem(action) {
   const orders = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : [];
   if (!Array.isArray(orders))
     return "invalid orders";
-  for (const raw of orders) {
-    if (!exactKeys(raw, ["a", "b", "p", "s", "r", "t"], ["c"]))
+  for (const raw2 of orders) {
+    if (!exactKeys(raw2, ["a", "b", "p", "s", "r", "t"], ["c"]))
       return "an order carries unexpected or missing fields";
-    const o = raw;
+    const o = raw2;
     const t = o.t;
     const limit = exactKeys(t, ["limit"]) && exactKeys(t.limit, ["tif"]);
     const trigger = exactKeys(t, ["trigger"]) && exactKeys(t.trigger, ["isMarket", "triggerPx", "tpsl"]);
@@ -9029,10 +9198,10 @@ function checkActionIntent(action, opts) {
   const orderList = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : [];
   if (!Array.isArray(orderList))
     return "invalid orders";
-  for (const raw of orderList) {
-    if (!raw || typeof raw !== "object")
+  for (const raw2 of orderList) {
+    if (!raw2 || typeof raw2 !== "object")
       return "invalid order";
-    const o = raw;
+    const o = raw2;
     if (!mainAsset(o.a))
       return "order asset is outside the main perp universe";
     if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal(o.s) ?? 0n) <= 0n || (decimal(o.p) ?? 0n) <= 0n)
@@ -9495,8 +9664,8 @@ async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.n
   if (!Array.isArray(open2))
     throw new Error("Hyperliquid returned an unreadable order list");
   const orders = [];
-  for (const raw of open2) {
-    const o = raw;
+  for (const raw2 of open2) {
+    const o = raw2;
     const coin = o?.coin;
     if (typeof coin !== "string") {
       unsupported.push("an unreadable order");
@@ -9859,10 +10028,10 @@ async function runPerpsTpsl(io, params) {
   const coin = typeof server.coin === "string" ? server.coin : params.coin.toUpperCase();
   const venueLegs = snapshot.orders.filter((o) => o.coin === coin && o.tpsl !== null);
   const tracked = [];
-  for (const raw of Array.isArray(server.tracked) ? server.tracked : []) {
-    const seen = venueLegs.find((o) => o.oid === raw.oid && o.tpsl === raw.leg && (o.cloid ?? null) === (raw.cloid ?? null));
+  for (const raw2 of Array.isArray(server.tracked) ? server.tracked : []) {
+    const seen = venueLegs.find((o) => o.oid === raw2.oid && o.tpsl === raw2.leg && (o.cloid ?? null) === (raw2.cloid ?? null));
     if (seen)
-      tracked.push({ leg: raw.leg, oid: seen.oid, cloid: seen.cloid, triggerPx: seen.triggerPx });
+      tracked.push({ leg: raw2.leg, oid: seen.oid, cloid: seen.cloid, triggerPx: seen.triggerPx });
   }
   const trackedOids = new Set(tracked.map((l) => l.oid));
   const unowned = venueLegs.filter((o) => !trackedOids.has(o.oid)).map((o) => ({ leg: o.tpsl, oid: o.oid, cloid: o.cloid, triggerPx: o.triggerPx }));
@@ -10172,7 +10341,7 @@ function unavailable() {
 function usage(message) {
   throw new PerpsMarketError("PERPS_USAGE", message);
 }
-function object(value) {
+function object2(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 function decimal2(value) {
@@ -10208,10 +10377,10 @@ function parseMarkets(value) {
   if (!Array.isArray(value) || value.length !== 2)
     return unavailable();
   const [meta, ctxs] = value;
-  if (!object(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
+  if (!object2(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
     return unavailable();
   for (const row of meta.universe) {
-    if (!object(row) || typeof row.name !== "string" || !integer(row.szDecimals) || row.szDecimals > 6 || !integer(row.maxLeverage))
+    if (!object2(row) || typeof row.name !== "string" || !integer(row.szDecimals) || row.szDecimals > 6 || !integer(row.maxLeverage))
       return unavailable();
     for (const key of ["isDelisted", "onlyIsolated"])
       if (row[key] !== undefined && typeof row[key] !== "boolean")
@@ -10220,7 +10389,7 @@ function parseMarkets(value) {
       return unavailable();
   }
   for (const ctx of ctxs) {
-    if (!object(ctx))
+    if (!object2(ctx))
       return unavailable();
     for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
       if (ctx[key] !== undefined && ctx[key] !== null && !decimal2(ctx[key]))
@@ -10234,11 +10403,11 @@ function parseMarkets(value) {
     if (!Array.isArray(meta.marginTables))
       return unavailable();
     for (const entry of meta.marginTables) {
-      if (!Array.isArray(entry) || !integer(entry[0]) || !object(entry[1]) || !Array.isArray(entry[1].marginTiers))
+      if (!Array.isArray(entry) || !integer(entry[0]) || !object2(entry[1]) || !Array.isArray(entry[1].marginTiers))
         return unavailable();
       const tiers = [];
       for (const tier of entry[1].marginTiers) {
-        if (!object(tier) || nonnegative(tier.lowerBound) === null || !integer(tier.maxLeverage))
+        if (!object2(tier) || nonnegative(tier.lowerBound) === null || !integer(tier.maxLeverage))
           return unavailable();
         tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
       }
@@ -10299,15 +10468,15 @@ function perpsCandleWindow(opts, now) {
   if (index < 0)
     return usage(`interval must be one of ${PERPS_CANDLE_INTERVALS.join(" ")}.`);
   const count = bounded(opts.count, 100, 1, 5000, "count");
-  const raw = opts.end;
-  const endTime = raw === undefined ? now : epoch(raw);
+  const raw2 = opts.end;
+  const endTime = raw2 === undefined ? now : epoch(raw2);
   const startTime = endTime - count * at(INTERVAL_MS, index);
   if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
     return usage("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
   return { interval, count, startTime, endTime };
 }
-function epoch(raw) {
-  return typeof raw === "number" || /^\d+$/.test(raw) ? Number(raw) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw) ? Date.parse(raw) : NaN;
+function epoch(raw2) {
+  return typeof raw2 === "number" || /^\d+$/.test(raw2) ? Number(raw2) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw2) ? Date.parse(raw2) : NaN;
 }
 function perpsFundingWindow(opts, now) {
   const endTime = opts.end === undefined ? now : epoch(opts.end);
@@ -10331,7 +10500,7 @@ function parsePerpsFundingHistory(value, coin, window) {
     return unavailable();
   const funding = [];
   for (const row of value) {
-    if (!object(row) || row.coin !== coin || !integer(row.time) || !decimal2(row.fundingRate) || !decimal2(row.premium))
+    if (!object2(row) || row.coin !== coin || !integer(row.time) || !decimal2(row.fundingRate) || !decimal2(row.premium))
       return unavailable();
     if (row.time >= window.startTime && row.time <= window.endTime)
       funding.push({
@@ -10369,7 +10538,7 @@ class PerpsMarketReader {
     this.configPromise ??= (async () => {
       try {
         const value = await this.opts.readConfig();
-        if (!object(value) || !object(value.limits) || !integer(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
+        if (!object2(value) || !object2(value.limits) || !integer(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
           throw new Error("config shape");
         return {
           minOpenInterestUsd: value.limits.minOpenInterestUsd,
@@ -10417,7 +10586,7 @@ class PerpsMarketReader {
               if (!Array.isArray(venue) || typeof venue[0] !== "string")
                 return unavailable();
               if (venue[0] === "HlPerp" && venue[1] !== null) {
-                if (!object(venue[1]) || !decimal2(venue[1].fundingRate) || !integer(venue[1].nextFundingTime))
+                if (!object2(venue[1]) || !decimal2(venue[1].fundingRate) || !integer(venue[1].nextFundingTime))
                   return unavailable();
                 map.set(entry[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
               }
@@ -10558,7 +10727,7 @@ class PerpsMarketReader {
       coin: canonical2,
       ...opts.sigFigs === undefined ? {} : { nSigFigs: opts.sigFigs }
     });
-    if (!object(value) || value.coin !== canonical2 || !integer(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
+    if (!object2(value) || value.coin !== canonical2 || !integer(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
       return unavailable();
     const sides = [];
     for (const side of value.levels) {
@@ -10566,7 +10735,7 @@ class PerpsMarketReader {
         return unavailable();
       const levels = [];
       for (const level of side) {
-        if (!object(level) || nonnegative(level.px) === null || nonnegative(level.sz) === null || !integer(level.n))
+        if (!object2(level) || nonnegative(level.px) === null || nonnegative(level.sz) === null || !integer(level.n))
           return unavailable();
         levels.push({ px: level.px, sz: level.sz, n: level.n });
       }
@@ -10602,7 +10771,7 @@ class PerpsMarketReader {
       return unavailable();
     const candles = [];
     for (const c of value) {
-      if (!object(c) || !integer(c.t) || !integer(c.T) || !integer(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative(v) !== null) || c.s !== canonical2 || c.i !== window.interval)
+      if (!object2(c) || !integer(c.t) || !integer(c.T) || !integer(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative(v) !== null) || c.s !== canonical2 || c.i !== window.interval)
         return unavailable();
       if (c.t <= window.endTime && c.T >= window.startTime)
         candles.push({
@@ -10774,14 +10943,14 @@ function canonical2(value) {
 function isDecimalString(value) {
   return typeof value === "string" && /^-?[0-9]+(\.[0-9]+)?$/.test(value);
 }
-function asFill(raw) {
-  const row = raw;
+function asFill(raw2) {
+  const row = raw2;
   if (!row || typeof row !== "object" || typeof row.coin !== "string" || !isTime(row.time) || !Number.isSafeInteger(row.tid) || !Number.isSafeInteger(row.oid) || !isDecimalString(row.px) || !isDecimalString(row.sz) || typeof row.side !== "string" || !isDecimalString(row.closedPnl) || !isDecimalString(row.fee) || row.builderFee !== undefined && !isDecimalString(row.builderFee))
     throw unavailable2("Hyperliquid returned a fill this client cannot read");
   return row;
 }
-function asFunding(raw) {
-  const row = raw;
+function asFunding(raw2) {
+  const row = raw2;
   const delta = row?.delta;
   if (!row || typeof row !== "object" || !isTime(row.time) || typeof row.hash !== "string" || !delta || typeof delta !== "object" || typeof delta.coin !== "string" || !isDecimalString(delta.usdc) || !isDecimalString(delta.fundingRate) || !isDecimalString(delta.szi))
     throw unavailable2("Hyperliquid returned a funding payment this client cannot read");
@@ -10918,11 +11087,11 @@ async function readPerpsHistoryPage(req) {
         break;
       }
       const body = kind === "fills" ? { type: "userFillsByTime", user: state.w, startTime: t, endTime: state.e, aggregateByTime: false } : { type: "userFunding", user: state.w, startTime: t, endTime: state.e };
-      const raw = await postInfo(req, body, kind === "fills" ? "fills" : "funding");
+      const raw2 = await postInfo(req, body, kind === "fills" ? "fills" : "funding");
       requests++;
-      if (!Array.isArray(raw))
+      if (!Array.isArray(raw2))
         throw unavailable2(`Hyperliquid returned an unreadable ${kind} response`);
-      const rows = raw.map((r) => kind === "fills" ? asFill(r) : asFunding(r));
+      const rows = raw2.map((r) => kind === "fills" ? asFill(r) : asFunding(r));
       const keyed = rows.map((row) => ({ row, id: identity(kind, row) })).sort((a, b) => a.row.time - b.row.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const full = rows.length >= max;
       const startedAt = t;
@@ -11037,11 +11206,11 @@ function perpsRiskFromLimits(body) {
   const source = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
   return { thresholds: { ...effective, source }, stored };
 }
-function pickSettings(raw) {
+function pickSettings(raw2) {
   const out = {};
   for (const field of PERPS_RISK_FIELDS)
-    if (typeof raw[field] === "number")
-      out[field] = raw[field];
+    if (typeof raw2[field] === "number")
+      out[field] = raw2[field];
   return out;
 }
 async function hyperliquidInfo(fetcher, network, body, opts = {}) {
@@ -12081,8 +12250,8 @@ function rawUnits(amount, decimals) {
   const [whole = "", fraction = ""] = amount.split(".");
   if (fraction.length > decimals)
     return null;
-  const raw = BigInt(whole + fraction.padEnd(decimals, "0"));
-  return raw > 0n ? raw.toString() : null;
+  const raw2 = BigInt(whole + fraction.padEnd(decimals, "0"));
+  return raw2 > 0n ? raw2.toString() : null;
 }
 function pickWallet(rows, chain, name, what) {
   const onChain = rows.filter((row) => row.chain === chain);
@@ -13067,10 +13236,10 @@ __export(exports_tools, {
 });
 import { randomUUID as randomUUID3 } from "node:crypto";
 function resolveToolAllowlist(env) {
-  const raw = env.CANDLE_MCP_TOOLS?.trim();
-  if (!raw)
+  const raw2 = env.CANDLE_MCP_TOOLS?.trim();
+  if (!raw2)
     return new Set(TOOL_NAMES);
-  const requested = raw.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
+  const requested = raw2.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
   const unknown = requested.filter((name) => !TOOL_NAMES.includes(name));
   if (requested.length === 0 || unknown.length > 0) {
     throw new Error(`CANDLE_MCP_TOOLS contains unknown tool name(s): ${unknown.join(", ") || "(none given)"}. Valid names: ${TOOL_NAMES.join(", ")}`);
@@ -13795,8 +13964,20 @@ function registerToolSubset(server, options) {
   register("candle_launch_token", {
     title: "Launch a token on Candle",
     description: "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything. " + LAUNCH_SHARED_SENTENCES + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
-    inputSchema: imageDir ? localLaunchTokenShape : launchTokenShape
+    inputSchema: checkableLaunchShape(imageDir ? localLaunchTokenShape : launchTokenShape)
   }, async (args) => {
+    if ("check" in args && args.check === true)
+      return launchCheck(args, getConfig(), doFetch);
+    try {
+      args = launchExecutionArgs(args);
+      if (!imageDir && args.imageUrl === undefined && !("imagePath" in args))
+        return launchControlError(new LaunchCheckError("VALIDATION_FAILED", "imageUrl is required for a launch."));
+      const parsed = exports_external.object(imageDir ? localLaunchTokenShape : launchTokenShape).omit({ imageUrl: true }).safeParse(args);
+      if (!parsed.success)
+        return launchControlError(new LaunchCheckError("VALIDATION_FAILED", parsed.error.message));
+    } catch (error) {
+      return launchControlError(error);
+    }
     const socialsProblem = socialsRefusal("socials" in args ? args.socials : undefined);
     if (socialsProblem) {
       return { content: [{ type: "text", text: imageRefusalBody(socialsProblem) }], isError: true };
@@ -14172,8 +14353,20 @@ function registerToolSubset(server, options) {
   register("candle_launch_and_seed", {
     title: "Launch a token and seed it",
     description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed, then " + "return the fresh market state and token links in one result. On solana a seed makes this " + (options.headlessSeed === true ? "the seed is a separate first-buy transaction in the same Jito bundle as the launch, so " + "both land or neither does. That works on every plan, Free included, and needs no " + "swap:write. On hood the seed is " : "the atomic launch: the launch and the seed are two transactions Candle signs and sends as " + "one Jito bundle, so both land or neither does. That needs Pro or Max (TIER_REQUIRED " + "otherwise) and swap:write on the key, and the result carries bundleId. On hood the seed is ") + "a best-effort follow-up. A launch with no seed works on every plan, Free included. MOVES " + "REAL FUNDS unless dryRun; dry-run first, which spends nothing. Seeds above the platform " + "dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH): at most 0.5 SOL / 500 USDC / 2,000,000 " + "CNDL, or on an exp- curve 10% of the threshold when that is lower; the server holds the " + "creator's own seed to the effective ceiling, so launch with the largest devBuy it allows " + "and top up with candle_trade. " + LAUNCH_SHARED_SENTENCES + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
-    inputSchema: imageDir ? localLaunchAndSeedShape : launchAndSeedShape
+    inputSchema: checkableLaunchShape(imageDir ? localLaunchAndSeedShape : launchAndSeedShape)
   }, async (args) => {
+    if ("check" in args && args.check === true)
+      return launchCheck(args, getConfig(), doFetch);
+    try {
+      args = launchExecutionArgs(args);
+      if (!imageDir && args.imageUrl === undefined && !("imagePath" in args))
+        return launchControlError(new LaunchCheckError("VALIDATION_FAILED", "imageUrl is required for a launch."));
+      const parsed = exports_external.object(imageDir ? localLaunchAndSeedShape : launchAndSeedShape).omit({ imageUrl: true }).safeParse(args);
+      if (!parsed.success)
+        return launchControlError(new LaunchCheckError("VALIDATION_FAILED", parsed.error.message));
+    } catch (error) {
+      return launchControlError(error);
+    }
     const result2 = await executeLaunchAndSeed(args, getConfig(), doFetch, imageDir, undefined, {
       headlessSeed: options.headlessSeed === true
     });
@@ -14402,6 +14595,8 @@ var init_tools = __esm(() => {
   init_convert();
   init_image();
   init_lab_tools();
+  init_launch_check();
+  init_launch_preflight();
   init_launch_schema();
   init_market_disclosure();
   init_orchestrate();
@@ -15481,11 +15676,11 @@ function createHmacDrbg(hashLen, qByteLen, hmacFn) {
   };
   return genUntil;
 }
-function _validateObject(object2, fields2, optFields = {}) {
-  if (!object2 || typeof object2 !== "object")
+function _validateObject(object3, fields2, optFields = {}) {
+  if (!object3 || typeof object3 !== "object")
     throw new Error("expected valid options object");
   function checkField(fieldName, expectedType, isOpt) {
-    const val = object2[fieldName];
+    const val = object3[fieldName];
     if (isOpt && val === undefined)
       return;
     const current = typeof val;
@@ -18145,18 +18340,18 @@ function signTransaction(tx, secret) {
   }
   const signature = secp256k1.sign(signingPayload(tx), secret, { lowS: true, prehash: false });
   const yParity = signature.recovery === 1 ? 1 : 0;
-  const raw = concat(TYPE_2, rlpEncode([
+  const raw2 = concat(TYPE_2, rlpEncode([
     ...unsignedFields(tx),
     uintToMinimalBytes(BigInt(yParity)),
     uintToMinimalBytes(signature.r),
     uintToMinimalBytes(signature.s)
   ]));
-  return { raw, hash: bytesToHex2(keccak_256(raw)), yParity, r: signature.r, s: signature.s };
+  return { raw: raw2, hash: bytesToHex2(keccak_256(raw2)), yParity, r: signature.r, s: signature.s };
 }
-function signedTransactionCovers(raw, tx) {
-  if (raw[0] !== 2)
+function signedTransactionCovers(raw2, tx) {
+  if (raw2[0] !== 2)
     return false;
-  const list = raw.subarray(1);
+  const list = raw2.subarray(1);
   const body = rlpListBody(list);
   if (body === undefined)
     return false;
@@ -18188,9 +18383,9 @@ function rlpListBody(bytes) {
     return;
   return bytes.subarray(start);
 }
-function formatUnits(raw, decimals) {
-  const negative = raw < 0n;
-  const magnitude = negative ? -raw : raw;
+function formatUnits(raw2, decimals) {
+  const negative = raw2 < 0n;
+  const magnitude = negative ? -raw2 : raw2;
   const base2 = 10n ** BigInt(decimals);
   const whole = magnitude / base2;
   const fraction = decimals === 0 ? "" : (magnitude % base2).toString().padStart(decimals, "0").replace(/0+$/, "");
@@ -18203,10 +18398,10 @@ function parseUnits(decimal4, decimals) {
   const [whole, fraction = ""] = decimal4.split(".");
   if (fraction.length > decimals)
     return { ok: false, reason: "precision" };
-  const raw = BigInt((whole ?? "0") + fraction.padEnd(decimals, "0"));
-  if (raw === 0n)
+  const raw2 = BigInt((whole ?? "0") + fraction.padEnd(decimals, "0"));
+  if (raw2 === 0n)
     return { ok: false, reason: "zero" };
-  return { ok: true, raw };
+  return { ok: true, raw: raw2 };
 }
 function addressTopic(address) {
   return `0x${"0".repeat(24)}${address.toLowerCase().replace(/^0x/, "")}`;
@@ -18307,8 +18502,8 @@ function createEvmRpc(url, fetchFn) {
         throw new EvmRpcError("rpc", "eth_call", "RPC eth_call answered without data");
       return hexToBytes2(r);
     },
-    async sendRawTransaction(raw) {
-      const r = await call2("eth_sendRawTransaction", [bytesToHex2(raw)]);
+    async sendRawTransaction(raw2) {
+      const r = await call2("eth_sendRawTransaction", [bytesToHex2(raw2)]);
       if (typeof r !== "string") {
         throw new EvmRpcError("rpc", "eth_sendRawTransaction", "RPC eth_sendRawTransaction answered without a hash");
       }
@@ -20702,10 +20897,10 @@ async function serializeKeystore(entries2, key, salt, iterations, purpose) {
   return `${JSON.stringify(file, null, 2)}
 `;
 }
-async function readKeystore(raw, passphrase, opts = {}) {
+async function readKeystore(raw2, passphrase, opts = {}) {
   let file;
   try {
-    file = JSON.parse(raw);
+    file = JSON.parse(raw2);
   } catch {
     throw new Error("The keystore file is not valid JSON.");
   }
@@ -21923,10 +22118,10 @@ async function derivePassphraseKek(passphrase, kdf, notice2, derivationLabel = "
     testKekReuse?.set(reuseKey, Uint8Array.from(kek));
   return ownSecret(kek);
 }
-async function importAesKey(raw) {
-  if (raw.length !== 32)
-    throw new VaultError("VAULT_UNREADABLE", `expected a 32-byte key, got ${raw.length}`);
-  return crypto.subtle.importKey("raw", raw, { name: "AES-GCM", length: 256 }, false, [
+async function importAesKey(raw2) {
+  if (raw2.length !== 32)
+    throw new VaultError("VAULT_UNREADABLE", `expected a 32-byte key, got ${raw2.length}`);
+  return crypto.subtle.importKey("raw", raw2, { name: "AES-GCM", length: 256 }, false, [
     "encrypt",
     "decrypt"
   ]);
@@ -22150,10 +22345,10 @@ function evmRecordKeyAad(vaultId) {
 function refuse(code, message) {
   throw new VaultError(code, message);
 }
-function parseVaultFile(raw) {
+function parseVaultFile(raw2) {
   let value;
   try {
-    value = JSON.parse(raw);
+    value = JSON.parse(raw2);
   } catch {
     refuse("VAULT_UNREADABLE", "The vault file is not valid JSON.");
   }
@@ -22911,19 +23106,19 @@ function splitRecord(bytes) {
 }
 async function appendEvmRecordEntry(input) {
   const path = evmRecordPath(input.vaultPath);
-  let raw;
+  let raw2;
   try {
     const bytes = await readIfPresent(input.vaultPath);
-    raw = bytes === null ? null : bytes.toString("utf8");
+    raw2 = bytes === null ? null : bytes.toString("utf8");
   } catch (error) {
     return { written: false, reason: "header-unreadable", detail: messageOf(error), path };
   }
-  if (raw === null)
+  if (raw2 === null)
     return { written: false, reason: "no-vault", detail: `no vault at ${input.vaultPath}`, path };
   let publicKey;
   let vaultId;
   try {
-    const header = parseVaultFile(raw);
+    const header = parseVaultFile(raw2);
     vaultId = header.vaultId;
     publicKey = header.version === EVM_TEE_VAULT_VERSION ? header.evmRecordPublicKey : undefined;
   } catch (error) {
@@ -23124,14 +23319,14 @@ function sourceDigest(vaultId, bytes) {
   return b64u(sha2562(joined));
 }
 async function readSidecar(path) {
-  let raw;
+  let raw2;
   try {
-    raw = await readFile4(path, "utf8");
+    raw2 = await readFile4(path, "utf8");
   } catch {
     return null;
   }
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw2);
     if (typeof parsed?.vaultId !== "string" || !Number.isInteger(parsed?.lastGeneration))
       return null;
     return {
@@ -23287,25 +23482,25 @@ async function inspectConfigDir(path) {
 function closeVault(vault) {
   wipe(vault.dek);
 }
-async function unlockVault(path, raw, request, opts = {}) {
-  const file = parseVaultFile(raw);
+async function unlockVault(path, raw2, request, opts = {}) {
+  const file = parseVaultFile(raw2);
   const envelope = pickEnvelope(file, request);
   const dek = await unwrapDek(file, envelope, request, opts.notice, opts.derivationLabel);
   if (dek.length !== DEK_BYTES) {
     wipe(dek);
     throw new VaultError("VAULT_UNLOCK_FAILED", "The unwrapped key is the wrong length; this file is corrupt.");
   }
-  return openWithDek(path, raw, file, envelope, dek);
+  return openWithDek(path, raw2, file, envelope, dek);
 }
-async function reopenWithHeldDek(path, raw, held) {
-  const file = parseVaultFile(raw);
+async function reopenWithHeldDek(path, raw2, held) {
+  const file = parseVaultFile(raw2);
   if (file.vaultId !== held.file.vaultId) {
     throw new VaultError("VAULT_UNLOCK_FAILED", `${path} is not the vault this command unlocked.`);
   }
   const envelope = file.envelopes.find((candidate) => candidate.id === held.envelope.id) ?? held.envelope;
-  return openWithDek(path, raw, file, envelope, new Uint8Array(held.dek));
+  return openWithDek(path, raw2, file, envelope, new Uint8Array(held.dek));
 }
-async function openWithDek(path, raw, file, envelope, dek) {
+async function openWithDek(path, raw2, file, envelope, dek) {
   try {
     const payloadKey = await derivePayloadKey(dek, unb64u(file.vaultId, "vaultId"));
     const indexBytes = await open2(payloadKey, file.index, canonicalHeader(file), {
@@ -23324,7 +23519,7 @@ async function openWithDek(path, raw, file, envelope, dek) {
       const secret = await openEvmRecordKey(payloadKey, file.vaultId, index.evmRecordKey, file.evmRecordPublicKey);
       wipe(secret);
     }
-    return { path, raw, file, index, payloadKey, dek, envelope };
+    return { path, raw: raw2, file, index, payloadKey, dek, envelope };
   } catch (error) {
     wipe(dek);
     throw error;
@@ -23379,8 +23574,8 @@ function pickEnvelope(file, request) {
   }
   return first;
 }
-async function unlockWithPassphrase(path, raw, passphrase, opts = {}) {
-  const file = parseVaultFile(raw);
+async function unlockWithPassphrase(path, raw2, passphrase, opts = {}) {
+  const file = parseVaultFile(raw2);
   const envelopes = file.envelopes.filter((envelope) => envelope.factor === "passphrase");
   if (envelopes.length === 0) {
     throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
@@ -23388,7 +23583,7 @@ async function unlockWithPassphrase(path, raw, passphrase, opts = {}) {
   let last;
   for (const envelope of envelopes) {
     try {
-      return await unlockVault(path, raw, { factor: "passphrase", passphrase, envelopeId: envelope.id }, opts);
+      return await unlockVault(path, raw2, { factor: "passphrase", passphrase, envelopeId: envelope.id }, opts);
     } catch (error) {
       if (error instanceof VaultError && error.code !== "VAULT_UNLOCK_FAILED")
         throw error;
@@ -23848,16 +24043,16 @@ class EncryptedFileSecretStore {
     throw new Error("No keychain available and no CANDLE_KEYRING_PASSPHRASE set; set it to use the encrypted file store on this machine");
   }
   async readContents() {
-    let raw;
+    let raw2;
     try {
-      raw = await readFile6(this.path, "utf8");
+      raw2 = await readFile6(this.path, "utf8");
     } catch (err) {
       if (err.code === "ENOENT")
         return {};
       throw err;
     }
     try {
-      return JSON.parse(raw);
+      return JSON.parse(raw2);
     } catch {
       throw new Error(`The credentials file at ${this.path} is not valid JSON and cannot be read. Delete it and re-run ` + "the command that stores your device token / API key to recreate it.");
     }
@@ -24548,13 +24743,13 @@ function rawAmount(value, decimals) {
   const [whole = "", fraction = ""] = value.split(".");
   if (fraction.length > decimals)
     throw new TradingError("INVALID_AMOUNT", `This asset supports ${decimals} decimal places.`);
-  const raw = BigInt(whole + fraction.padEnd(decimals, "0"));
-  if (raw <= 0n)
+  const raw2 = BigInt(whole + fraction.padEnd(decimals, "0"));
+  if (raw2 <= 0n)
     throw new TradingError("INVALID_AMOUNT", "Amount must be greater than zero.");
-  return raw.toString();
+  return raw2.toString();
 }
-function decimalAmount(raw, decimals) {
-  const digits = BigInt(raw).toString().padStart(decimals + 1, "0");
+function decimalAmount(raw2, decimals) {
+  const digits = BigInt(raw2).toString().padStart(decimals + 1, "0");
   return decimals ? `${digits.slice(0, -decimals)}.${digits.slice(-decimals)}` : digits;
 }
 async function tradingKey(ctx) {
@@ -24577,8 +24772,8 @@ async function request(ctx, key, path, body) {
     env: ctx.deps.env
   });
   if (!result2.ok) {
-    const raw = result2.raw;
-    const error = raw?.error;
+    const raw2 = result2.raw;
+    const error = raw2?.error;
     const details = {};
     const kept = path === "/api/v1/agent/swap/submit" ? SWAP_SUBMIT_EVIDENCE : TRADE_BROADCAST_PATHS.has(path) ? TRADE_BROADCAST_EVIDENCE : ["field"];
     for (const field of kept) {
@@ -24821,16 +25016,16 @@ function legTransaction(leg) {
 }
 async function relaySignEvmLeg(ctx, key, wallet3, leg) {
   const result2 = await request(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(wallet3.id)}/sign`, evmAuthorizationSignature(wallet3, leg));
-  const raw = result2.signedTransaction;
-  if (typeof raw !== "string" || !/^0x02([0-9a-fA-F]{2})+$/.test(raw))
+  const raw2 = result2.signedTransaction;
+  if (typeof raw2 !== "string" || !/^0x02([0-9a-fA-F]{2})+$/.test(raw2))
     throw new TradingError("INVALID_RESPONSE", "The relay did not return a raw signed type-2 transaction.");
-  const bytes = hexToBytes2(raw);
+  const bytes = hexToBytes2(raw2);
   if (!signedTransactionCovers(bytes, legTransaction(leg)))
     throw new TradingError("INVALID_RESPONSE", "The relay returned a signature over a different transaction than the leg Candle built; nothing was sent.");
-  return { raw, hash: bytesToHexHash(bytes) };
+  return { raw: raw2, hash: bytesToHexHash(bytes) };
 }
-function bytesToHexHash(raw) {
-  return `0x${Buffer.from(keccak_256(raw)).toString("hex")}`;
+function bytesToHexHash(raw2) {
+  return `0x${Buffer.from(keccak_256(raw2)).toString("hex")}`;
 }
 function plannedLegKinds(first, count2, hasFee, primary = "trade") {
   if (primary === "bridgeDeposit") {
@@ -24943,8 +25138,8 @@ async function runSequencedLegs(ctx, key, opts) {
 function describeLanded(landed) {
   return landed.length === 0 ? " No leg is confirmed yet." : ` Confirmed: ${landed.map((leg) => `${leg.kind} ${safeText(leg.hash)}`).join(", ")}.`;
 }
-function recoveryEvidenceFrom(raw, error) {
-  const top = raw && typeof raw === "object" ? raw : {};
+function recoveryEvidenceFrom(raw2, error) {
+  const top = raw2 && typeof raw2 === "object" ? raw2 : {};
   const pick = (key) => top[key] !== undefined ? top[key] : error[key];
   const out = {};
   for (const key of ["legEvidence", "reconciliation", "recoveryRequired", "safeAction", "pollAfterMs", "legIndex"]) {
@@ -24954,14 +25149,14 @@ function recoveryEvidenceFrom(raw, error) {
   }
   return out;
 }
-function errorObject(raw) {
-  if (!raw || typeof raw !== "object")
+function errorObject(raw2) {
+  if (!raw2 || typeof raw2 !== "object")
     return {};
-  const error = raw.error;
+  const error = raw2.error;
   return error && typeof error === "object" ? error : {};
 }
-function landedFrom(raw, error) {
-  const top = raw && typeof raw === "object" ? raw.landedLegs : undefined;
+function landedFrom(raw2, error) {
+  const top = raw2 && typeof raw2 === "object" ? raw2.landedLegs : undefined;
   const list = Array.isArray(top) ? top : Array.isArray(error.landedLegs) ? error.landedLegs : [];
   const parsed = exports_external.array(landedLegSchema).safeParse(list);
   return parsed.success ? parsed.data.map((leg) => ({ kind: leg.kind, hash: leg.hash })) : [];
@@ -25442,12 +25637,12 @@ async function relaySolanaDepositProblem(transactionBase64, payer, rpc) {
 function walletBridgesOf(body) {
   if (!body || typeof body !== "object" || !("bridges" in body))
     return;
-  const raw = body.bridges;
-  if (raw === undefined)
+  const raw2 = body.bridges;
+  if (raw2 === undefined)
     return;
-  if (raw === null)
+  if (raw2 === null)
     return null;
-  const parsed = exports_external.array(walletBridgeSchema).safeParse(raw);
+  const parsed = exports_external.array(walletBridgeSchema).safeParse(raw2);
   return parsed.success ? parsed.data : null;
 }
 function direction(bridge) {
@@ -27121,8 +27316,8 @@ async function swapReceipt(args, ctx) {
       });
       if (res.ok)
         return { ok: true, status: res.status, text: JSON.stringify(res.body) };
-      const raw = res.raw !== null && typeof res.raw === "object" ? res.raw : undefined;
-      const text = JSON.stringify(raw ?? { success: false, error: { code: res.code ?? "REQUEST_FAILED", message: res.message } });
+      const raw2 = res.raw !== null && typeof res.raw === "object" ? res.raw : undefined;
+      const text = JSON.stringify(raw2 ?? { success: false, error: { code: res.code ?? "REQUEST_FAILED", message: res.message } });
       return { ok: false, status: res.status, text };
     };
     const answer = await readSwapReceipt(target, get, operationNotFoundNext);
@@ -27173,8 +27368,8 @@ function describeReceipt(ctx, body, job) {
   ctx.deps.stderr.write(`Settlement: ${shown}${words ? ` (${words})` : ""}
 `);
 }
-function bridgeFactsOf(raw) {
-  const parsed = bridgeFactsSchema.safeParse(raw);
+function bridgeFactsOf(raw2) {
+  const parsed = bridgeFactsSchema.safeParse(raw2);
   return parsed.success ? parsed.data : undefined;
 }
 function isBridgeJob(job, facts) {
@@ -27876,7 +28071,7 @@ function previewStop(preview) {
 function quoteMoved(preview, current, out, lead = "The quote moved after the preview. Nothing was built; the wallet is not held.") {
   const minOut = typeof current.minOutRaw === "string" && /^\d+$/.test(current.minOutRaw) ? current.minOutRaw : undefined;
   const feeBps = typeof current.feeBps === "number" ? current.feeBps : undefined;
-  const minimum = (raw) => raw === undefined ? "unknown" : `${decimalAmount(raw, out.outDecimals)} ${out.to}`;
+  const minimum = (raw2) => raw2 === undefined ? "unknown" : `${decimalAmount(raw2, out.outDecimals)} ${out.to}`;
   return new TradingError("QUOTE_MOVED", `${lead} Minimum received ${minimum(preview.minOutRaw)} -> ${minimum(minOut)}; tier fee ${preview.fee.bps} -> ${feeBps ?? "unknown"} bps.`, {
     suggestion: "Run the swap again to see the new quote.",
     details: {
@@ -30288,8 +30483,8 @@ function x963Kdf(secret, sharedInfo, length) {
   wipe(block2);
   return out;
 }
-async function aesGcmKey(raw) {
-  return crypto.subtle.importKey("raw", raw, { name: "AES-GCM", length: 128 }, false, [
+async function aesGcmKey(raw2) {
+  return crypto.subtle.importKey("raw", raw2, { name: "AES-GCM", length: 128 }, false, [
     "encrypt",
     "decrypt"
   ]);
@@ -39606,10 +39801,10 @@ This vault is at ${resolved.path}, not the default location. Every vault command
 `;
 }
 async function requireVaultRaw(ctx, resolved) {
-  const raw = await readVaultRaw(resolved.path);
-  if (raw === null)
+  const raw2 = await readVaultRaw(resolved.path);
+  if (raw2 === null)
     throw missingVault(ctx, resolved);
-  return raw;
+  return raw2;
 }
 function factorAddAmong(envelopes) {
   return {
@@ -39641,13 +39836,13 @@ function assertVaultHelperIdentities(deps, envelopes) {
     }
   }
 }
-async function unlockInteractively(ctx, path, raw, opts = {}) {
-  await assertNotOlderCopy(ctx, path, raw, opts.acceptOlderCopy ?? false);
+async function unlockInteractively(ctx, path, raw2, opts = {}) {
+  await assertNotOlderCopy(ctx, path, raw2, opts.acceptOlderCopy ?? false);
   const held = ctx.heldUnlock;
   if (held !== undefined && resolvePath(held.path) === resolvePath(path))
-    return held.open(raw);
+    return held.open(raw2);
   const { deps } = ctx;
-  const file = parseVaultFile(raw);
+  const file = parseVaultFile(raw2);
   assertVaultHelperIdentities(deps, file.envelopes);
   const facts = await currentPlatformFacts(deps);
   const choice = await chooseFactor(ctx, file.vaultId, file.envelopes, facts, opts.factor ?? ctx.vaultFactor, opts);
@@ -39662,7 +39857,7 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
 `.trim());
     const typed = await deps.promptSecret(opts.promptText ?? "Vault passphrase (input hidden): ");
     const openWith = (p, r, candidate, purpose) => choice.envelopeId === undefined ? unlockWithPassphrase(p, r, candidate, { notice: noticeFor(purpose) }) : unlockVault(p, r, { factor: "passphrase", passphrase: candidate, envelopeId: choice.envelopeId }, { notice: noticeFor(purpose) });
-    const { vault: vault2, passphrase } = await openWithTypedPassphrase(typed, (candidate) => openWith(path, raw, candidate, opts.purpose));
+    const { vault: vault2, passphrase } = await openWithTypedPassphrase(typed, (candidate) => openWith(path, raw2, candidate, opts.purpose));
     const open7 = (p, r, purpose) => openWith(p, r, passphrase, purpose);
     return {
       vault: vault2,
@@ -39696,13 +39891,13 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
       }
     };
     const reason = opts.reason ?? "unlock the Candle vault";
-    const vault2 = await open7(path, raw, reason);
+    const vault2 = await open7(path, raw2, reason);
     return {
       vault: vault2,
       factor: { kind: "touch-id", envelopeId: envelope2.id, session: session2 },
       reopen: (p, r) => open7(p, r, reason),
       confirm: async (what) => {
-        closeVault(await open7(path, raw, what));
+        closeVault(await open7(path, raw2, what));
       }
     };
   }
@@ -39726,13 +39921,13 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
       }
     };
     const reason = opts.reason ?? "unlock the Candle vault";
-    const vault2 = await open7(path, raw, reason);
+    const vault2 = await open7(path, raw2, reason);
     return {
       vault: vault2,
       factor: { kind: "passkey", envelopeId: envelope2.id, session: session2 },
       reopen: (p, r) => open7(p, r, reason),
       confirm: async (what) => {
-        closeVault(await open7(path, raw, what));
+        closeVault(await open7(path, raw2, what));
       }
     };
   }
@@ -39760,7 +39955,7 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
       wipe(prfOutput);
     }
   };
-  const vault = await open6(path, raw);
+  const vault = await open6(path, raw2);
   return {
     vault,
     factor: { kind: "security-key", envelopeId: envelope.id, session },
@@ -39768,7 +39963,7 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
     confirm: async (what) => {
       notice(deps, "stderr", "note", `Present the security key again to ${what}.
 `.trim());
-      closeVault(await open6(path, raw));
+      closeVault(await open6(path, raw2));
     }
   };
 }
@@ -40017,7 +40212,7 @@ function assertDrivable(envelope, facts) {
     return envelope;
   throw new VaultError(refusalCodeFor(availability), `The ${wordFor(envelope)} envelope ${envelope.id} cannot open the vault here: ${availability.reason}.`, { suggestion: "No other envelope was tried. Run `candle vault status` to see which factors can open it here." });
 }
-async function assertNotOlderCopy(ctx, path, raw, accept) {
+async function assertNotOlderCopy(ctx, path, raw2, accept) {
   const sidecar = await readSidecar(sidecarPath(path));
   if (sidecar === null) {
     notice(ctx.deps, "stderr", "warning", `No vault.state.json beside this vault, so an older copy of it cannot be recognized here.
@@ -40028,7 +40223,7 @@ async function assertNotOlderCopy(ctx, path, raw, accept) {
   let vaultId;
   let envelopeIds = [];
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw2);
     generation = parsed.generation;
     vaultId = parsed.vaultId;
     envelopeIds = (parsed.envelopes ?? []).map((envelope) => String(envelope.id));
@@ -40502,10 +40697,10 @@ async function findTeeInVault(ctx, address, opts = {}) {
       throw new UsageError(resolved.error);
     path = resolved.path;
   }
-  const raw = await readVaultRaw(path);
-  if (raw === null)
+  const raw2 = await readVaultRaw(path);
+  if (raw2 === null)
     return { hit: false };
-  const opened = await unlockInteractively(ctx, path, raw, { acceptOlderCopy: true });
+  const opened = await unlockInteractively(ctx, path, raw2, { acceptOlderCopy: true });
   const vault = opened.vault;
   try {
     assertNotEvmEntry(vault.index, address, "this command");
@@ -44021,9 +44216,9 @@ async function awaitReceipt(rpc, ctx, hash, chainId) {
     line: `Submitted ${hash}; no receipt after ${EVM_RECEIPT_WAIT_MS / 1000} s. It may still land: do not resend blindly; check the hash on an explorer first.`
   };
 }
-async function broadcast(rpc, ctx, raw, hash, chainId) {
+async function broadcast(rpc, ctx, raw2, hash, chainId) {
   try {
-    await rpc.sendRawTransaction(raw);
+    await rpc.sendRawTransaction(raw2);
   } catch (error) {
     if (!(error instanceof EvmRpcError))
       throw error;
@@ -44740,8 +44935,8 @@ async function teeSweepEvm(args, ctx) {
     return usage2(ctx, resolvedVault.error);
   const emergency = parsed.booleans.has("--emergency");
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, resolvedVault.path, raw, { acceptOlderCopy: true });
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, resolvedVault.path, raw2, { acceptOlderCopy: true });
     const vault = hold(opened.vault);
     const entry2 = findEvmTee(vault, address);
     if (entry2 === undefined)
@@ -44751,10 +44946,10 @@ async function teeSweepEvm(args, ctx) {
 }
 function sweepOptions(ctx, parsed, tokenFlags) {
   const tokens = [];
-  for (const raw of tokenFlags) {
-    const checked = checkEvmAddress(raw);
+  for (const raw2 of tokenFlags) {
+    const checked = checkEvmAddress(raw2);
     if (!checked.ok)
-      return usage2(ctx, `--token must be an ERC-20 contract address: ${raw || "(empty)"} is ${checked.reason}.`);
+      return usage2(ctx, `--token must be an ERC-20 contract address: ${raw2 || "(empty)"} is ${checked.reason}.`);
     tokens.push(checked.address);
   }
   let fromBlock;
@@ -45357,8 +45552,8 @@ async function teeDisableEvm(args, ctx) {
     return usage2(ctx, resolvedVault.error);
   await printIdentity(ctx);
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, resolvedVault.path, raw, { acceptOlderCopy: true });
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, resolvedVault.path, raw2, { acceptOlderCopy: true });
     const vault = hold(opened.vault);
     const entry2 = findEvmTee(vault, address);
     if (entry2 === undefined)
@@ -45459,8 +45654,8 @@ async function vaultDemoteEvm(args, ctx) {
   const sweepTo = parsed.values["--sweep-to"];
   let emergency = parsed.booleans.has("--emergency");
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, resolvedVault.path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, resolvedVault.path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     let vault = hold(opened.vault);
@@ -45560,10 +45755,10 @@ async function readVaultEntry(ctx, address) {
   const resolved = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
   if ("error" in resolved)
     throw new TradingError("USAGE", resolved.error);
-  const raw = await readVaultRaw(resolved.path);
-  if (raw === null)
+  const raw2 = await readVaultRaw(resolved.path);
+  if (raw2 === null)
     return null;
-  const opened = await unlockInteractively(ctx, resolved.path, raw, { acceptOlderCopy: true });
+  const opened = await unlockInteractively(ctx, resolved.path, raw2, { acceptOlderCopy: true });
   try {
     const entry2 = opened.vault.index.entries.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address));
     if (entry2 === undefined)
@@ -45984,8 +46179,8 @@ async function openExistingTeeStore(ctx, parsed) {
     }, json);
     return { ok: false, code: 1 };
   }
-  const { raw } = found;
-  if (raw === null) {
+  const { raw: raw2 } = found;
+  if (raw2 === null) {
     writeLocalFailure(deps, {
       code: "TEE_STORE_MISSING",
       message: `No TEE wallet store at ${path} ${teePathSourceNote(ctx, parsed)}.`,
@@ -45999,8 +46194,8 @@ async function openExistingTeeStore(ctx, parsed) {
     return { ok: false, code: 1 };
   }
   try {
-    const store = await readKeystore(raw, passphrase.passphrase, { expectPurpose: TEE_KEYSTORE_PURPOSE });
-    return { ok: true, store, path, passphrase: passphrase.passphrase, raw };
+    const store = await readKeystore(raw2, passphrase.passphrase, { expectPurpose: TEE_KEYSTORE_PURPOSE });
+    return { ok: true, store, path, passphrase: passphrase.passphrase, raw: raw2 };
   } catch (error) {
     writeLocalFailure(deps, { code: "TEE_STORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, json);
     return { ok: false, code: 1 };
@@ -46076,8 +46271,8 @@ async function teeNew(args, ctx) {
     }, json);
     return 1;
   }
-  const { raw } = found;
-  if (raw === null) {
+  const { raw: raw2 } = found;
+  if (raw2 === null) {
     writeLocalFailure(deps, {
       code: "TEE_STORE_ABSENT",
       message: "No TEE wallet store on this machine. New wallets are derived in the vault.",
@@ -46093,7 +46288,7 @@ Then: candle vault promote --from <label> --to-key <prefix>`
   }
   let store;
   try {
-    store = await readKeystore(raw, passphrase.passphrase, { expectPurpose: TEE_KEYSTORE_PURPOSE });
+    store = await readKeystore(raw2, passphrase.passphrase, { expectPurpose: TEE_KEYSTORE_PURPOSE });
   } catch (error) {
     writeLocalFailure(deps, { code: "TEE_STORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, json);
     return 1;
@@ -46101,7 +46296,7 @@ Then: candle vault promote --from <label> --to-key <prefix>`
   const wallet3 = generateWallet("solana");
   let index = -1;
   let label = "";
-  const committed = await commitTee(deps, { store, path, passphrase: passphrase.passphrase, raw }, (entries3) => {
+  const committed = await commitTee(deps, { store, path, passphrase: passphrase.passphrase, raw: raw2 }, (entries3) => {
     index = entries3.length;
     label = parsed.values["--label"] ?? `tee-${index}`;
     entries3.push({
@@ -46172,14 +46367,14 @@ async function teeEnable(args, ctx) {
     if ("error" in resolvedVault)
       return usage3(ctx, resolvedVault.error);
     const vaultPath = resolvedVault.path;
-    const raw = await readVaultRaw2(vaultPath);
-    if (raw === null) {
+    const raw2 = await readVaultRaw2(vaultPath);
+    if (raw2 === null) {
       writeLocalFailure(deps, { code: "VAULT_MISSING", message: `No vault at ${vaultPath}.`, suggestion: "Create one: candle vault init" }, json);
       return 1;
     }
     let opened2;
     try {
-      opened2 = (await unlockInteractively2(ctx, vaultPath, raw, { acceptOlderCopy: true })).vault;
+      opened2 = (await unlockInteractively2(ctx, vaultPath, raw2, { acceptOlderCopy: true })).vault;
     } catch (error) {
       if (isVaultError2(error)) {
         writeLocalFailure(deps, { code: error.code, message: error.message, ...error.suggestion ? { suggestion: error.suggestion } : {} }, json);
@@ -46358,8 +46553,8 @@ async function teeFund(args, ctx) {
   if (!amount)
     return usage3(ctx, "--amount <n> is required.");
   const decimals = asset === "SOL" ? 9 : 6;
-  const raw = decimalToRaw2(amount, decimals);
-  if (raw === null || raw === 0n)
+  const raw2 = decimalToRaw2(amount, decimals);
+  if (raw2 === null || raw2 === 0n)
     return usage3(ctx, `--amount must be a positive decimal with at most ${decimals} decimal places.`);
   const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed));
   if (!resolved.ok)
@@ -46384,7 +46579,7 @@ async function teeFund(args, ctx) {
       asset,
       ...asset === "USDC" ? { mint: USDC_MINT } : {},
       amount,
-      amountRaw: raw.toString(),
+      amountRaw: raw2.toString(),
       destination: address,
       from: "your vault wallet (sign it there; this CLI signs nothing)",
       note: "Every funded unit adds to the TEE wallet exposure. The initial float is not a maximum loss."
@@ -46397,7 +46592,7 @@ async function teeFund(args, ctx) {
     writeHeading(deps, "stdout", "Funding instruction (sign from your vault; this CLI signs nothing)");
     writeFields(deps, "stdout", [
       ["Send", `${amount} ${asset}`],
-      ["Raw units", raw.toString()],
+      ["Raw units", raw2.toString()],
       ["Mint", asset === "USDC" ? USDC_MINT : undefined],
       ["To", address],
       ["Network", "solana-mainnet"]
@@ -46692,10 +46887,10 @@ async function nothingLeftToSweep(solana, entry2) {
     return false;
   }
 }
-function refusalState(raw) {
-  if (!raw || typeof raw !== "object")
+function refusalState(raw2) {
+  if (!raw2 || typeof raw2 !== "object")
     return null;
-  const error = raw.error;
+  const error = raw2.error;
   if (!error || typeof error !== "object")
     return null;
   const state = error.state;
@@ -47885,16 +48080,16 @@ async function postRebind(ctx, deviceToken, body) {
     env: deps.env
   });
 }
-async function resolveTargetKey(ctx, deviceToken, raw, opts = {}) {
+async function resolveTargetKey(ctx, deviceToken, raw2, opts = {}) {
   const { deps, json } = ctx;
   const codePrefix = opts.codePrefix ?? "REBIND";
-  const prefixShaped = KEY_PREFIX_RE2.test(raw);
+  const prefixShaped = KEY_PREFIX_RE2.test(raw2);
   let listed = opts.keys;
   if (listed === undefined) {
     const result2 = await listAccountKeys(ctx, deviceToken);
     if (!result2.ok) {
       if (prefixShaped)
-        return { ok: true, keyPrefix: raw };
+        return { ok: true, keyPrefix: raw2 };
       return {
         ok: false,
         code: opts.writeListFailure ? opts.writeListFailure(result2) : writeRebindFailure(ctx, result2, {})
@@ -47904,13 +48099,13 @@ async function resolveTargetKey(ctx, deviceToken, raw, opts = {}) {
   }
   const keys = listed.filter((key) => !key.revokedAt);
   if (prefixShaped) {
-    const byPrefix = keys.find((key) => key.keyPrefix === raw);
-    const byLabel = keys.filter((key) => key.label === raw && key.keyPrefix !== byPrefix?.keyPrefix);
+    const byPrefix = keys.find((key) => key.keyPrefix === raw2);
+    const byLabel = keys.filter((key) => key.label === raw2 && key.keyPrefix !== byPrefix?.keyPrefix);
     if (byPrefix && byLabel.length > 0) {
       const matches2 = [byPrefix, ...byLabel];
       writeLocalFailure(deps, {
         code: `${codePrefix}_KEY_AMBIGUOUS`,
-        message: `${JSON.stringify(raw)} is a key prefix and also the name of another key; pass the prefix you mean.`,
+        message: `${JSON.stringify(raw2)} is a key prefix and also the name of another key; pass the prefix you mean.`,
         suggestion: `Matching prefixes: ${matches2.map((key) => key.keyPrefix).join(", ")}`
       }, json);
       return { ok: false, code: 1 };
@@ -47924,14 +48119,14 @@ async function resolveTargetKey(ctx, deviceToken, raw, opts = {}) {
     if (byLabel.length > 1) {
       writeLocalFailure(deps, {
         code: `${codePrefix}_KEY_AMBIGUOUS`,
-        message: `${byLabel.length} active keys are named ${JSON.stringify(raw)}; pass a prefix instead.`,
+        message: `${byLabel.length} active keys are named ${JSON.stringify(raw2)}; pass a prefix instead.`,
         suggestion: `Matching prefixes: ${byLabel.map((key) => key.keyPrefix).join(", ")}`
       }, json);
       return { ok: false, code: 1 };
     }
-    return { ok: true, keyPrefix: raw };
+    return { ok: true, keyPrefix: raw2 };
   }
-  const matches = keys.filter((key) => key.label === raw);
+  const matches = keys.filter((key) => key.label === raw2);
   if (matches.length === 1) {
     const only = matches[0];
     return { ok: true, keyPrefix: only.keyPrefix, embeddedWallet: only.embeddedWallet };
@@ -47940,7 +48135,7 @@ async function resolveTargetKey(ctx, deviceToken, raw, opts = {}) {
     const labelled = keys.filter((key) => key.label).map((key) => `${key.keyPrefix} ${labelCell(key.label)}`);
     writeLocalFailure(deps, {
       code: `${codePrefix}_KEY_NOT_FOUND`,
-      message: `No active key on this account is named ${JSON.stringify(raw)}.`,
+      message: `No active key on this account is named ${JSON.stringify(raw2)}.`,
       suggestion: labelled.length > 0 ? `Named keys on this account:
 ${labelled.map((line) => `  ${line}`).join(`
 `)}` : "No key on this account has a name; pass the key's 8-character prefix from: candle keys list"
@@ -47949,7 +48144,7 @@ ${labelled.map((line) => `  ${line}`).join(`
   }
   writeLocalFailure(deps, {
     code: `${codePrefix}_KEY_AMBIGUOUS`,
-    message: `${matches.length} active keys are named ${JSON.stringify(raw)}; pass a prefix instead.`,
+    message: `${matches.length} active keys are named ${JSON.stringify(raw2)}; pass a prefix instead.`,
     suggestion: `Matching prefixes: ${matches.map((key) => key.keyPrefix).join(", ")}`
   }, json);
   return { ok: false, code: 1 };
@@ -57433,11 +57628,11 @@ var init_map = __esm(() => {
 
 // ../../node_modules/zod-to-json-schema/dist/esm/parsers/nativeEnum.js
 function parseNativeEnumDef(def) {
-  const object2 = def.values;
+  const object3 = def.values;
   const actualKeys = Object.keys(def.values).filter((key) => {
-    return typeof object2[object2[key]] !== "number";
+    return typeof object3[object3[key]] !== "number";
   });
-  const actualValues = actualKeys.map((key) => object2[key]);
+  const actualValues = actualKeys.map((key) => object3[key]);
   const parsedTypes = Array.from(new Set(actualValues.map((values) => typeof values)));
   return {
     type: parsedTypes.length === 1 ? parsedTypes[0] === "string" ? "string" : "number" : ["string", "number"],
@@ -59147,11 +59342,11 @@ var require_envelope = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Signature = exports.Envelope = undefined;
   exports.Envelope = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        payload: isSet(object6.payload) ? Buffer.from(bytesFromBase64(object6.payload)) : Buffer.alloc(0),
-        payloadType: isSet(object6.payloadType) ? globalThis.String(object6.payloadType) : "",
-        signatures: globalThis.Array.isArray(object6?.signatures) ? object6.signatures.map((e) => exports.Signature.fromJSON(e)) : []
+        payload: isSet(object7.payload) ? Buffer.from(bytesFromBase64(object7.payload)) : Buffer.alloc(0),
+        payloadType: isSet(object7.payloadType) ? globalThis.String(object7.payloadType) : "",
+        signatures: globalThis.Array.isArray(object7?.signatures) ? object7.signatures.map((e) => exports.Signature.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -59169,10 +59364,10 @@ var require_envelope = __commonJS((exports) => {
     }
   };
   exports.Signature = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        sig: isSet(object6.sig) ? Buffer.from(bytesFromBase64(object6.sig)) : Buffer.alloc(0),
-        keyid: isSet(object6.keyid) ? globalThis.String(object6.keyid) : ""
+        sig: isSet(object7.sig) ? Buffer.from(bytesFromBase64(object7.sig)) : Buffer.alloc(0),
+        keyid: isSet(object7.keyid) ? globalThis.String(object7.keyid) : ""
       };
     },
     toJSON(message) {
@@ -59202,10 +59397,10 @@ var require_timestamp = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Timestamp = undefined;
   exports.Timestamp = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        seconds: isSet(object6.seconds) ? globalThis.String(object6.seconds) : "0",
-        nanos: isSet(object6.nanos) ? globalThis.Number(object6.nanos) : 0
+        seconds: isSet(object7.seconds) ? globalThis.String(object7.seconds) : "0",
+        nanos: isSet(object7.nanos) ? globalThis.Number(object7.nanos) : 0
       };
     },
     toJSON(message) {
@@ -59244,8 +59439,8 @@ var require_sigstore_common = __commonJS((exports) => {
     HashAlgorithm2[HashAlgorithm2["SHA3_256"] = 4] = "SHA3_256";
     HashAlgorithm2[HashAlgorithm2["SHA3_384"] = 5] = "SHA3_384";
   })(HashAlgorithm || (exports.HashAlgorithm = HashAlgorithm = {}));
-  function hashAlgorithmFromJSON(object6) {
-    switch (object6) {
+  function hashAlgorithmFromJSON(object7) {
+    switch (object7) {
       case 0:
       case "HASH_ALGORITHM_UNSPECIFIED":
         return HashAlgorithm.HASH_ALGORITHM_UNSPECIFIED;
@@ -59265,11 +59460,11 @@ var require_sigstore_common = __commonJS((exports) => {
       case "SHA3_384":
         return HashAlgorithm.SHA3_384;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum HashAlgorithm");
+        throw new globalThis.Error("Unrecognized enum value " + object7 + " for enum HashAlgorithm");
     }
   }
-  function hashAlgorithmToJSON(object6) {
-    switch (object6) {
+  function hashAlgorithmToJSON(object7) {
+    switch (object7) {
       case HashAlgorithm.HASH_ALGORITHM_UNSPECIFIED:
         return "HASH_ALGORITHM_UNSPECIFIED";
       case HashAlgorithm.SHA2_256:
@@ -59283,7 +59478,7 @@ var require_sigstore_common = __commonJS((exports) => {
       case HashAlgorithm.SHA3_384:
         return "SHA3_384";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum HashAlgorithm");
+        throw new globalThis.Error("Unrecognized enum value " + object7 + " for enum HashAlgorithm");
     }
   }
   var PublicKeyDetails;
@@ -59313,8 +59508,8 @@ var require_sigstore_common = __commonJS((exports) => {
     PublicKeyDetails2[PublicKeyDetails2["ML_DSA_65"] = 21] = "ML_DSA_65";
     PublicKeyDetails2[PublicKeyDetails2["ML_DSA_87"] = 22] = "ML_DSA_87";
   })(PublicKeyDetails || (exports.PublicKeyDetails = PublicKeyDetails = {}));
-  function publicKeyDetailsFromJSON(object6) {
-    switch (object6) {
+  function publicKeyDetailsFromJSON(object7) {
+    switch (object7) {
       case 0:
       case "PUBLIC_KEY_DETAILS_UNSPECIFIED":
         return PublicKeyDetails.PUBLIC_KEY_DETAILS_UNSPECIFIED;
@@ -59388,11 +59583,11 @@ var require_sigstore_common = __commonJS((exports) => {
       case "ML_DSA_87":
         return PublicKeyDetails.ML_DSA_87;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum PublicKeyDetails");
+        throw new globalThis.Error("Unrecognized enum value " + object7 + " for enum PublicKeyDetails");
     }
   }
-  function publicKeyDetailsToJSON(object6) {
-    switch (object6) {
+  function publicKeyDetailsToJSON(object7) {
+    switch (object7) {
       case PublicKeyDetails.PUBLIC_KEY_DETAILS_UNSPECIFIED:
         return "PUBLIC_KEY_DETAILS_UNSPECIFIED";
       case PublicKeyDetails.PKCS1_RSA_PKCS1V5:
@@ -59442,7 +59637,7 @@ var require_sigstore_common = __commonJS((exports) => {
       case PublicKeyDetails.ML_DSA_87:
         return "ML_DSA_87";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum PublicKeyDetails");
+        throw new globalThis.Error("Unrecognized enum value " + object7 + " for enum PublicKeyDetails");
     }
   }
   var SubjectAlternativeNameType;
@@ -59452,8 +59647,8 @@ var require_sigstore_common = __commonJS((exports) => {
     SubjectAlternativeNameType2[SubjectAlternativeNameType2["URI"] = 2] = "URI";
     SubjectAlternativeNameType2[SubjectAlternativeNameType2["OTHER_NAME"] = 3] = "OTHER_NAME";
   })(SubjectAlternativeNameType || (exports.SubjectAlternativeNameType = SubjectAlternativeNameType = {}));
-  function subjectAlternativeNameTypeFromJSON(object6) {
-    switch (object6) {
+  function subjectAlternativeNameTypeFromJSON(object7) {
+    switch (object7) {
       case 0:
       case "SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED":
         return SubjectAlternativeNameType.SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED;
@@ -59467,11 +59662,11 @@ var require_sigstore_common = __commonJS((exports) => {
       case "OTHER_NAME":
         return SubjectAlternativeNameType.OTHER_NAME;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum SubjectAlternativeNameType");
+        throw new globalThis.Error("Unrecognized enum value " + object7 + " for enum SubjectAlternativeNameType");
     }
   }
-  function subjectAlternativeNameTypeToJSON(object6) {
-    switch (object6) {
+  function subjectAlternativeNameTypeToJSON(object7) {
+    switch (object7) {
       case SubjectAlternativeNameType.SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED:
         return "SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED";
       case SubjectAlternativeNameType.EMAIL:
@@ -59481,14 +59676,14 @@ var require_sigstore_common = __commonJS((exports) => {
       case SubjectAlternativeNameType.OTHER_NAME:
         return "OTHER_NAME";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum SubjectAlternativeNameType");
+        throw new globalThis.Error("Unrecognized enum value " + object7 + " for enum SubjectAlternativeNameType");
     }
   }
   exports.HashOutput = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        algorithm: isSet(object6.algorithm) ? hashAlgorithmFromJSON(object6.algorithm) : 0,
-        digest: isSet(object6.digest) ? Buffer.from(bytesFromBase64(object6.digest)) : Buffer.alloc(0)
+        algorithm: isSet(object7.algorithm) ? hashAlgorithmFromJSON(object7.algorithm) : 0,
+        digest: isSet(object7.digest) ? Buffer.from(bytesFromBase64(object7.digest)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -59503,10 +59698,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.MessageSignature = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        messageDigest: isSet(object6.messageDigest) ? exports.HashOutput.fromJSON(object6.messageDigest) : undefined,
-        signature: isSet(object6.signature) ? Buffer.from(bytesFromBase64(object6.signature)) : Buffer.alloc(0)
+        messageDigest: isSet(object7.messageDigest) ? exports.HashOutput.fromJSON(object7.messageDigest) : undefined,
+        signature: isSet(object7.signature) ? Buffer.from(bytesFromBase64(object7.signature)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -59521,8 +59716,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.LogId = {
-    fromJSON(object6) {
-      return { keyId: isSet(object6.keyId) ? Buffer.from(bytesFromBase64(object6.keyId)) : Buffer.alloc(0) };
+    fromJSON(object7) {
+      return { keyId: isSet(object7.keyId) ? Buffer.from(bytesFromBase64(object7.keyId)) : Buffer.alloc(0) };
     },
     toJSON(message) {
       const obj = {};
@@ -59533,9 +59728,9 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.RFC3161SignedTimestamp = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        signedTimestamp: isSet(object6.signedTimestamp) ? Buffer.from(bytesFromBase64(object6.signedTimestamp)) : Buffer.alloc(0)
+        signedTimestamp: isSet(object7.signedTimestamp) ? Buffer.from(bytesFromBase64(object7.signedTimestamp)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -59547,11 +59742,11 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.PublicKey = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        rawBytes: isSet(object6.rawBytes) ? Buffer.from(bytesFromBase64(object6.rawBytes)) : undefined,
-        keyDetails: isSet(object6.keyDetails) ? publicKeyDetailsFromJSON(object6.keyDetails) : 0,
-        validFor: isSet(object6.validFor) ? exports.TimeRange.fromJSON(object6.validFor) : undefined
+        rawBytes: isSet(object7.rawBytes) ? Buffer.from(bytesFromBase64(object7.rawBytes)) : undefined,
+        keyDetails: isSet(object7.keyDetails) ? publicKeyDetailsFromJSON(object7.keyDetails) : 0,
+        validFor: isSet(object7.validFor) ? exports.TimeRange.fromJSON(object7.validFor) : undefined
       };
     },
     toJSON(message) {
@@ -59569,8 +59764,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.PublicKeyIdentifier = {
-    fromJSON(object6) {
-      return { hint: isSet(object6.hint) ? globalThis.String(object6.hint) : "" };
+    fromJSON(object7) {
+      return { hint: isSet(object7.hint) ? globalThis.String(object7.hint) : "" };
     },
     toJSON(message) {
       const obj = {};
@@ -59581,8 +59776,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.ObjectIdentifier = {
-    fromJSON(object6) {
-      return { id: globalThis.Array.isArray(object6?.id) ? object6.id.map((e) => globalThis.Number(e)) : [] };
+    fromJSON(object7) {
+      return { id: globalThis.Array.isArray(object7?.id) ? object7.id.map((e) => globalThis.Number(e)) : [] };
     },
     toJSON(message) {
       const obj = {};
@@ -59593,10 +59788,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.ObjectIdentifierValuePair = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        oid: isSet(object6.oid) ? exports.ObjectIdentifier.fromJSON(object6.oid) : undefined,
-        value: isSet(object6.value) ? Buffer.from(bytesFromBase64(object6.value)) : Buffer.alloc(0)
+        oid: isSet(object7.oid) ? exports.ObjectIdentifier.fromJSON(object7.oid) : undefined,
+        value: isSet(object7.value) ? Buffer.from(bytesFromBase64(object7.value)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -59611,10 +59806,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.DistinguishedName = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        organization: isSet(object6.organization) ? globalThis.String(object6.organization) : "",
-        commonName: isSet(object6.commonName) ? globalThis.String(object6.commonName) : ""
+        organization: isSet(object7.organization) ? globalThis.String(object7.organization) : "",
+        commonName: isSet(object7.commonName) ? globalThis.String(object7.commonName) : ""
       };
     },
     toJSON(message) {
@@ -59629,8 +59824,8 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.X509Certificate = {
-    fromJSON(object6) {
-      return { rawBytes: isSet(object6.rawBytes) ? Buffer.from(bytesFromBase64(object6.rawBytes)) : Buffer.alloc(0) };
+    fromJSON(object7) {
+      return { rawBytes: isSet(object7.rawBytes) ? Buffer.from(bytesFromBase64(object7.rawBytes)) : Buffer.alloc(0) };
     },
     toJSON(message) {
       const obj = {};
@@ -59641,10 +59836,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.SubjectAlternativeName = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        type: isSet(object6.type) ? subjectAlternativeNameTypeFromJSON(object6.type) : 0,
-        identity: isSet(object6.regexp) ? { $case: "regexp", regexp: globalThis.String(object6.regexp) } : isSet(object6.value) ? { $case: "value", value: globalThis.String(object6.value) } : undefined
+        type: isSet(object7.type) ? subjectAlternativeNameTypeFromJSON(object7.type) : 0,
+        identity: isSet(object7.regexp) ? { $case: "regexp", regexp: globalThis.String(object7.regexp) } : isSet(object7.value) ? { $case: "value", value: globalThis.String(object7.value) } : undefined
       };
     },
     toJSON(message) {
@@ -59661,9 +59856,9 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.X509CertificateChain = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        certificates: globalThis.Array.isArray(object6?.certificates) ? object6.certificates.map((e) => exports.X509Certificate.fromJSON(e)) : []
+        certificates: globalThis.Array.isArray(object7?.certificates) ? object7.certificates.map((e) => exports.X509Certificate.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -59675,10 +59870,10 @@ var require_sigstore_common = __commonJS((exports) => {
     }
   };
   exports.TimeRange = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        start: isSet(object6.start) ? fromJsonTimestamp(object6.start) : undefined,
-        end: isSet(object6.end) ? fromJsonTimestamp(object6.end) : undefined
+        start: isSet(object7.start) ? fromJsonTimestamp(object7.start) : undefined,
+        end: isSet(object7.end) ? fromJsonTimestamp(object7.end) : undefined
       };
     },
     toJSON(message) {
@@ -59723,10 +59918,10 @@ var require_sigstore_rekor = __commonJS((exports) => {
   exports.TransparencyLogEntry = exports.InclusionPromise = exports.InclusionProof = exports.Checkpoint = exports.KindVersion = undefined;
   var sigstore_common_1 = require_sigstore_common();
   exports.KindVersion = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        kind: isSet(object6.kind) ? globalThis.String(object6.kind) : "",
-        version: isSet(object6.version) ? globalThis.String(object6.version) : ""
+        kind: isSet(object7.kind) ? globalThis.String(object7.kind) : "",
+        version: isSet(object7.version) ? globalThis.String(object7.version) : ""
       };
     },
     toJSON(message) {
@@ -59741,8 +59936,8 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.Checkpoint = {
-    fromJSON(object6) {
-      return { envelope: isSet(object6.envelope) ? globalThis.String(object6.envelope) : "" };
+    fromJSON(object7) {
+      return { envelope: isSet(object7.envelope) ? globalThis.String(object7.envelope) : "" };
     },
     toJSON(message) {
       const obj = {};
@@ -59753,13 +59948,13 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.InclusionProof = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        logIndex: isSet(object6.logIndex) ? globalThis.String(object6.logIndex) : "0",
-        rootHash: isSet(object6.rootHash) ? Buffer.from(bytesFromBase64(object6.rootHash)) : Buffer.alloc(0),
-        treeSize: isSet(object6.treeSize) ? globalThis.String(object6.treeSize) : "0",
-        hashes: globalThis.Array.isArray(object6?.hashes) ? object6.hashes.map((e) => Buffer.from(bytesFromBase64(e))) : [],
-        checkpoint: isSet(object6.checkpoint) ? exports.Checkpoint.fromJSON(object6.checkpoint) : undefined
+        logIndex: isSet(object7.logIndex) ? globalThis.String(object7.logIndex) : "0",
+        rootHash: isSet(object7.rootHash) ? Buffer.from(bytesFromBase64(object7.rootHash)) : Buffer.alloc(0),
+        treeSize: isSet(object7.treeSize) ? globalThis.String(object7.treeSize) : "0",
+        hashes: globalThis.Array.isArray(object7?.hashes) ? object7.hashes.map((e) => Buffer.from(bytesFromBase64(e))) : [],
+        checkpoint: isSet(object7.checkpoint) ? exports.Checkpoint.fromJSON(object7.checkpoint) : undefined
       };
     },
     toJSON(message) {
@@ -59783,9 +59978,9 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.InclusionPromise = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        signedEntryTimestamp: isSet(object6.signedEntryTimestamp) ? Buffer.from(bytesFromBase64(object6.signedEntryTimestamp)) : Buffer.alloc(0)
+        signedEntryTimestamp: isSet(object7.signedEntryTimestamp) ? Buffer.from(bytesFromBase64(object7.signedEntryTimestamp)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -59797,15 +59992,15 @@ var require_sigstore_rekor = __commonJS((exports) => {
     }
   };
   exports.TransparencyLogEntry = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        logIndex: isSet(object6.logIndex) ? globalThis.String(object6.logIndex) : "0",
-        logId: isSet(object6.logId) ? sigstore_common_1.LogId.fromJSON(object6.logId) : undefined,
-        kindVersion: isSet(object6.kindVersion) ? exports.KindVersion.fromJSON(object6.kindVersion) : undefined,
-        integratedTime: isSet(object6.integratedTime) ? globalThis.String(object6.integratedTime) : "0",
-        inclusionPromise: isSet(object6.inclusionPromise) ? exports.InclusionPromise.fromJSON(object6.inclusionPromise) : undefined,
-        inclusionProof: isSet(object6.inclusionProof) ? exports.InclusionProof.fromJSON(object6.inclusionProof) : undefined,
-        canonicalizedBody: isSet(object6.canonicalizedBody) ? Buffer.from(bytesFromBase64(object6.canonicalizedBody)) : Buffer.alloc(0)
+        logIndex: isSet(object7.logIndex) ? globalThis.String(object7.logIndex) : "0",
+        logId: isSet(object7.logId) ? sigstore_common_1.LogId.fromJSON(object7.logId) : undefined,
+        kindVersion: isSet(object7.kindVersion) ? exports.KindVersion.fromJSON(object7.kindVersion) : undefined,
+        integratedTime: isSet(object7.integratedTime) ? globalThis.String(object7.integratedTime) : "0",
+        inclusionPromise: isSet(object7.inclusionPromise) ? exports.InclusionPromise.fromJSON(object7.inclusionPromise) : undefined,
+        inclusionProof: isSet(object7.inclusionProof) ? exports.InclusionProof.fromJSON(object7.inclusionProof) : undefined,
+        canonicalizedBody: isSet(object7.canonicalizedBody) ? Buffer.from(bytesFromBase64(object7.canonicalizedBody)) : Buffer.alloc(0)
       };
     },
     toJSON(message) {
@@ -59853,9 +60048,9 @@ var require_sigstore_bundle = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var sigstore_rekor_1 = require_sigstore_rekor();
   exports.TimestampVerificationData = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        rfc3161Timestamps: globalThis.Array.isArray(object6?.rfc3161Timestamps) ? object6.rfc3161Timestamps.map((e) => sigstore_common_1.RFC3161SignedTimestamp.fromJSON(e)) : []
+        rfc3161Timestamps: globalThis.Array.isArray(object7?.rfc3161Timestamps) ? object7.rfc3161Timestamps.map((e) => sigstore_common_1.RFC3161SignedTimestamp.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -59867,14 +60062,14 @@ var require_sigstore_bundle = __commonJS((exports) => {
     }
   };
   exports.VerificationMaterial = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        content: isSet(object6.publicKey) ? { $case: "publicKey", publicKey: sigstore_common_1.PublicKeyIdentifier.fromJSON(object6.publicKey) } : isSet(object6.x509CertificateChain) ? {
+        content: isSet(object7.publicKey) ? { $case: "publicKey", publicKey: sigstore_common_1.PublicKeyIdentifier.fromJSON(object7.publicKey) } : isSet(object7.x509CertificateChain) ? {
           $case: "x509CertificateChain",
-          x509CertificateChain: sigstore_common_1.X509CertificateChain.fromJSON(object6.x509CertificateChain)
-        } : isSet(object6.certificate) ? { $case: "certificate", certificate: sigstore_common_1.X509Certificate.fromJSON(object6.certificate) } : undefined,
-        tlogEntries: globalThis.Array.isArray(object6?.tlogEntries) ? object6.tlogEntries.map((e) => sigstore_rekor_1.TransparencyLogEntry.fromJSON(e)) : [],
-        timestampVerificationData: isSet(object6.timestampVerificationData) ? exports.TimestampVerificationData.fromJSON(object6.timestampVerificationData) : undefined
+          x509CertificateChain: sigstore_common_1.X509CertificateChain.fromJSON(object7.x509CertificateChain)
+        } : isSet(object7.certificate) ? { $case: "certificate", certificate: sigstore_common_1.X509Certificate.fromJSON(object7.certificate) } : undefined,
+        tlogEntries: globalThis.Array.isArray(object7?.tlogEntries) ? object7.tlogEntries.map((e) => sigstore_rekor_1.TransparencyLogEntry.fromJSON(e)) : [],
+        timestampVerificationData: isSet(object7.timestampVerificationData) ? exports.TimestampVerificationData.fromJSON(object7.timestampVerificationData) : undefined
       };
     },
     toJSON(message) {
@@ -59896,11 +60091,11 @@ var require_sigstore_bundle = __commonJS((exports) => {
     }
   };
   exports.Bundle = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        mediaType: isSet(object6.mediaType) ? globalThis.String(object6.mediaType) : "",
-        verificationMaterial: isSet(object6.verificationMaterial) ? exports.VerificationMaterial.fromJSON(object6.verificationMaterial) : undefined,
-        content: isSet(object6.messageSignature) ? { $case: "messageSignature", messageSignature: sigstore_common_1.MessageSignature.fromJSON(object6.messageSignature) } : isSet(object6.dsseEnvelope) ? { $case: "dsseEnvelope", dsseEnvelope: envelope_1.Envelope.fromJSON(object6.dsseEnvelope) } : undefined
+        mediaType: isSet(object7.mediaType) ? globalThis.String(object7.mediaType) : "",
+        verificationMaterial: isSet(object7.verificationMaterial) ? exports.VerificationMaterial.fromJSON(object7.verificationMaterial) : undefined,
+        content: isSet(object7.messageSignature) ? { $case: "messageSignature", messageSignature: sigstore_common_1.MessageSignature.fromJSON(object7.messageSignature) } : isSet(object7.dsseEnvelope) ? { $case: "dsseEnvelope", dsseEnvelope: envelope_1.Envelope.fromJSON(object7.dsseEnvelope) } : undefined
       };
     },
     toJSON(message) {
@@ -59938,8 +60133,8 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     ServiceSelector2[ServiceSelector2["ANY"] = 2] = "ANY";
     ServiceSelector2[ServiceSelector2["EXACT"] = 3] = "EXACT";
   })(ServiceSelector || (exports.ServiceSelector = ServiceSelector = {}));
-  function serviceSelectorFromJSON(object6) {
-    switch (object6) {
+  function serviceSelectorFromJSON(object7) {
+    switch (object7) {
       case 0:
       case "SERVICE_SELECTOR_UNDEFINED":
         return ServiceSelector.SERVICE_SELECTOR_UNDEFINED;
@@ -59953,11 +60148,11 @@ var require_sigstore_trustroot = __commonJS((exports) => {
       case "EXACT":
         return ServiceSelector.EXACT;
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum ServiceSelector");
+        throw new globalThis.Error("Unrecognized enum value " + object7 + " for enum ServiceSelector");
     }
   }
-  function serviceSelectorToJSON(object6) {
-    switch (object6) {
+  function serviceSelectorToJSON(object7) {
+    switch (object7) {
       case ServiceSelector.SERVICE_SELECTOR_UNDEFINED:
         return "SERVICE_SELECTOR_UNDEFINED";
       case ServiceSelector.ALL:
@@ -59967,18 +60162,18 @@ var require_sigstore_trustroot = __commonJS((exports) => {
       case ServiceSelector.EXACT:
         return "EXACT";
       default:
-        throw new globalThis.Error("Unrecognized enum value " + object6 + " for enum ServiceSelector");
+        throw new globalThis.Error("Unrecognized enum value " + object7 + " for enum ServiceSelector");
     }
   }
   exports.TransparencyLogInstance = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        baseUrl: isSet(object6.baseUrl) ? globalThis.String(object6.baseUrl) : "",
-        hashAlgorithm: isSet(object6.hashAlgorithm) ? (0, sigstore_common_1.hashAlgorithmFromJSON)(object6.hashAlgorithm) : 0,
-        publicKey: isSet(object6.publicKey) ? sigstore_common_1.PublicKey.fromJSON(object6.publicKey) : undefined,
-        logId: isSet(object6.logId) ? sigstore_common_1.LogId.fromJSON(object6.logId) : undefined,
-        checkpointKeyId: isSet(object6.checkpointKeyId) ? sigstore_common_1.LogId.fromJSON(object6.checkpointKeyId) : undefined,
-        operator: isSet(object6.operator) ? globalThis.String(object6.operator) : ""
+        baseUrl: isSet(object7.baseUrl) ? globalThis.String(object7.baseUrl) : "",
+        hashAlgorithm: isSet(object7.hashAlgorithm) ? (0, sigstore_common_1.hashAlgorithmFromJSON)(object7.hashAlgorithm) : 0,
+        publicKey: isSet(object7.publicKey) ? sigstore_common_1.PublicKey.fromJSON(object7.publicKey) : undefined,
+        logId: isSet(object7.logId) ? sigstore_common_1.LogId.fromJSON(object7.logId) : undefined,
+        checkpointKeyId: isSet(object7.checkpointKeyId) ? sigstore_common_1.LogId.fromJSON(object7.checkpointKeyId) : undefined,
+        operator: isSet(object7.operator) ? globalThis.String(object7.operator) : ""
       };
     },
     toJSON(message) {
@@ -60005,13 +60200,13 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.CertificateAuthority = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        subject: isSet(object6.subject) ? sigstore_common_1.DistinguishedName.fromJSON(object6.subject) : undefined,
-        uri: isSet(object6.uri) ? globalThis.String(object6.uri) : "",
-        certChain: isSet(object6.certChain) ? sigstore_common_1.X509CertificateChain.fromJSON(object6.certChain) : undefined,
-        validFor: isSet(object6.validFor) ? sigstore_common_1.TimeRange.fromJSON(object6.validFor) : undefined,
-        operator: isSet(object6.operator) ? globalThis.String(object6.operator) : ""
+        subject: isSet(object7.subject) ? sigstore_common_1.DistinguishedName.fromJSON(object7.subject) : undefined,
+        uri: isSet(object7.uri) ? globalThis.String(object7.uri) : "",
+        certChain: isSet(object7.certChain) ? sigstore_common_1.X509CertificateChain.fromJSON(object7.certChain) : undefined,
+        validFor: isSet(object7.validFor) ? sigstore_common_1.TimeRange.fromJSON(object7.validFor) : undefined,
+        operator: isSet(object7.operator) ? globalThis.String(object7.operator) : ""
       };
     },
     toJSON(message) {
@@ -60035,13 +60230,13 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.TrustedRoot = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        mediaType: isSet(object6.mediaType) ? globalThis.String(object6.mediaType) : "",
-        tlogs: globalThis.Array.isArray(object6?.tlogs) ? object6.tlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
-        certificateAuthorities: globalThis.Array.isArray(object6?.certificateAuthorities) ? object6.certificateAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : [],
-        ctlogs: globalThis.Array.isArray(object6?.ctlogs) ? object6.ctlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
-        timestampAuthorities: globalThis.Array.isArray(object6?.timestampAuthorities) ? object6.timestampAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : []
+        mediaType: isSet(object7.mediaType) ? globalThis.String(object7.mediaType) : "",
+        tlogs: globalThis.Array.isArray(object7?.tlogs) ? object7.tlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
+        certificateAuthorities: globalThis.Array.isArray(object7?.certificateAuthorities) ? object7.certificateAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : [],
+        ctlogs: globalThis.Array.isArray(object7?.ctlogs) ? object7.ctlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
+        timestampAuthorities: globalThis.Array.isArray(object7?.timestampAuthorities) ? object7.timestampAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -60065,15 +60260,15 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.SigningConfig = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        mediaType: isSet(object6.mediaType) ? globalThis.String(object6.mediaType) : "",
-        caUrls: globalThis.Array.isArray(object6?.caUrls) ? object6.caUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        oidcUrls: globalThis.Array.isArray(object6?.oidcUrls) ? object6.oidcUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        rekorTlogUrls: globalThis.Array.isArray(object6?.rekorTlogUrls) ? object6.rekorTlogUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        rekorTlogConfig: isSet(object6.rekorTlogConfig) ? exports.ServiceConfiguration.fromJSON(object6.rekorTlogConfig) : undefined,
-        tsaUrls: globalThis.Array.isArray(object6?.tsaUrls) ? object6.tsaUrls.map((e) => exports.Service.fromJSON(e)) : [],
-        tsaConfig: isSet(object6.tsaConfig) ? exports.ServiceConfiguration.fromJSON(object6.tsaConfig) : undefined
+        mediaType: isSet(object7.mediaType) ? globalThis.String(object7.mediaType) : "",
+        caUrls: globalThis.Array.isArray(object7?.caUrls) ? object7.caUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        oidcUrls: globalThis.Array.isArray(object7?.oidcUrls) ? object7.oidcUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        rekorTlogUrls: globalThis.Array.isArray(object7?.rekorTlogUrls) ? object7.rekorTlogUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        rekorTlogConfig: isSet(object7.rekorTlogConfig) ? exports.ServiceConfiguration.fromJSON(object7.rekorTlogConfig) : undefined,
+        tsaUrls: globalThis.Array.isArray(object7?.tsaUrls) ? object7.tsaUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        tsaConfig: isSet(object7.tsaConfig) ? exports.ServiceConfiguration.fromJSON(object7.tsaConfig) : undefined
       };
     },
     toJSON(message) {
@@ -60103,12 +60298,12 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.Service = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        url: isSet(object6.url) ? globalThis.String(object6.url) : "",
-        majorApiVersion: isSet(object6.majorApiVersion) ? globalThis.Number(object6.majorApiVersion) : 0,
-        validFor: isSet(object6.validFor) ? sigstore_common_1.TimeRange.fromJSON(object6.validFor) : undefined,
-        operator: isSet(object6.operator) ? globalThis.String(object6.operator) : ""
+        url: isSet(object7.url) ? globalThis.String(object7.url) : "",
+        majorApiVersion: isSet(object7.majorApiVersion) ? globalThis.Number(object7.majorApiVersion) : 0,
+        validFor: isSet(object7.validFor) ? sigstore_common_1.TimeRange.fromJSON(object7.validFor) : undefined,
+        operator: isSet(object7.operator) ? globalThis.String(object7.operator) : ""
       };
     },
     toJSON(message) {
@@ -60129,10 +60324,10 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.ServiceConfiguration = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        selector: isSet(object6.selector) ? serviceSelectorFromJSON(object6.selector) : 0,
-        count: isSet(object6.count) ? globalThis.Number(object6.count) : 0
+        selector: isSet(object7.selector) ? serviceSelectorFromJSON(object7.selector) : 0,
+        count: isSet(object7.count) ? globalThis.Number(object7.count) : 0
       };
     },
     toJSON(message) {
@@ -60147,11 +60342,11 @@ var require_sigstore_trustroot = __commonJS((exports) => {
     }
   };
   exports.ClientTrustConfig = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        mediaType: isSet(object6.mediaType) ? globalThis.String(object6.mediaType) : "",
-        trustedRoot: isSet(object6.trustedRoot) ? exports.TrustedRoot.fromJSON(object6.trustedRoot) : undefined,
-        signingConfig: isSet(object6.signingConfig) ? exports.SigningConfig.fromJSON(object6.signingConfig) : undefined
+        mediaType: isSet(object7.mediaType) ? globalThis.String(object7.mediaType) : "",
+        trustedRoot: isSet(object7.trustedRoot) ? exports.TrustedRoot.fromJSON(object7.trustedRoot) : undefined,
+        signingConfig: isSet(object7.signingConfig) ? exports.SigningConfig.fromJSON(object7.signingConfig) : undefined
       };
     },
     toJSON(message) {
@@ -60181,11 +60376,11 @@ var require_sigstore_verification = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var sigstore_trustroot_1 = require_sigstore_trustroot();
   exports.CertificateIdentity = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        issuer: isSet(object6.issuer) ? globalThis.String(object6.issuer) : "",
-        san: isSet(object6.san) ? sigstore_common_1.SubjectAlternativeName.fromJSON(object6.san) : undefined,
-        oids: globalThis.Array.isArray(object6?.oids) ? object6.oids.map((e) => sigstore_common_1.ObjectIdentifierValuePair.fromJSON(e)) : []
+        issuer: isSet(object7.issuer) ? globalThis.String(object7.issuer) : "",
+        san: isSet(object7.san) ? sigstore_common_1.SubjectAlternativeName.fromJSON(object7.san) : undefined,
+        oids: globalThis.Array.isArray(object7?.oids) ? object7.oids.map((e) => sigstore_common_1.ObjectIdentifierValuePair.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -60203,9 +60398,9 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.CertificateIdentities = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        identities: globalThis.Array.isArray(object6?.identities) ? object6.identities.map((e) => exports.CertificateIdentity.fromJSON(e)) : []
+        identities: globalThis.Array.isArray(object7?.identities) ? object7.identities.map((e) => exports.CertificateIdentity.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -60217,9 +60412,9 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.PublicKeyIdentities = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        publicKeys: globalThis.Array.isArray(object6?.publicKeys) ? object6.publicKeys.map((e) => sigstore_common_1.PublicKey.fromJSON(e)) : []
+        publicKeys: globalThis.Array.isArray(object7?.publicKeys) ? object7.publicKeys.map((e) => sigstore_common_1.PublicKey.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -60231,17 +60426,17 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        signers: isSet(object6.certificateIdentities) ? {
+        signers: isSet(object7.certificateIdentities) ? {
           $case: "certificateIdentities",
-          certificateIdentities: exports.CertificateIdentities.fromJSON(object6.certificateIdentities)
-        } : isSet(object6.publicKeys) ? { $case: "publicKeys", publicKeys: exports.PublicKeyIdentities.fromJSON(object6.publicKeys) } : undefined,
-        tlogOptions: isSet(object6.tlogOptions) ? exports.ArtifactVerificationOptions_TlogOptions.fromJSON(object6.tlogOptions) : undefined,
-        ctlogOptions: isSet(object6.ctlogOptions) ? exports.ArtifactVerificationOptions_CtlogOptions.fromJSON(object6.ctlogOptions) : undefined,
-        tsaOptions: isSet(object6.tsaOptions) ? exports.ArtifactVerificationOptions_TimestampAuthorityOptions.fromJSON(object6.tsaOptions) : undefined,
-        integratedTsOptions: isSet(object6.integratedTsOptions) ? exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions.fromJSON(object6.integratedTsOptions) : undefined,
-        observerOptions: isSet(object6.observerOptions) ? exports.ArtifactVerificationOptions_ObserverTimestampOptions.fromJSON(object6.observerOptions) : undefined
+          certificateIdentities: exports.CertificateIdentities.fromJSON(object7.certificateIdentities)
+        } : isSet(object7.publicKeys) ? { $case: "publicKeys", publicKeys: exports.PublicKeyIdentities.fromJSON(object7.publicKeys) } : undefined,
+        tlogOptions: isSet(object7.tlogOptions) ? exports.ArtifactVerificationOptions_TlogOptions.fromJSON(object7.tlogOptions) : undefined,
+        ctlogOptions: isSet(object7.ctlogOptions) ? exports.ArtifactVerificationOptions_CtlogOptions.fromJSON(object7.ctlogOptions) : undefined,
+        tsaOptions: isSet(object7.tsaOptions) ? exports.ArtifactVerificationOptions_TimestampAuthorityOptions.fromJSON(object7.tsaOptions) : undefined,
+        integratedTsOptions: isSet(object7.integratedTsOptions) ? exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions.fromJSON(object7.integratedTsOptions) : undefined,
+        observerOptions: isSet(object7.observerOptions) ? exports.ArtifactVerificationOptions_ObserverTimestampOptions.fromJSON(object7.observerOptions) : undefined
       };
     },
     toJSON(message) {
@@ -60270,11 +60465,11 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_TlogOptions = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        threshold: isSet(object6.threshold) ? globalThis.Number(object6.threshold) : 0,
-        performOnlineVerification: isSet(object6.performOnlineVerification) ? globalThis.Boolean(object6.performOnlineVerification) : false,
-        disable: isSet(object6.disable) ? globalThis.Boolean(object6.disable) : false
+        threshold: isSet(object7.threshold) ? globalThis.Number(object7.threshold) : 0,
+        performOnlineVerification: isSet(object7.performOnlineVerification) ? globalThis.Boolean(object7.performOnlineVerification) : false,
+        disable: isSet(object7.disable) ? globalThis.Boolean(object7.disable) : false
       };
     },
     toJSON(message) {
@@ -60292,10 +60487,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_CtlogOptions = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        threshold: isSet(object6.threshold) ? globalThis.Number(object6.threshold) : 0,
-        disable: isSet(object6.disable) ? globalThis.Boolean(object6.disable) : false
+        threshold: isSet(object7.threshold) ? globalThis.Number(object7.threshold) : 0,
+        disable: isSet(object7.disable) ? globalThis.Boolean(object7.disable) : false
       };
     },
     toJSON(message) {
@@ -60310,10 +60505,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_TimestampAuthorityOptions = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        threshold: isSet(object6.threshold) ? globalThis.Number(object6.threshold) : 0,
-        disable: isSet(object6.disable) ? globalThis.Boolean(object6.disable) : false
+        threshold: isSet(object7.threshold) ? globalThis.Number(object7.threshold) : 0,
+        disable: isSet(object7.disable) ? globalThis.Boolean(object7.disable) : false
       };
     },
     toJSON(message) {
@@ -60328,10 +60523,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        threshold: isSet(object6.threshold) ? globalThis.Number(object6.threshold) : 0,
-        disable: isSet(object6.disable) ? globalThis.Boolean(object6.disable) : false
+        threshold: isSet(object7.threshold) ? globalThis.Number(object7.threshold) : 0,
+        disable: isSet(object7.disable) ? globalThis.Boolean(object7.disable) : false
       };
     },
     toJSON(message) {
@@ -60346,10 +60541,10 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.ArtifactVerificationOptions_ObserverTimestampOptions = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        threshold: isSet(object6.threshold) ? globalThis.Number(object6.threshold) : 0,
-        disable: isSet(object6.disable) ? globalThis.Boolean(object6.disable) : false
+        threshold: isSet(object7.threshold) ? globalThis.Number(object7.threshold) : 0,
+        disable: isSet(object7.disable) ? globalThis.Boolean(object7.disable) : false
       };
     },
     toJSON(message) {
@@ -60364,9 +60559,9 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.Artifact = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        data: isSet(object6.artifactUri) ? { $case: "artifactUri", artifactUri: globalThis.String(object6.artifactUri) } : isSet(object6.artifact) ? { $case: "artifact", artifact: Buffer.from(bytesFromBase64(object6.artifact)) } : isSet(object6.artifactDigest) ? { $case: "artifactDigest", artifactDigest: sigstore_common_1.HashOutput.fromJSON(object6.artifactDigest) } : undefined
+        data: isSet(object7.artifactUri) ? { $case: "artifactUri", artifactUri: globalThis.String(object7.artifactUri) } : isSet(object7.artifact) ? { $case: "artifact", artifact: Buffer.from(bytesFromBase64(object7.artifact)) } : isSet(object7.artifactDigest) ? { $case: "artifactDigest", artifactDigest: sigstore_common_1.HashOutput.fromJSON(object7.artifactDigest) } : undefined
       };
     },
     toJSON(message) {
@@ -60382,12 +60577,12 @@ var require_sigstore_verification = __commonJS((exports) => {
     }
   };
   exports.Input = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        artifactTrustRoot: isSet(object6.artifactTrustRoot) ? sigstore_trustroot_1.TrustedRoot.fromJSON(object6.artifactTrustRoot) : undefined,
-        artifactVerificationOptions: isSet(object6.artifactVerificationOptions) ? exports.ArtifactVerificationOptions.fromJSON(object6.artifactVerificationOptions) : undefined,
-        bundle: isSet(object6.bundle) ? sigstore_bundle_1.Bundle.fromJSON(object6.bundle) : undefined,
-        artifact: isSet(object6.artifact) ? exports.Artifact.fromJSON(object6.artifact) : undefined
+        artifactTrustRoot: isSet(object7.artifactTrustRoot) ? sigstore_trustroot_1.TrustedRoot.fromJSON(object7.artifactTrustRoot) : undefined,
+        artifactVerificationOptions: isSet(object7.artifactVerificationOptions) ? exports.ArtifactVerificationOptions.fromJSON(object7.artifactVerificationOptions) : undefined,
+        bundle: isSet(object7.bundle) ? sigstore_bundle_1.Bundle.fromJSON(object7.bundle) : undefined,
+        artifact: isSet(object7.artifact) ? exports.Artifact.fromJSON(object7.artifact) : undefined
       };
     },
     toJSON(message) {
@@ -61380,14 +61575,14 @@ var require_encoding = __commonJS((exports) => {
 var require_json = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.canonicalize = canonicalize;
-  function canonicalize(object6) {
+  function canonicalize(object7) {
     let buffer = "";
-    if (object6 === null || typeof object6 !== "object" || object6.toJSON != null) {
-      buffer += JSON.stringify(object6);
-    } else if (Array.isArray(object6)) {
+    if (object7 === null || typeof object7 !== "object" || object7.toJSON != null) {
+      buffer += JSON.stringify(object7);
+    } else if (Array.isArray(object7)) {
       buffer += "[";
       let first = true;
-      object6.forEach((element) => {
+      object7.forEach((element) => {
         if (!first) {
           buffer += ",";
         }
@@ -61398,14 +61593,14 @@ var require_json = __commonJS((exports) => {
     } else {
       buffer += "{";
       let first = true;
-      Object.keys(object6).sort().forEach((property) => {
+      Object.keys(object7).sort().forEach((property) => {
         if (!first) {
           buffer += ",";
         }
         first = false;
         buffer += JSON.stringify(property);
         buffer += ":";
-        buffer += canonicalize(object6[property]);
+        buffer += canonicalize(object7[property]);
       });
       buffer += "}";
     }
@@ -62969,8 +63164,8 @@ var require_verifier = __commonJS((exports) => {
   exports.Signature = exports.Verifier = exports.PublicKey = undefined;
   var sigstore_common_1 = require_sigstore_common();
   exports.PublicKey = {
-    fromJSON(object6) {
-      return { rawBytes: isSet(object6.rawBytes) ? Buffer.from(bytesFromBase64(object6.rawBytes)) : Buffer.alloc(0) };
+    fromJSON(object7) {
+      return { rawBytes: isSet(object7.rawBytes) ? Buffer.from(bytesFromBase64(object7.rawBytes)) : Buffer.alloc(0) };
     },
     toJSON(message) {
       const obj = {};
@@ -62981,10 +63176,10 @@ var require_verifier = __commonJS((exports) => {
     }
   };
   exports.Verifier = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        verifier: isSet(object6.publicKey) ? { $case: "publicKey", publicKey: exports.PublicKey.fromJSON(object6.publicKey) } : isSet(object6.x509Certificate) ? { $case: "x509Certificate", x509Certificate: sigstore_common_1.X509Certificate.fromJSON(object6.x509Certificate) } : undefined,
-        keyDetails: isSet(object6.keyDetails) ? (0, sigstore_common_1.publicKeyDetailsFromJSON)(object6.keyDetails) : 0
+        verifier: isSet(object7.publicKey) ? { $case: "publicKey", publicKey: exports.PublicKey.fromJSON(object7.publicKey) } : isSet(object7.x509Certificate) ? { $case: "x509Certificate", x509Certificate: sigstore_common_1.X509Certificate.fromJSON(object7.x509Certificate) } : undefined,
+        keyDetails: isSet(object7.keyDetails) ? (0, sigstore_common_1.publicKeyDetailsFromJSON)(object7.keyDetails) : 0
       };
     },
     toJSON(message) {
@@ -63001,10 +63196,10 @@ var require_verifier = __commonJS((exports) => {
     }
   };
   exports.Signature = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        content: isSet(object6.content) ? Buffer.from(bytesFromBase64(object6.content)) : Buffer.alloc(0),
-        verifier: isSet(object6.verifier) ? exports.Verifier.fromJSON(object6.verifier) : undefined
+        content: isSet(object7.content) ? Buffer.from(bytesFromBase64(object7.content)) : Buffer.alloc(0),
+        verifier: isSet(object7.verifier) ? exports.Verifier.fromJSON(object7.verifier) : undefined
       };
     },
     toJSON(message) {
@@ -63037,10 +63232,10 @@ var require_dsse3 = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var verifier_1 = require_verifier();
   exports.DSSERequestV002 = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        envelope: isSet(object6.envelope) ? envelope_1.Envelope.fromJSON(object6.envelope) : undefined,
-        verifiers: globalThis.Array.isArray(object6?.verifiers) ? object6.verifiers.map((e) => verifier_1.Verifier.fromJSON(e)) : []
+        envelope: isSet(object7.envelope) ? envelope_1.Envelope.fromJSON(object7.envelope) : undefined,
+        verifiers: globalThis.Array.isArray(object7?.verifiers) ? object7.verifiers.map((e) => verifier_1.Verifier.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -63055,10 +63250,10 @@ var require_dsse3 = __commonJS((exports) => {
     }
   };
   exports.DSSELogEntryV002 = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        payloadHash: isSet(object6.payloadHash) ? sigstore_common_1.HashOutput.fromJSON(object6.payloadHash) : undefined,
-        signatures: globalThis.Array.isArray(object6?.signatures) ? object6.signatures.map((e) => verifier_1.Signature.fromJSON(e)) : []
+        payloadHash: isSet(object7.payloadHash) ? sigstore_common_1.HashOutput.fromJSON(object7.payloadHash) : undefined,
+        signatures: globalThis.Array.isArray(object7?.signatures) ? object7.signatures.map((e) => verifier_1.Signature.fromJSON(e)) : []
       };
     },
     toJSON(message) {
@@ -63084,10 +63279,10 @@ var require_hashedrekord = __commonJS((exports) => {
   var sigstore_common_1 = require_sigstore_common();
   var verifier_1 = require_verifier();
   exports.HashedRekordRequestV002 = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        digest: isSet(object6.digest) ? Buffer.from(bytesFromBase64(object6.digest)) : Buffer.alloc(0),
-        signature: isSet(object6.signature) ? verifier_1.Signature.fromJSON(object6.signature) : undefined
+        digest: isSet(object7.digest) ? Buffer.from(bytesFromBase64(object7.digest)) : Buffer.alloc(0),
+        signature: isSet(object7.signature) ? verifier_1.Signature.fromJSON(object7.signature) : undefined
       };
     },
     toJSON(message) {
@@ -63102,10 +63297,10 @@ var require_hashedrekord = __commonJS((exports) => {
     }
   };
   exports.HashedRekordLogEntryV002 = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        data: isSet(object6.data) ? sigstore_common_1.HashOutput.fromJSON(object6.data) : undefined,
-        signature: isSet(object6.signature) ? verifier_1.Signature.fromJSON(object6.signature) : undefined
+        data: isSet(object7.data) ? sigstore_common_1.HashOutput.fromJSON(object7.data) : undefined,
+        signature: isSet(object7.signature) ? verifier_1.Signature.fromJSON(object7.signature) : undefined
       };
     },
     toJSON(message) {
@@ -63137,11 +63332,11 @@ var require_entry = __commonJS((exports) => {
   var dsse_1 = require_dsse3();
   var hashedrekord_1 = require_hashedrekord();
   exports.Entry = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        kind: isSet(object6.kind) ? globalThis.String(object6.kind) : "",
-        apiVersion: isSet(object6.apiVersion) ? globalThis.String(object6.apiVersion) : "",
-        spec: isSet(object6.spec) ? exports.Spec.fromJSON(object6.spec) : undefined
+        kind: isSet(object7.kind) ? globalThis.String(object7.kind) : "",
+        apiVersion: isSet(object7.apiVersion) ? globalThis.String(object7.apiVersion) : "",
+        spec: isSet(object7.spec) ? exports.Spec.fromJSON(object7.spec) : undefined
       };
     },
     toJSON(message) {
@@ -63159,9 +63354,9 @@ var require_entry = __commonJS((exports) => {
     }
   };
   exports.Spec = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        spec: isSet(object6.hashedRekordV002) ? { $case: "hashedRekordV002", hashedRekordV002: hashedrekord_1.HashedRekordLogEntryV002.fromJSON(object6.hashedRekordV002) } : isSet(object6.dsseV002) ? { $case: "dsseV002", dsseV002: dsse_1.DSSELogEntryV002.fromJSON(object6.dsseV002) } : undefined
+        spec: isSet(object7.hashedRekordV002) ? { $case: "hashedRekordV002", hashedRekordV002: hashedrekord_1.HashedRekordLogEntryV002.fromJSON(object7.hashedRekordV002) } : isSet(object7.dsseV002) ? { $case: "dsseV002", dsseV002: dsse_1.DSSELogEntryV002.fromJSON(object7.dsseV002) } : undefined
       };
     },
     toJSON(message) {
@@ -63175,12 +63370,12 @@ var require_entry = __commonJS((exports) => {
     }
   };
   exports.CreateEntryRequest = {
-    fromJSON(object6) {
+    fromJSON(object7) {
       return {
-        spec: isSet(object6.hashedRekordRequestV002) ? {
+        spec: isSet(object7.hashedRekordRequestV002) ? {
           $case: "hashedRekordRequestV002",
-          hashedRekordRequestV002: hashedrekord_1.HashedRekordRequestV002.fromJSON(object6.hashedRekordRequestV002)
-        } : isSet(object6.dsseRequestV002) ? { $case: "dsseRequestV002", dsseRequestV002: dsse_1.DSSERequestV002.fromJSON(object6.dsseRequestV002) } : undefined
+          hashedRekordRequestV002: hashedrekord_1.HashedRekordRequestV002.fromJSON(object7.hashedRekordRequestV002)
+        } : isSet(object7.dsseRequestV002) ? { $case: "dsseRequestV002", dsseRequestV002: dsse_1.DSSERequestV002.fromJSON(object7.dsseRequestV002) } : undefined
       };
     },
     toJSON(message) {
@@ -63970,10 +64165,10 @@ var init_util2 = __esm(() => {
         return obj[e];
       });
     };
-    util4.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object6) => {
+    util4.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object7) => {
       const keys = [];
-      for (const key in object6) {
-        if (Object.prototype.hasOwnProperty.call(object6, key)) {
+      for (const key in object7) {
+        if (Object.prototype.hasOwnProperty.call(object7, key)) {
           keys.push(key);
         }
       }
@@ -67911,9 +68106,9 @@ function floatSafeRemainder3(val, step) {
   const stepInt = Number.parseInt(step.toFixed(decCount).replace(".", ""));
   return valInt % stepInt / 10 ** decCount;
 }
-function defineLazy(object6, key, getter) {
+function defineLazy(object7, key, getter) {
   let value = undefined;
-  Object.defineProperty(object6, key, {
+  Object.defineProperty(object7, key, {
     get() {
       if (value === EVALUATING) {
         return;
@@ -67925,7 +68120,7 @@ function defineLazy(object6, key, getter) {
       return value;
     },
     set(v) {
-      Object.defineProperty(object6, key, {
+      Object.defineProperty(object7, key, {
         value: v
       });
     },
@@ -72022,7 +72217,7 @@ var init_parse2 = __esm(() => {
 });
 
 // ../../node_modules/@modelcontextprotocol/sdk/node_modules/zod/v4/mini/schemas.js
-function object6(shape, params) {
+function object7(shape, params) {
   const def = {
     type: "object",
     shape: shape ?? {},
@@ -72104,11 +72299,11 @@ function isZ4Schema(s) {
 function objectFromShape(shape) {
   const values = Object.values(shape);
   if (values.length === 0)
-    return object6({});
+    return object7({});
   const allV4 = values.every(isZ4Schema);
   const allV3 = values.every((s) => !isZ4Schema(s));
   if (allV4)
-    return object6(shape);
+    return object7(shape);
   if (allV3)
     return objectType2(shape);
   throw new Error("Mixed Zod versions detected in object shape.");
@@ -72379,7 +72574,7 @@ function never2(params) {
 function array2(element, params) {
   return _array(ZodArray3, element, params);
 }
-function object7(shape, params) {
+function object8(shape, params) {
   const def = {
     type: "object",
     shape: shape ?? {},
@@ -73061,30 +73256,30 @@ var init_types4 = __esm(() => {
     ttl: union2([number3(), _null3()]).optional(),
     pollInterval: number3().optional()
   });
-  TaskMetadataSchema = object7({
+  TaskMetadataSchema = object8({
     ttl: number3().optional()
   });
-  RelatedTaskMetadataSchema = object7({
+  RelatedTaskMetadataSchema = object8({
     taskId: string3()
   });
   RequestMetaSchema2 = looseObject({
     progressToken: ProgressTokenSchema2.optional(),
     [RELATED_TASK_META_KEY]: RelatedTaskMetadataSchema.optional()
   });
-  BaseRequestParamsSchema2 = object7({
+  BaseRequestParamsSchema2 = object8({
     _meta: RequestMetaSchema2.optional()
   });
   TaskAugmentedRequestParamsSchema = BaseRequestParamsSchema2.extend({
     task: TaskMetadataSchema.optional()
   });
-  RequestSchema2 = object7({
+  RequestSchema2 = object8({
     method: string3(),
     params: BaseRequestParamsSchema2.loose().optional()
   });
-  NotificationsParamsSchema2 = object7({
+  NotificationsParamsSchema2 = object8({
     _meta: RequestMetaSchema2.optional()
   });
-  NotificationSchema2 = object7({
+  NotificationSchema2 = object8({
     method: string3(),
     params: NotificationsParamsSchema2.loose().optional()
   });
@@ -73092,16 +73287,16 @@ var init_types4 = __esm(() => {
     _meta: RequestMetaSchema2.optional()
   });
   RequestIdSchema2 = union2([string3(), number3().int()]);
-  JSONRPCRequestSchema2 = object7({
+  JSONRPCRequestSchema2 = object8({
     jsonrpc: literal2(JSONRPC_VERSION2),
     id: RequestIdSchema2,
     ...RequestSchema2.shape
   }).strict();
-  JSONRPCNotificationSchema2 = object7({
+  JSONRPCNotificationSchema2 = object8({
     jsonrpc: literal2(JSONRPC_VERSION2),
     ...NotificationSchema2.shape
   }).strict();
-  JSONRPCResultResponseSchema = object7({
+  JSONRPCResultResponseSchema = object8({
     jsonrpc: literal2(JSONRPC_VERSION2),
     id: RequestIdSchema2,
     result: ResultSchema2
@@ -73116,10 +73311,10 @@ var init_types4 = __esm(() => {
     ErrorCode3[ErrorCode3["InternalError"] = -32603] = "InternalError";
     ErrorCode3[ErrorCode3["UrlElicitationRequired"] = -32042] = "UrlElicitationRequired";
   })(ErrorCode2 || (ErrorCode2 = {}));
-  JSONRPCErrorResponseSchema = object7({
+  JSONRPCErrorResponseSchema = object8({
     jsonrpc: literal2(JSONRPC_VERSION2),
     id: RequestIdSchema2.optional(),
-    error: object7({
+    error: object8({
       code: number3().int(),
       message: string3(),
       data: unknown2().optional()
@@ -73141,16 +73336,16 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/cancelled"),
     params: CancelledNotificationParamsSchema2
   });
-  IconSchema2 = object7({
+  IconSchema2 = object8({
     src: string3(),
     mimeType: string3().optional(),
     sizes: array2(string3()).optional(),
     theme: _enum(["light", "dark"]).optional()
   });
-  IconsSchema2 = object7({
+  IconsSchema2 = object8({
     icons: array2(IconSchema2).optional()
   });
-  BaseMetadataSchema2 = object7({
+  BaseMetadataSchema2 = object8({
     name: string3(),
     title: string3().optional()
   });
@@ -73161,7 +73356,7 @@ var init_types4 = __esm(() => {
     websiteUrl: string3().optional(),
     description: string3().optional()
   });
-  FormElicitationCapabilitySchema = intersection2(object7({
+  FormElicitationCapabilitySchema = intersection2(object8({
     applyDefaults: boolean3().optional()
   }), record6(string3(), unknown2()));
   ElicitationCapabilitySchema = preprocess((value) => {
@@ -73171,7 +73366,7 @@ var init_types4 = __esm(() => {
       }
     }
     return value;
-  }, intersection2(object7({
+  }, intersection2(object8({
     form: FormElicitationCapabilitySchema.optional(),
     url: AssertObjectSchema2.optional()
   }), record6(string3(), unknown2()).optional()));
@@ -73196,14 +73391,14 @@ var init_types4 = __esm(() => {
       }).optional()
     }).optional()
   });
-  ClientCapabilitiesSchema2 = object7({
+  ClientCapabilitiesSchema2 = object8({
     experimental: record6(string3(), AssertObjectSchema2).optional(),
-    sampling: object7({
+    sampling: object8({
       context: AssertObjectSchema2.optional(),
       tools: AssertObjectSchema2.optional()
     }).optional(),
     elicitation: ElicitationCapabilitySchema.optional(),
-    roots: object7({
+    roots: object8({
       listChanged: boolean3().optional()
     }).optional(),
     tasks: ClientTasksCapabilitySchema.optional()
@@ -73217,18 +73412,18 @@ var init_types4 = __esm(() => {
     method: literal2("initialize"),
     params: InitializeRequestParamsSchema2
   });
-  ServerCapabilitiesSchema2 = object7({
+  ServerCapabilitiesSchema2 = object8({
     experimental: record6(string3(), AssertObjectSchema2).optional(),
     logging: AssertObjectSchema2.optional(),
     completions: AssertObjectSchema2.optional(),
-    prompts: object7({
+    prompts: object8({
       listChanged: boolean3().optional()
     }).optional(),
-    resources: object7({
+    resources: object8({
       subscribe: boolean3().optional(),
       listChanged: boolean3().optional()
     }).optional(),
-    tools: object7({
+    tools: object8({
       listChanged: boolean3().optional()
     }).optional(),
     tasks: ServerTasksCapabilitySchema.optional()
@@ -73247,12 +73442,12 @@ var init_types4 = __esm(() => {
     method: literal2("ping"),
     params: BaseRequestParamsSchema2.optional()
   });
-  ProgressSchema2 = object7({
+  ProgressSchema2 = object8({
     progress: number3(),
     total: optional2(number3()),
     message: optional2(string3())
   });
-  ProgressNotificationParamsSchema2 = object7({
+  ProgressNotificationParamsSchema2 = object8({
     ...NotificationsParamsSchema2.shape,
     ...ProgressSchema2.shape,
     progressToken: ProgressTokenSchema2
@@ -73271,7 +73466,7 @@ var init_types4 = __esm(() => {
     nextCursor: CursorSchema2.optional()
   });
   TaskStatusSchema = _enum(["working", "input_required", "completed", "failed", "cancelled"]);
-  TaskSchema = object7({
+  TaskSchema = object8({
     taskId: string3(),
     status: TaskStatusSchema,
     ttl: union2([number3(), _null3()]),
@@ -73315,7 +73510,7 @@ var init_types4 = __esm(() => {
     })
   });
   CancelTaskResultSchema = ResultSchema2.merge(TaskSchema);
-  ResourceContentsSchema2 = object7({
+  ResourceContentsSchema2 = object8({
     uri: string3(),
     mimeType: optional2(string3()),
     _meta: record6(string3(), unknown2()).optional()
@@ -73335,12 +73530,12 @@ var init_types4 = __esm(() => {
     blob: Base64Schema2
   });
   RoleSchema = _enum(["user", "assistant"]);
-  AnnotationsSchema = object7({
+  AnnotationsSchema = object8({
     audience: array2(RoleSchema).optional(),
     priority: number3().min(0).max(1).optional(),
     lastModified: exports_iso2.datetime({ offset: true }).optional()
   });
-  ResourceSchema2 = object7({
+  ResourceSchema2 = object8({
     ...BaseMetadataSchema2.shape,
     ...IconsSchema2.shape,
     uri: string3(),
@@ -73349,7 +73544,7 @@ var init_types4 = __esm(() => {
     annotations: AnnotationsSchema.optional(),
     _meta: optional2(looseObject({}))
   });
-  ResourceTemplateSchema2 = object7({
+  ResourceTemplateSchema2 = object8({
     ...BaseMetadataSchema2.shape,
     ...IconsSchema2.shape,
     uriTemplate: string3(),
@@ -73402,12 +73597,12 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/resources/updated"),
     params: ResourceUpdatedNotificationParamsSchema2
   });
-  PromptArgumentSchema2 = object7({
+  PromptArgumentSchema2 = object8({
     name: string3(),
     description: optional2(string3()),
     required: optional2(boolean3())
   });
-  PromptSchema2 = object7({
+  PromptSchema2 = object8({
     ...BaseMetadataSchema2.shape,
     ...IconsSchema2.shape,
     description: optional2(string3()),
@@ -73428,34 +73623,34 @@ var init_types4 = __esm(() => {
     method: literal2("prompts/get"),
     params: GetPromptRequestParamsSchema2
   });
-  TextContentSchema2 = object7({
+  TextContentSchema2 = object8({
     type: literal2("text"),
     text: string3(),
     annotations: AnnotationsSchema.optional(),
     _meta: record6(string3(), unknown2()).optional()
   });
-  ImageContentSchema2 = object7({
+  ImageContentSchema2 = object8({
     type: literal2("image"),
     data: Base64Schema2,
     mimeType: string3(),
     annotations: AnnotationsSchema.optional(),
     _meta: record6(string3(), unknown2()).optional()
   });
-  AudioContentSchema2 = object7({
+  AudioContentSchema2 = object8({
     type: literal2("audio"),
     data: Base64Schema2,
     mimeType: string3(),
     annotations: AnnotationsSchema.optional(),
     _meta: record6(string3(), unknown2()).optional()
   });
-  ToolUseContentSchema = object7({
+  ToolUseContentSchema = object8({
     type: literal2("tool_use"),
     name: string3(),
     id: string3(),
     input: record6(string3(), unknown2()),
     _meta: record6(string3(), unknown2()).optional()
   });
-  EmbeddedResourceSchema2 = object7({
+  EmbeddedResourceSchema2 = object8({
     type: literal2("resource"),
     resource: union2([TextResourceContentsSchema2, BlobResourceContentsSchema2]),
     annotations: AnnotationsSchema.optional(),
@@ -73471,7 +73666,7 @@ var init_types4 = __esm(() => {
     ResourceLinkSchema2,
     EmbeddedResourceSchema2
   ]);
-  PromptMessageSchema2 = object7({
+  PromptMessageSchema2 = object8({
     role: RoleSchema,
     content: ContentBlockSchema2
   });
@@ -73483,26 +73678,26 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/prompts/list_changed"),
     params: NotificationsParamsSchema2.optional()
   });
-  ToolAnnotationsSchema2 = object7({
+  ToolAnnotationsSchema2 = object8({
     title: string3().optional(),
     readOnlyHint: boolean3().optional(),
     destructiveHint: boolean3().optional(),
     idempotentHint: boolean3().optional(),
     openWorldHint: boolean3().optional()
   });
-  ToolExecutionSchema = object7({
+  ToolExecutionSchema = object8({
     taskSupport: _enum(["required", "optional", "forbidden"]).optional()
   });
-  ToolSchema2 = object7({
+  ToolSchema2 = object8({
     ...BaseMetadataSchema2.shape,
     ...IconsSchema2.shape,
     description: string3().optional(),
-    inputSchema: object7({
+    inputSchema: object8({
       type: literal2("object"),
       properties: record6(string3(), AssertObjectSchema2).optional(),
       required: array2(string3()).optional()
     }).catchall(unknown2()),
-    outputSchema: object7({
+    outputSchema: object8({
       type: literal2("object"),
       properties: record6(string3(), AssertObjectSchema2).optional(),
       required: array2(string3()).optional()
@@ -73537,7 +73732,7 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/tools/list_changed"),
     params: NotificationsParamsSchema2.optional()
   });
-  ListChangedOptionsBaseSchema = object7({
+  ListChangedOptionsBaseSchema = object8({
     autoRefresh: boolean3().default(true),
     debounceMs: number3().int().nonnegative().default(300)
   });
@@ -73558,23 +73753,23 @@ var init_types4 = __esm(() => {
     method: literal2("notifications/message"),
     params: LoggingMessageNotificationParamsSchema2
   });
-  ModelHintSchema2 = object7({
+  ModelHintSchema2 = object8({
     name: string3().optional()
   });
-  ModelPreferencesSchema2 = object7({
+  ModelPreferencesSchema2 = object8({
     hints: array2(ModelHintSchema2).optional(),
     costPriority: number3().min(0).max(1).optional(),
     speedPriority: number3().min(0).max(1).optional(),
     intelligencePriority: number3().min(0).max(1).optional()
   });
-  ToolChoiceSchema = object7({
+  ToolChoiceSchema = object8({
     mode: _enum(["auto", "required", "none"]).optional()
   });
-  ToolResultContentSchema = object7({
+  ToolResultContentSchema = object8({
     type: literal2("tool_result"),
     toolUseId: string3().describe("The unique identifier for the corresponding tool call."),
     content: array2(ContentBlockSchema2).default([]),
-    structuredContent: object7({}).loose().optional(),
+    structuredContent: object8({}).loose().optional(),
     isError: boolean3().optional(),
     _meta: record6(string3(), unknown2()).optional()
   });
@@ -73586,7 +73781,7 @@ var init_types4 = __esm(() => {
     ToolUseContentSchema,
     ToolResultContentSchema
   ]);
-  SamplingMessageSchema2 = object7({
+  SamplingMessageSchema2 = object8({
     role: RoleSchema,
     content: union2([SamplingMessageContentBlockSchema, array2(SamplingMessageContentBlockSchema)]),
     _meta: record6(string3(), unknown2()).optional()
@@ -73619,13 +73814,13 @@ var init_types4 = __esm(() => {
     role: RoleSchema,
     content: union2([SamplingMessageContentBlockSchema, array2(SamplingMessageContentBlockSchema)])
   });
-  BooleanSchemaSchema2 = object7({
+  BooleanSchemaSchema2 = object8({
     type: literal2("boolean"),
     title: string3().optional(),
     description: string3().optional(),
     default: boolean3().optional()
   });
-  StringSchemaSchema2 = object7({
+  StringSchemaSchema2 = object8({
     type: literal2("string"),
     title: string3().optional(),
     description: string3().optional(),
@@ -73634,7 +73829,7 @@ var init_types4 = __esm(() => {
     format: _enum(["email", "uri", "date", "date-time"]).optional(),
     default: string3().optional()
   });
-  NumberSchemaSchema2 = object7({
+  NumberSchemaSchema2 = object8({
     type: _enum(["number", "integer"]),
     title: string3().optional(),
     description: string3().optional(),
@@ -73642,24 +73837,24 @@ var init_types4 = __esm(() => {
     maximum: number3().optional(),
     default: number3().optional()
   });
-  UntitledSingleSelectEnumSchemaSchema2 = object7({
+  UntitledSingleSelectEnumSchemaSchema2 = object8({
     type: literal2("string"),
     title: string3().optional(),
     description: string3().optional(),
     enum: array2(string3()),
     default: string3().optional()
   });
-  TitledSingleSelectEnumSchemaSchema2 = object7({
+  TitledSingleSelectEnumSchemaSchema2 = object8({
     type: literal2("string"),
     title: string3().optional(),
     description: string3().optional(),
-    oneOf: array2(object7({
+    oneOf: array2(object8({
       const: string3(),
       title: string3()
     })),
     default: string3().optional()
   });
-  LegacyTitledEnumSchemaSchema2 = object7({
+  LegacyTitledEnumSchemaSchema2 = object8({
     type: literal2("string"),
     title: string3().optional(),
     description: string3().optional(),
@@ -73668,26 +73863,26 @@ var init_types4 = __esm(() => {
     default: string3().optional()
   });
   SingleSelectEnumSchemaSchema2 = union2([UntitledSingleSelectEnumSchemaSchema2, TitledSingleSelectEnumSchemaSchema2]);
-  UntitledMultiSelectEnumSchemaSchema2 = object7({
+  UntitledMultiSelectEnumSchemaSchema2 = object8({
     type: literal2("array"),
     title: string3().optional(),
     description: string3().optional(),
     minItems: number3().optional(),
     maxItems: number3().optional(),
-    items: object7({
+    items: object8({
       type: literal2("string"),
       enum: array2(string3())
     }),
     default: array2(string3()).optional()
   });
-  TitledMultiSelectEnumSchemaSchema2 = object7({
+  TitledMultiSelectEnumSchemaSchema2 = object8({
     type: literal2("array"),
     title: string3().optional(),
     description: string3().optional(),
     minItems: number3().optional(),
     maxItems: number3().optional(),
-    items: object7({
-      anyOf: array2(object7({
+    items: object8({
+      anyOf: array2(object8({
         const: string3(),
         title: string3()
       }))
@@ -73700,7 +73895,7 @@ var init_types4 = __esm(() => {
   ElicitRequestFormParamsSchema = TaskAugmentedRequestParamsSchema.extend({
     mode: literal2("form").optional(),
     message: string3(),
-    requestedSchema: object7({
+    requestedSchema: object8({
       type: literal2("object"),
       properties: record6(string3(), PrimitiveSchemaDefinitionSchema2),
       required: array2(string3()).optional()
@@ -73728,21 +73923,21 @@ var init_types4 = __esm(() => {
     action: _enum(["accept", "decline", "cancel"]),
     content: preprocess((val) => val === null ? undefined : val, record6(string3(), union2([string3(), number3(), boolean3(), array2(string3())])).optional())
   });
-  ResourceTemplateReferenceSchema2 = object7({
+  ResourceTemplateReferenceSchema2 = object8({
     type: literal2("ref/resource"),
     uri: string3()
   });
-  PromptReferenceSchema2 = object7({
+  PromptReferenceSchema2 = object8({
     type: literal2("ref/prompt"),
     name: string3()
   });
   CompleteRequestParamsSchema2 = BaseRequestParamsSchema2.extend({
     ref: union2([PromptReferenceSchema2, ResourceTemplateReferenceSchema2]),
-    argument: object7({
+    argument: object8({
       name: string3(),
       value: string3()
     }),
-    context: object7({
+    context: object8({
       arguments: record6(string3(), string3()).optional()
     }).optional()
   });
@@ -73757,7 +73952,7 @@ var init_types4 = __esm(() => {
       hasMore: optional2(boolean3())
     })
   });
-  RootSchema2 = object7({
+  RootSchema2 = object8({
     uri: string3().startsWith("file://"),
     name: string3().optional(),
     _meta: record6(string3(), unknown2()).optional()
@@ -76590,12 +76785,12 @@ function checkEvm2(evm, path) {
     needObject2(launch, "contractEnv", `${path}.launch`);
   }
 }
-function validateChainEntries2(raw) {
-  if (!Array.isArray(raw))
+function validateChainEntries2(raw2) {
+  if (!Array.isArray(raw2))
     fail4("registry", "must be an array");
   const slugs = new Set;
   const chainIds = new Set;
-  raw.forEach((item, i) => {
+  raw2.forEach((item, i) => {
     const path = `entry[${i}]`;
     if (!isObject3(item))
       fail4(path, "must be an object");
@@ -76641,7 +76836,7 @@ function validateChainEntries2(raw) {
       fail4(`${path}.family`, `"${String(item.family)}" is not a known family`);
     }
   });
-  return raw;
+  return raw2;
 }
 var BUILT_IN2 = validateChainEntries2(registry_default2);
 var entries2 = BUILT_IN2;
@@ -77644,6 +77839,9 @@ var LAUNCH_DEFINITION2 = {
   },
   quoteSelection: {
     flag: "--quote",
+    key: "quote",
+    checkKey: "check",
+    checkHelp: "Read launch paths and quote admission without uploading, building, signing or sending. No name, image or launch id is needed. Pass check or dryRun, never both. Admission is separate from executionEnabled; a successful check does not enable a new quote.",
     value: "<symbol|address>",
     help: "Select a quote by featured symbol or token address. With --check, show admission checks, curve figures, graduation raise and issuer disclosure. New quotes require server launch support; --quote-asset remains supported for fixed pairs.",
     fixedPairs: [
@@ -78717,8 +78915,8 @@ function launchRulesRequest(flags, launch) {
   if (problem)
     throw new Error(problem);
   const symbol = launch.quote.toUpperCase();
-  const whole = (raw2) => `${shortAmount(raw2.toString(), launch.decimals)} ${symbol}`;
-  const raw = (flag, value) => {
+  const whole = (raw3) => `${shortAmount(raw3.toString(), launch.decimals)} ${symbol}`;
+  const raw2 = (flag, value) => {
     if (value === undefined)
       return;
     let amount;
@@ -78735,7 +78933,7 @@ function launchRulesRequest(flags, launch) {
   const delay = openDelay(flags);
   if (delay > 0)
     body.openDelaySecs = delay;
-  const cap = raw("--max-buy-per-wallet", flags["--max-buy-per-wallet"]);
+  const cap = raw2("--max-buy-per-wallet", flags["--max-buy-per-wallet"]);
   if (cap !== undefined) {
     body.maxBuyPerWalletRaw = cap.toString();
     body.capWindowSecs = parseDuration(flags["--cap-window"] ?? "");
@@ -78744,7 +78942,7 @@ function launchRulesRequest(flags, launch) {
     body.allowlist = launch.allowlist;
     body.allowlistWindowSecs = parseDuration(flags["--allowlist-window"] ?? "");
   }
-  const devBuyMax = raw("--dev-buy-max", flags["--dev-buy-max"]);
+  const devBuyMax = raw2("--dev-buy-max", flags["--dev-buy-max"]);
   if (devBuyMax !== undefined) {
     if (devBuyMax < launch.buyRaw)
       throw new Error(`--dev-buy-max (${whole(devBuyMax)}) is below this launch's own dev buy, --buy (${whole(launch.buyRaw)}).`);
@@ -78756,8 +78954,8 @@ function launchRulesRequest(flags, launch) {
     throw new Error(`This launch's dev buy (--buy ${whole(launch.buyRaw)}) is over --max-buy-per-wallet (${whole(cap)}); with no open delay the dev buy is held to the cap.`);
   return Object.keys(body).length ? body : undefined;
 }
-function shortAmount(raw, decimals) {
-  const full = decimalAmount(raw, decimals);
+function shortAmount(raw2, decimals) {
+  const full = decimalAmount(raw2, decimals);
   return full.includes(".") ? full.replace(/0+$/, "").replace(/\.$/, "") : full;
 }
 var summarySchema = exports_external.object({
@@ -80840,8 +81038,8 @@ class AgentProfileError extends Error {
     this.name = "AgentProfileError";
   }
 }
-function parseAgentProfiles(raw) {
-  const profiles = raw?.profiles;
+function parseAgentProfiles(raw2) {
+  const profiles = raw2?.profiles;
   if (!Array.isArray(profiles))
     throw new AgentProfileError("AGENT_PROFILES_INVALID", "profiles must be a list.");
   const out = [];
@@ -81696,8 +81894,8 @@ function groupAddress2(address) {
 function confirmTyped(typed) {
   return typeof typed === "string" && typed.trim().toLowerCase() === "confirm";
 }
-function rawToDecimal(raw, decimals) {
-  const text = raw.toString().padStart(decimals + 1, "0");
+function rawToDecimal(raw2, decimals) {
+  const text = raw2.toString().padStart(decimals + 1, "0");
   const whole = text.slice(0, text.length - decimals);
   const fraction = text.slice(text.length - decimals).replace(/0+$/, "");
   return fraction ? `${whole}.${fraction}` : whole;
@@ -81709,8 +81907,8 @@ function decimalToRaw3(value, decimals) {
   const [whole = "0", fraction = ""] = text.split(".");
   if (fraction.length > decimals)
     return;
-  const raw = BigInt(whole + fraction.padEnd(decimals, "0"));
-  return raw > 0n ? raw : undefined;
+  const raw2 = BigInt(whole + fraction.padEnd(decimals, "0"));
+  return raw2 > 0n ? raw2 : undefined;
 }
 async function parseTransferInput(input, decimalsFor2) {
   const source2 = input.source;
@@ -81751,11 +81949,11 @@ async function parseTransferInput(input, decimalsFor2) {
     const decimals = "symbol" in asset ? BASE_ASSETS[asset.symbol].decimals : await decimalsFor2(chain2, asset);
     if (decimals === undefined)
       throw refused("ASSET_UNREADABLE", "The asset's decimals could not be read; nothing was prepared.");
-    const raw = decimalToRaw3(rawAmount2.decimal, decimals);
-    if (raw === undefined) {
+    const raw2 = decimalToRaw3(rawAmount2.decimal, decimals);
+    if (raw2 === undefined) {
       throw refused("INVALID_AMOUNT", `The amount is a positive decimal with at most ${decimals} places, or max.`);
     }
-    amount = { raw: raw.toString() };
+    amount = { raw: raw2.toString() };
   } else {
     throw refused("INVALID_AMOUNT", "The amount is a positive decimal, or max.");
   }
@@ -82910,10 +83108,10 @@ function upsertTape(rows, row2) {
 }
 var SOLANA = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var EVM = /^0x[0-9a-fA-F]{40}$/;
-function parseStreamRow(raw) {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+function parseStreamRow(raw2) {
+  if (raw2 === null || typeof raw2 !== "object" || Array.isArray(raw2))
     return;
-  const r = raw;
+  const r = raw2;
   if (typeof r.haccId !== "number" || !Number.isFinite(r.haccId) || r.haccId <= 0)
     return;
   if (typeof r.pattern !== "string" || r.pattern.length === 0 || r.pattern.length > 64)
@@ -83223,8 +83421,8 @@ function watchlistFrom(body) {
   if (!Array.isArray(wallets2))
     return;
   const out = [];
-  for (const raw of wallets2) {
-    const row2 = raw;
+  for (const raw2 of wallets2) {
+    const row2 = raw2;
     if ((row2?.chain === "solana" || row2?.chain === "hood") && typeof row2.address === "string" && row2.address)
       out.push({ chain: row2.chain, address: row2.address });
   }
@@ -83797,8 +83995,8 @@ function parseEvents(body) {
   if (!b || !Array.isArray(b.events) || typeof b.next !== "number" || typeof b.status !== "string")
     return;
   const events = [];
-  for (const raw of b.events) {
-    const e = asRecord(raw);
+  for (const raw2 of b.events) {
+    const e = asRecord(raw2);
     if (typeof e?.seq !== "number" || typeof e.kind !== "string")
       continue;
     events.push({
@@ -83815,8 +84013,8 @@ function parseHistory(body) {
   if (!b || !Array.isArray(b.items))
     return;
   const items = [];
-  for (const raw of b.items) {
-    const item = asRecord(raw);
+  for (const raw2 of b.items) {
+    const item = asRecord(raw2);
     if (typeof item?.id !== "string" || typeof item.text !== "string")
       continue;
     if (item.role !== "user" && item.role !== "assistant")
@@ -85024,10 +85222,10 @@ async function sealCoreSlot(vault, header, contents, createdAt) {
     wipe(plain);
   }
 }
-function parseCoreSlotFile(raw) {
+function parseCoreSlotFile(raw2) {
   let value;
   try {
-    value = JSON.parse(raw);
+    value = JSON.parse(raw2);
   } catch {
     throw new CoreSlotError("CORE_SLOT_INVALID", "The core slot file is not valid JSON.");
   }
@@ -85038,15 +85236,15 @@ function parseCoreSlotFile(raw) {
   return file;
 }
 async function readCoreSlotHeader(paths) {
-  let raw;
+  let raw2;
   try {
-    raw = await readFile15(paths.slot, "utf8");
+    raw2 = await readFile15(paths.slot, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return;
     throw error;
   }
-  return parseCoreSlotFile(raw);
+  return parseCoreSlotFile(raw2);
 }
 async function openCoreSlot(input) {
   const file = await readCoreSlotHeader(input.paths);
@@ -85462,10 +85660,10 @@ async function tokenAccountFrozen(rpc, address) {
     return { exists: false, frozen: false };
   return { exists: true, frozen: account.data[TOKEN_ACCOUNT_STATE_OFFSET2] === TOKEN_ACCOUNT_STATE_FROZEN2 };
 }
-function rawToDecimal2(raw, decimals) {
+function rawToDecimal2(raw2, decimals) {
   if (decimals === 0)
-    return raw.toString();
-  const digits = raw.toString().padStart(decimals + 1, "0");
+    return raw2.toString();
+  const digits = raw2.toString().padStart(decimals + 1, "0");
   return `${digits.slice(0, -decimals)}.${digits.slice(-decimals)}`.replace(/\.?0+$/, "");
 }
 async function planSolMax(rpc, from, to) {
@@ -85478,9 +85676,9 @@ async function planSolMax(rpc, from, to) {
   const balance = account?.lamports ?? 0n;
   const reserve = 0n;
   const blockhash = await rpc.getLatestBlockhash();
-  let raw = balance;
+  let raw2 = balance;
   for (let attempt = 0;attempt < 3; attempt++) {
-    const instructions = [systemTransfer(decodePubkey(from), decodePubkey(to), raw)];
+    const instructions = [systemTransfer(decodePubkey(from), decodePubkey(to), raw2)];
     const message = compileLegacyMessage({ feePayer: decodePubkey(from), recentBlockhash: blockhash, instructions });
     const fee = await rpc.getFeeForMessage(toBase64(message));
     if (fee === null) {
@@ -85490,12 +85688,12 @@ async function planSolMax(rpc, from, to) {
     if (available <= 0n) {
       throw new VaultError("TRANSFER_INSUFFICIENT_FUNDS", `${from} holds ${balance} lamports, not above the ${fee} lamport fee; max leaves nothing to send. Nothing was signed or sent.`, { suggestion: "Fund the key with SOL first." });
     }
-    if (raw === available) {
-      const amount = rawToDecimal2(raw, 9);
+    if (raw2 === available) {
+      const amount = rawToDecimal2(raw2, 9);
       return {
         asset: "SOL",
         amount,
-        amountRaw: raw,
+        amountRaw: raw2,
         decimals: 9,
         from,
         to,
@@ -85504,13 +85702,13 @@ async function planSolMax(rpc, from, to) {
         displayLines: [
           `fee payer   ${from}`,
           `destination ${to}`,
-          `amount      ${amount} SOL = ${raw} lamports (max)`,
+          `amount      ${amount} SOL = ${raw2} lamports (max)`,
           "mint        (native SOL)",
           `source reserve ${reserve} lamports (source emptied)`
         ]
       };
     }
-    raw = available;
+    raw2 = available;
   }
   throw new VaultError("VAULT_UNREADABLE", "The SOL max fee quote kept changing. Nothing was signed or sent; retry when the RPC is stable.");
 }
@@ -85522,22 +85720,22 @@ async function planTransfer(input) {
   if (asset === "SOL") {
     if (max)
       return planSolMax(input.rpc, input.from, input.to);
-    const raw2 = decimalToRaw4(input.amount, 9);
-    if (raw2 === null || raw2 === 0n) {
+    const raw3 = decimalToRaw4(input.amount, 9);
+    if (raw3 === null || raw3 === 0n) {
       throw new VaultError("VAULT_INDEX_INVALID", "--amount must be max or a positive SOL decimal with at most 9 places.");
     }
     return {
       asset: "SOL",
       amount: input.amount,
-      amountRaw: raw2,
+      amountRaw: raw3,
       decimals: 9,
       from: input.from,
       to: input.to,
-      instructions: [systemTransfer(fromKey, toKey, raw2)],
+      instructions: [systemTransfer(fromKey, toKey, raw3)],
       displayLines: [
         `fee payer   ${input.from}`,
         `destination ${input.to}`,
-        `amount      ${input.amount} SOL = ${raw2} lamports`,
+        `amount      ${input.amount} SOL = ${raw3} lamports`,
         `mint        (native SOL)`
       ]
     };
@@ -85556,11 +85754,11 @@ async function planTransfer(input) {
   }
   const decimals = profile.decimals;
   const source2 = ataFor(profile, fromKey);
-  const raw = max ? tokenAccountAmount((await rpc.getAccountInfo(encodePubkey(source2)))?.data ?? new Uint8Array) : decimalToRaw4(input.amount, decimals);
-  if (max && raw === 0n) {
+  const raw2 = max ? tokenAccountAmount((await rpc.getAccountInfo(encodePubkey(source2)))?.data ?? new Uint8Array) : decimalToRaw4(input.amount, decimals);
+  if (max && raw2 === 0n) {
     throw new VaultError("TRANSFER_INSUFFICIENT_FUNDS", `${input.from} holds no ${input.asset} in its source token account; max leaves nothing to send. Nothing was signed or sent.`);
   }
-  if (raw === null || raw === 0n) {
+  if (raw2 === null || raw2 === 0n) {
     throw new VaultError("VAULT_INDEX_INVALID", `--amount must be max or a positive decimal with at most ${decimals} decimal places.`);
   }
   const mint = decodePubkey(mintAddress);
@@ -85578,7 +85776,7 @@ async function planTransfer(input) {
   }
   const sourceState = await tokenAccountFrozen(rpc, encodePubkey(source2));
   const riskLines = profile.risks.map((risk) => `warning     ${risk.message}`);
-  const hook = await resolveTransferHookAccounts(rpc, { profile, source: source2, destination, owner: fromKey, amount: raw });
+  const hook = await resolveTransferHookAccounts(rpc, { profile, source: source2, destination, owner: fromKey, amount: raw2 });
   const hookLines = [];
   if (profile.transferHookProgram) {
     hookLines.push(hook.ok ? `hook        ${profile.transferHookProgram}: ${hook.accounts.length} extra account(s) resolved` : `hook        ${profile.transferHookProgram}: extra accounts could NOT be resolved (${hook.reason}); the send is expected to fail as TOKEN_2022_EXTRA_ACCOUNTS_MISSING`);
@@ -85586,7 +85784,7 @@ async function planTransfer(input) {
   const feeLines = [];
   if (profile.newerTransferFee || profile.olderTransferFee) {
     const epoch2 = await rpc.getEpoch();
-    const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, raw, epoch2);
+    const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, raw2, epoch2);
     feeLines.push(`post-fee    ${postFeeAmountRaw} raw arrives (${feeRaw} raw withheld by the mint at epoch ${epoch2})`);
   }
   instructions.push(tokenTransferChecked({
@@ -85594,15 +85792,15 @@ async function planTransfer(input) {
     mint,
     destination,
     owner: fromKey,
-    amount: raw,
+    amount: raw2,
     decimals,
     tokenProgram,
     extraAccounts: hook.ok ? hook.accounts : []
   }));
   return {
     asset: asset === "USDC" ? "USDC" : mintAddress,
-    amount: max ? rawToDecimal2(raw, decimals) : input.amount,
-    amountRaw: raw,
+    amount: max ? rawToDecimal2(raw2, decimals) : input.amount,
+    amountRaw: raw2,
     decimals,
     mint: mintAddress,
     from: input.from,
@@ -85618,7 +85816,7 @@ async function planTransfer(input) {
     displayLines: [
       `fee payer   ${input.from}`,
       `destination ${input.to}`,
-      `amount      ${max ? rawToDecimal2(raw, decimals) : input.amount} (${raw} raw, ${decimals} dp)${max ? " (max)" : ""}`,
+      `amount      ${max ? rawToDecimal2(raw2, decimals) : input.amount} (${raw2} raw, ${decimals} dp)${max ? " (max)" : ""}`,
       `mint        ${mintAddress}`,
       `program     ${profile.tokenProgram}${profile.token2022 ? " (Token-2022)" : ""}`,
       ...accountCreationLines,
@@ -85807,18 +86005,18 @@ function createTransferChain(chainDeps) {
         rpc: solanaRpc
       }));
       const fee = await deps.solana.read(() => quoteTransferFee(solanaRpc, draft.from, draft.instructions)) ?? FALLBACK_FEE_LAMPORTS2;
-      const raw2 = balance - fee;
-      if (raw2 <= 0n)
+      const raw3 = balance - fee;
+      if (raw3 <= 0n)
         throw refused("TRANSFER_INSUFFICIENT_FUNDS", `${params.source.address} holds no SOL above the fee; max leaves nothing to send.`);
-      return { raw: raw2, decimals: 9 };
+      return { raw: raw3, decimals: 9 };
     }
     const profile = await deps.solana.read(() => readMintProfile(solanaRpc, asset === "USDC" ? USDC_MINT2 : asset));
     const source2 = encodePubkey(ataFor(profile, decodePubkey(params.source.address)));
     const account = await deps.solana.read(() => solanaRpc.getAccountInfo(source2));
-    const raw = account === null ? 0n : tokenAccountAmount2(account.data);
-    if (raw === 0n)
+    const raw2 = account === null ? 0n : tokenAccountAmount2(account.data);
+    if (raw2 === 0n)
       throw refused("TRANSFER_INSUFFICIENT_FUNDS", `${params.source.address} holds none of this token; there is nothing to send.`);
-    return { raw, decimals: profile.decimals };
+    return { raw: raw2, decimals: profile.decimals };
   }
   async function solanaDecimals(asset) {
     const name = solanaAsset2(asset);
@@ -85827,11 +86025,11 @@ function createTransferChain(chainDeps) {
     return (await deps.solana.read(() => readMintProfile(solanaRpc, name === "USDC" ? USDC_MINT2 : name))).decimals;
   }
   async function solanaPlan(params) {
-    const { raw, decimals } = "max" in params.amount ? await solanaMax(params) : { raw: BigInt(params.amount.raw), decimals: await solanaDecimals(params.asset) };
+    const { raw: raw2, decimals } = "max" in params.amount ? await solanaMax(params) : { raw: BigInt(params.amount.raw), decimals: await solanaDecimals(params.asset) };
     return deps.solana.read(() => planTransfer({
       from: params.source.address,
       to: params.to,
-      amount: rawToDecimal(raw, decimals),
+      amount: rawToDecimal(raw2, decimals),
       asset: solanaAsset2(params.asset),
       rpc: solanaRpc
     }));
@@ -86272,8 +86470,8 @@ async function prepare(params, call2, deps) {
   }
   const label = assetLabel(parsed.asset);
   const max = "max" in parsed.amount;
-  const raw = max ? preview?.maxRaw ?? "" : parsed.amount.raw;
-  const decimal4 = max ? "max" : rawToDecimal(BigInt(raw), decimals);
+  const raw2 = max ? preview?.maxRaw ?? "" : parsed.amount.raw;
+  const decimal4 = max ? "max" : rawToDecimal(BigInt(raw2), decimals);
   const display = {
     sourceKind: parsed.source.kind,
     source: parsed.source.address,
@@ -86286,7 +86484,7 @@ async function prepare(params, call2, deps) {
     asset: { label, contract: assetContract(parsed.asset) },
     amount: {
       decimal: decimal4,
-      raw: max ? "max" : raw,
+      raw: max ? "max" : raw2,
       ...max ? { max: true } : {},
       ...max && preview?.maxRaw ? { balanceAtPreview: rawToDecimal(BigInt(preview.maxRaw), decimals) } : {}
     },
@@ -86555,13 +86753,13 @@ ${USAGE5}`, json);
     redactor.add(tokens.viewToken);
     const vaultPath = defaultVaultPath(deps.env, deps.homedir());
     const requireVault = async () => {
-      const raw = await readVaultRaw(vaultPath);
-      if (raw === null)
+      const raw2 = await readVaultRaw(vaultPath);
+      if (raw2 === null)
         throw refused("VAULT_REQUIRED", "Trading from the TUI needs a vault on this machine. Run candle vault init.");
-      return raw;
+      return raw2;
     };
-    const unlockWithSecurityKey = async (raw, pin, reason) => {
-      const file = parseVaultFile(raw);
+    const unlockWithSecurityKey = async (raw2, pin, reason) => {
+      const file = parseVaultFile(raw2);
       const envelope = file.envelopes.find(isCtap2Envelope);
       if (envelope === undefined)
         throw new FactorUnavailableError("no security key is enrolled in this vault.");
@@ -86574,7 +86772,7 @@ ${USAGE5}`, json);
         });
         const prfOutput = await assertPrf(sessionDeps, session, envelope, file.vaultId, reason);
         try {
-          return await unlockVault(vaultPath, raw, { factor: "passkey-prf", envelopeId: envelope.id, prfOutput });
+          return await unlockVault(vaultPath, raw2, { factor: "passkey-prf", envelopeId: envelope.id, prfOutput });
         } finally {
           wipe(prfOutput);
         }
@@ -86609,14 +86807,14 @@ ${USAGE5}`, json);
       now: deps.now,
       slotExists: async () => (await Promise.resolve().then(() => (init_ownership(), exports_ownership))).slotExists(paths),
       async unlockVault(factor, reason) {
-        const raw = await requireVault();
+        const raw2 = await requireVault();
         if (factor.type === "security-key") {
-          return openVaultOf(await unlockWithSecurityKey(raw, factor.pin, reason ?? "unlock the vault"));
+          return openVaultOf(await unlockWithSecurityKey(raw2, factor.pin, reason ?? "unlock the vault"));
         }
         if (factor.type !== "passphrase")
           throw new FactorUnavailableError(CORE_HELPER_REASON);
         try {
-          return openVaultOf(await unlockWithPassphrase(vaultPath, raw, factor.value));
+          return openVaultOf(await unlockWithPassphrase(vaultPath, raw2, factor.value));
         } catch (error) {
           if (error instanceof VaultError && error.code === "VAULT_UNLOCK_FAILED")
             throw new FactorRejectedError;
@@ -86624,10 +86822,10 @@ ${USAGE5}`, json);
         }
       },
       async listFactors() {
-        const raw = await readVaultRaw(vaultPath);
-        if (raw === null)
+        const raw2 = await readVaultRaw(vaultPath);
+        if (raw2 === null)
           return [{ type: "passphrase", usable: true }];
-        return factorOptions(parseVaultFile(raw).envelopes, await currentPlatformFacts(deps));
+        return factorOptions(parseVaultFile(raw2).envelopes, await currentPlatformFacts(deps));
       },
       openSlot: async (vault) => {
         const contents = await openCoreSlot({ paths, vault, profile, environment, purpose: "trading" });
@@ -87712,7 +87910,7 @@ async function readTargetSigner(ctx, deviceToken, keyPrefix) {
   const callingPrefix = apiKey !== undefined ? apiKeyPrefix(apiKey) : undefined;
   return { ok: true, keySigner: { ...active, crossKey: callingPrefix !== keyPrefix } };
 }
-async function preflightToKey(ctx, raw, opts) {
+async function preflightToKey(ctx, raw2, opts) {
   const { deps, json } = ctx;
   const refuse3 = (failure3) => {
     writeLocalFailure(deps, failure3, json);
@@ -87730,7 +87928,7 @@ async function preflightToKey(ctx, raw, opts) {
     });
   }
   const keys = listing.body?.keys ?? [];
-  const resolved = await resolveTargetKey(ctx, deviceToken, raw, { keys });
+  const resolved = await resolveTargetKey(ctx, deviceToken, raw2, { keys });
   if (!resolved.ok)
     return { ok: false, exit: resolved.code };
   const keyPrefix = resolved.keyPrefix;
@@ -87800,10 +87998,10 @@ async function readSelectedScopeRoom(ctx, keyPrefix) {
     return { ok: true, held: served.rows, max: served.max, heldLabels };
   return { ok: true, held: wallets2.length, max: SELECTED_SCOPE_LIMIT, heldLabels };
 }
-function servedScopeLimit(raw) {
-  if (typeof raw !== "object" || raw === null)
+function servedScopeLimit(raw2) {
+  if (typeof raw2 !== "object" || raw2 === null)
     return null;
-  const { max, rows } = raw;
+  const { max, rows } = raw2;
   if (typeof max !== "number" || !Number.isInteger(max) || max < 0)
     return null;
   if (typeof rows !== "number" || !Number.isInteger(rows) || rows < 0)
@@ -91944,10 +92142,10 @@ function parsePath(path) {
     throw new VaultError("VAULT_INDEX_INVALID", `Not a derivation path: ${path}`);
   return parts.slice(1).map((part) => {
     const hardened = part.endsWith("'") || part.endsWith("h");
-    const raw = hardened ? part.slice(0, -1) : part;
-    if (!/^\d+$/.test(raw))
+    const raw2 = hardened ? part.slice(0, -1) : part;
+    if (!/^\d+$/.test(raw2))
       throw new VaultError("VAULT_INDEX_INVALID", `Not a derivation path element: ${part}`);
-    const index = Number(raw);
+    const index = Number(raw2);
     if (!hardened) {
       throw new VaultError("VAULT_INDEX_INVALID", `SLIP-0010 Ed25519 has no non-hardened children; ${path} asks for one.`);
     }
@@ -92378,8 +92576,8 @@ async function vaultNewKey(args, ctx) {
     return usage2(ctx, batch.error);
   const batchRequested = parsed.values["--count"] !== undefined || labelsFile !== undefined;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     const vault = hold(opened.vault);
@@ -92535,11 +92733,11 @@ function nextAllocatableIndex(counter, exposed) {
   return index;
 }
 async function verifyWrittenFromDisk(vault, address, keyId, chain2 = "solana") {
-  const raw = await readVaultRaw(vault.path);
-  if (raw === null) {
+  const raw2 = await readVaultRaw(vault.path);
+  if (raw2 === null) {
     throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${vault.path} could not be read back after the write.`);
   }
-  const onDisk = { ...vault, raw, file: parseVaultFile(raw) };
+  const onDisk = { ...vault, raw: raw2, file: parseVaultFile(raw2) };
   const secret = await decryptKey(onDisk, keyId);
   try {
     if (!sameAddress4(chain2, addressOfSecret(chain2, secret), address)) {
@@ -92550,10 +92748,10 @@ async function verifyWrittenFromDisk(vault, address, keyId, chain2 = "solana") {
   }
 }
 async function verifyWritten(path, address, keyId, reopen, _ctx, chain2 = "solana") {
-  const raw = await readVaultRaw(path);
-  if (raw === null)
+  const raw2 = await readVaultRaw(path);
+  if (raw2 === null)
     throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${path} could not be read back after the write.`);
-  const reopened = await reopen(path, raw);
+  const reopened = await reopen(path, raw2);
   try {
     const secret = await decryptKey(reopened, keyId);
     try {
@@ -92598,8 +92796,8 @@ async function externalNew(args, ctx) {
     return usage2(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     const vault = hold(opened.vault);
@@ -92700,8 +92898,8 @@ async function externalList(args, ctx) {
     return usage2(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const vault = hold((await unlockInteractively(promptCtx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const vault = hold((await unlockInteractively(promptCtx, path, raw2, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
     const externals = vault.index.entries.filter((entry2) => entry2.role === "external");
     const rows = externals.map((entry2) => ({
       address: entry2.address,
@@ -92760,8 +92958,8 @@ async function externalSweep(args, ctx) {
     return usage2(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       reason: describeSend(`everything from ${source2}`, undefined, to)
     });
@@ -92841,12 +93039,12 @@ init_swap();
 var LIST_USAGE = "Usage: candle fees [--cursor <cursor>] [--limit <1-50>] [--json]";
 var CLAIM_USAGE = "Usage: candle fees claim <mint> [--dry-run] [--json]";
 function amountText(row2, missing) {
-  const raw = typeof row2.amountRaw === "string" && /^\d+$/.test(row2.amountRaw) ? row2.amountRaw : null;
-  if (raw === null)
+  const raw2 = typeof row2.amountRaw === "string" && /^\d+$/.test(row2.amountRaw) ? row2.amountRaw : null;
+  if (raw2 === null)
     return missing;
   const decimals = Number.isInteger(row2.decimals) ? row2.decimals : 0;
   const label = row2.symbol ? row2.symbol : row2.mint ?? "";
-  const value = decimalAmount(raw, decimals);
+  const value = decimalAmount(raw2, decimals);
   return `${value.includes(".") ? value.replace(/\.?0+$/, "") : value} ${safeText(label)}`.trim();
 }
 function amountsText(rows, missing) {
@@ -93517,12 +93715,12 @@ async function keysLimits(args, ctx) {
   for (const cap of caps) {
     const eq = cap.indexOf("=");
     const asset = (eq < 0 ? cap : cap.slice(0, eq)).toLowerCase();
-    const raw = eq < 0 ? "" : cap.slice(eq + 1);
+    const raw2 = eq < 0 ? "" : cap.slice(eq + 1);
     if (!(asset in KEY_LIMIT_ASSETS)) {
       writeScreenUsageFailure(deps, `The asset must be one of: ${Object.keys(KEY_LIMIT_ASSETS).join(", ")}.`, json);
       return 2;
     }
-    if (!RAW_AMOUNT.test(raw)) {
+    if (!RAW_AMOUNT.test(raw2)) {
       writeScreenUsageFailure(deps, `${asset}=<raw> takes a positive whole number of base units (${asset} has ${KEY_LIMIT_ASSETS[asset]} decimals), with no sign, decimal point or leading zero.`, json);
       return 2;
     }
@@ -93530,7 +93728,7 @@ async function keysLimits(args, ctx) {
       writeScreenUsageFailure(deps, `${asset} is named twice.`, json);
       return 2;
     }
-    limits.push({ asset, maxPerTxRaw: raw });
+    limits.push({ asset, maxPerTxRaw: raw2 });
   }
   await printIdentity(ctx);
   const apiKey = await resolveApiKey(deps, ctx.profile);
@@ -93658,10 +93856,10 @@ function pagePath(chain2, address, rest = "") {
 function refusalOf2(result2) {
   if (result2.ok)
     return null;
-  const raw = result2.raw;
-  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+  const raw2 = result2.raw;
+  if (!raw2 || typeof raw2 !== "object" || Array.isArray(raw2))
     return null;
-  const { success: success2, error, ...extra } = raw;
+  const { success: success2, error, ...extra } = raw2;
   if (success2 !== false || typeof error !== "string")
     return null;
   return { status: result2.status, code: error, extra };
@@ -93810,10 +94008,10 @@ function factValue(fact) {
   const value = fact.decimals ? rawUnits2(fact.raw, fact.decimals) : fact.raw;
   return `${value}${fact.unit === "token" ? "" : ` ${fact.unit}`} (${fact.status}, ${fact.coverage}, ${escapeTerminalText(fact.source)}${fact.measuredAt ? `, ${fact.measuredAt}` : ""})`;
 }
-function rawUnits2(raw, decimals) {
-  if (!/^\d+$/.test(raw))
-    return raw;
-  const padded = raw.padStart(decimals + 1, "0");
+function rawUnits2(raw2, decimals) {
+  if (!/^\d+$/.test(raw2))
+    return raw2;
+  const padded = raw2.padStart(decimals + 1, "0");
   const whole = padded.slice(0, padded.length - decimals);
   const fraction = padded.slice(padded.length - decimals).replace(/0+$/, "");
   return fraction ? `${whole}.${fraction}` : whole;
@@ -94414,8 +94612,8 @@ var USAGE10 = `Usage: candle keys rotate <prefix|label> [--grace <duration> | --
        candle keys rotate <prefix|label> --finish`;
 var MAX_GRACE_SECONDS = 86400;
 var DEFAULT_GRACE_SECONDS = 3600;
-function parseGrace(raw) {
-  const match = raw.trim().match(/^(\d+)(s|m|h)?$/);
+function parseGrace(raw2) {
+  const match = raw2.trim().match(/^(\d+)(s|m|h)?$/);
   const bad = { ok: false, message: "--grace must be a duration such as 0, 90s, 30m or 24h (at most 24h)." };
   if (!match)
     return bad;
@@ -94794,12 +94992,12 @@ async function keysWalletsSet(args, ctx) {
     writeScreenUsageFailure(deps, "Usage: candle keys wallets set <prefix> --wallets <id,id,...>", json);
     return 2;
   }
-  const raw = parsed.values["--wallets"];
-  if (raw === undefined) {
+  const raw2 = parsed.values["--wallets"];
+  if (raw2 === undefined) {
     writeScreenUsageFailure(deps, 'Missing --wallets. Pass a comma-separated list, or "" to assign none.', json);
     return 2;
   }
-  const walletIds = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  const walletIds = raw2.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
   await printIdentity(ctx);
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
@@ -95004,7 +95202,7 @@ init_presentation();
 init_render();
 var PRODUCTION_KEY_MESSAGE = "The lab needs a production agent key. Create one with `candle keys create`.";
 var REPLAY_USAGE = "Usage: candle lab replay --definition <file|-> --from <iso> --to <iso> [--asset-ids a,b] [--fee-bps n] [--slippage-bps n] [--no-wait]";
-function object3(value) {
+function object4(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 function text3(value) {
@@ -95044,7 +95242,7 @@ function failure3(answer2, ctx, statusRoute = false) {
     ctx.deps.stdout.write(`${JSON.stringify(refusal4.body)}
 `);
   else {
-    const body = object3(refusal4.body);
+    const body = object4(refusal4.body);
     const message = statusRoute && refusal4.status === 404 ? "the lab on this server predates `candle lab status`" : `${refusal4.message}${refusal4.status === 429 && body.resets_at ? ` Resets at ${text3(body.resets_at)}.` : ""}`;
     writeLocalFailure(ctx.deps, { code: refusal4.code, message: terminalText(message) }, ctx.json);
   }
@@ -95055,11 +95253,11 @@ function replayOutput(body, ctx) {
     ctx.deps.stdout.write(`${JSON.stringify(body)}
 `);
   else {
-    const result2 = object3(body.result);
-    const lead = object3(result2.lead_card);
+    const result2 = object4(body.result);
+    const lead = object4(result2.lead_card);
     if (Object.keys(lead).length) {
-      const control = object3(lead.control);
-      const breakEven = object3(lead.break_even);
+      const control = object4(lead.control);
+      const breakEven = object4(lead.break_even);
       writeFields(ctx.deps, "stdout", [
         [
           "Control",
@@ -95069,7 +95267,7 @@ function replayOutput(body, ctx) {
           "Break-even",
           `${text3(breakEven.cost_bps_per_side)} bps per side; ${text3(breakEven.round_trip_pct)}% round trip`
         ],
-        ["Regime", text3(object3(lead.regime).label)],
+        ["Regime", text3(object4(lead.regime).label)],
         ["Summary", text3(lead.summary)]
       ], "Lead card");
       if (lead.insufficient === true)
@@ -95136,7 +95334,7 @@ async function memberFee(ctx, apiKey) {
     env: ctx.deps.env,
     fetch: (input, init) => ctx.deps.fetch(input, { ...init, signal: AbortSignal.timeout(1e4) })
   });
-  const fee = answer2.ok ? object3(answer2.body).feeBps : undefined;
+  const fee = answer2.ok ? object4(answer2.body).feeBps : undefined;
   return typeof fee === "number" && Number.isInteger(fee) && fee >= 0 && fee <= 1000 ? fee : undefined;
 }
 async function labReplay(args, ctx) {
@@ -95273,7 +95471,7 @@ async function report(args, ctx, kind) {
     if (kind === "edges")
       ctx.deps.stdout.write(`Edges net of ${text3(body.cost_pct)}% round-trip cost (server's table).
 `);
-    const rows = Array.isArray(list) ? list.map((row2) => columns.map((column) => text3(object3(row2)[column]))) : [];
+    const rows = Array.isArray(list) ? list.map((row2) => columns.map((column) => text3(object4(row2)[column]))) : [];
     if (!rows.length)
       ctx.deps.stdout.write(`No ${kind} in this window.
 `);
@@ -95303,10 +95501,10 @@ function feeWalletGiven(flags) {
 function feeWalletSelection(flags) {
   if (!feeWalletGiven(flags))
     return;
-  const raw = flags["--fee-wallet"];
-  if (raw === undefined)
+  const raw2 = flags["--fee-wallet"];
+  if (raw2 === undefined)
     throw new Error("--fee-wallet-multisig needs --fee-wallet <address>, the vault fees earn to");
-  const bytes = decodeAddress(raw, "--fee-wallet");
+  const bytes = decodeAddress(raw2, "--fee-wallet");
   const feeWallet = encodePubkey(bytes);
   if (isOnCurve(bytes)) {
     if (flags["--fee-wallet-multisig"] !== undefined || flags["--fee-wallet-multisig-vault-index"] !== undefined)
@@ -95707,7 +95905,7 @@ function embeddedWorks(answer2, requestedChain) {
 function describeRow(row2) {
   return `${row2.label ? `${row2.label} ` : ""}(${row2.id}, ${row2.address})`;
 }
-async function launchCheck(ctx, key, walletFlag, requestedChain, feeWallet = undefined, selection = {}) {
+async function launchCheck2(ctx, key, walletFlag, requestedChain, feeWallet = undefined, selection = {}) {
   const query3 = new URLSearchParams;
   if (selection.quote !== undefined) {
     query3.set("quote", selection.quote);
@@ -95863,8 +96061,8 @@ function launchBuy(flags, chain2) {
   const decimals = LAUNCH_DEFINITION2.quoteDecimals[quote.toLowerCase()];
   if (decimals === undefined)
     throw new TradingError("INVALID_AMOUNT", `--buy is in the launch's quote asset, and ${safeText(quote)} is not one on ${chainName(chain2)}. Nothing was built.`);
-  const raw = launchBuyRaw(amount, decimals);
-  return { raw, display: `${decimalAmount(raw, decimals)} ${quote}` };
+  const raw2 = launchBuyRaw(amount, decimals);
+  return { raw: raw2, display: `${decimalAmount(raw2, decimals)} ${quote}` };
 }
 var ATOMIC_TEE_REFUSAL = "This is a TEE wallet: agents may only trade it through the trade rail";
 function buyRefusal(error) {
@@ -96049,7 +96247,7 @@ async function launch(args, ctx) {
     }
     const key = await tradingKey(ctx);
     if (check2)
-      return await launchCheck(ctx, key, flags["--wallet"], hinted, feeWallet, {
+      return await launchCheck2(ctx, key, flags["--wallet"], hinted, feeWallet, {
         quote: selectedQuote,
         mode: flags["--mode"],
         stakerAllocationBps: flags["--staker-allocation-bps"],
@@ -96301,7 +96499,7 @@ function previewLines(answer2, chain2, feeWallet = undefined) {
   const { resolved, curveTerms: terms, devBuyMax, feeWallet: echo, feeWalletSource, fills } = parsed.data;
   const quote = (resolved?.quoteAsset ?? LAUNCH_DEFINITION2.defaultQuote[chain2]).toUpperCase();
   const decimals = (chain2 === "hood" ? HOOD_BASES[quote] : BASES[quote])?.decimals;
-  const whole = (raw) => decimals === undefined ? `${raw} raw` : `${shortAmount2(raw, decimals)} ${quote}`;
+  const whole = (raw2) => decimals === undefined ? `${raw2} raw` : `${shortAmount2(raw2, decimals)} ${quote}`;
   const lines = [];
   if (terms) {
     lines.push(`Curve${resolved ? ` (${safeText(resolved.mode)})` : ""}: raises ${terms.raise} ${safeText(terms.symbol)}; market cap ${terms.startFdv} at start and ${terms.bondingFdv} at graduation; ${percent(terms.supplySoldPct)} of the supply sold by graduation.`);
@@ -96326,7 +96524,7 @@ function previewLines(answer2, chain2, feeWallet = undefined) {
 function rulesBlock(answer2, chain2, flags) {
   const quote = (flags["--quote-asset"] ?? LAUNCH_DEFINITION2.defaultQuote[chain2]).toUpperCase();
   const decimals = BASES[quote]?.decimals;
-  const lines = launchRulesLines(answer2, (raw) => decimals === undefined ? `${raw} raw` : `${shortAmount2(raw, decimals)} ${quote}`);
+  const lines = launchRulesLines(answer2, (raw2) => decimals === undefined ? `${raw2} raw` : `${shortAmount2(raw2, decimals)} ${quote}`);
   return lines.length ? `${lines.join(`
 `)}
 ` : "";
@@ -96363,12 +96561,12 @@ function devBuyCeiling(env, quoteAsset) {
   const bounds = DEV_BUY_CEILINGS[quoteAsset];
   if (!bounds)
     throw new TradingError("DEV_BUY_UNSUPPORTED_FOR_PAIR", `An initial buy is not supported for ${safeText(quoteAsset)}-quoted solana launches`);
-  const raw = env[bounds.env];
-  const value = raw && /^\d+$/.test(raw) ? BigInt(raw) : 0n;
+  const raw2 = env[bounds.env];
+  const value = raw2 && /^\d+$/.test(raw2) ? BigInt(raw2) : 0n;
   return { ceiling: value > 0n ? value : BigInt(bounds.raw), unit: bounds.unit };
 }
-function shortAmount2(raw, decimals) {
-  const full = decimalAmount(raw, decimals);
+function shortAmount2(raw2, decimals) {
+  const full = decimalAmount(raw2, decimals);
   return full.includes(".") ? full.replace(/0+$/, "").replace(/\.$/, "") : full;
 }
 function expThresholdRaw(flags, quoteAsset) {
@@ -96379,8 +96577,8 @@ function expThresholdRaw(flags, quoteAsset) {
     return g === undefined || decimals === undefined ? undefined : BigInt(rawAmount(g, decimals));
   }
   const presets = LAUNCH_DEFINITION2.buyLimits.presetThresholds;
-  const raw = mode ? presets[mode]?.[quoteAsset] : undefined;
-  return raw === undefined ? undefined : BigInt(raw);
+  const raw2 = mode ? presets[mode]?.[quoteAsset] : undefined;
+  return raw2 === undefined ? undefined : BigInt(raw2);
 }
 function firstBuyCeiling(ctx, flags, buy) {
   const quoteAsset = (flags["--quote-asset"] ?? "sol").toLowerCase();
@@ -96681,12 +96879,12 @@ async function embeddedLaunch(ctx, key, args) {
     env: ctx.deps.env
   });
   if (!result2.ok) {
-    const raw = result2.raw;
-    const unresolved = result2.status === 0 || raw?.status === "timeout";
+    const raw2 = result2.raw;
+    const unresolved = result2.status === 0 || raw2?.status === "timeout";
     throw new TradingError(result2.code ?? (unresolved ? "BUNDLE_UNRESOLVED" : "REQUEST_FAILED"), result2.message, {
       ...unresolved ? { exitCode: 3 } : {},
       suggestion: `Recover with --client-trade-id ${id}; check candle swap status ${id} --kind launch before another attempt.`,
-      ...typeof raw?.bundleId === "string" ? { details: { bundleId: raw.bundleId } } : {}
+      ...typeof raw2?.bundleId === "string" ? { details: { bundleId: raw2.bundleId } } : {}
     });
   }
   return printTradingResult(ctx, {
@@ -98018,10 +98216,10 @@ function actionShapeProblem2(action) {
   const orders = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : [];
   if (!Array.isArray(orders))
     return "invalid orders";
-  for (const raw of orders) {
-    if (!exactKeys2(raw, ["a", "b", "p", "s", "r", "t"], ["c"]))
+  for (const raw2 of orders) {
+    if (!exactKeys2(raw2, ["a", "b", "p", "s", "r", "t"], ["c"]))
       return "an order carries unexpected or missing fields";
-    const o = raw;
+    const o = raw2;
     const t = o.t;
     const limit = exactKeys2(t, ["limit"]) && exactKeys2(t.limit, ["tif"]);
     const trigger = exactKeys2(t, ["trigger"]) && exactKeys2(t.trigger, ["isMarket", "triggerPx", "tpsl"]);
@@ -98054,10 +98252,10 @@ function checkActionIntent2(action, opts) {
   const orderList = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : [];
   if (!Array.isArray(orderList))
     return "invalid orders";
-  for (const raw of orderList) {
-    if (!raw || typeof raw !== "object")
+  for (const raw2 of orderList) {
+    if (!raw2 || typeof raw2 !== "object")
       return "invalid order";
-    const o = raw;
+    const o = raw2;
     if (!mainAsset(o.a))
       return "order asset is outside the main perp universe";
     if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal4(o.s) ?? 0n) <= 0n || (decimal4(o.p) ?? 0n) <= 0n)
@@ -98525,8 +98723,8 @@ async function hyperliquidWalletSnapshot2(fetcher, network2, address, now = Date
   if (!Array.isArray(open8))
     throw new Error("Hyperliquid returned an unreadable order list");
   const orders = [];
-  for (const raw of open8) {
-    const o = raw;
+  for (const raw2 of open8) {
+    const o = raw2;
     const coin = o?.coin;
     if (typeof coin !== "string") {
       unsupported2.push("an unreadable order");
@@ -98733,7 +98931,7 @@ function unavailable4() {
 function usage6(message) {
   throw new PerpsMarketError2("PERPS_USAGE", message);
 }
-function object4(value) {
+function object5(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 function decimal5(value) {
@@ -98769,10 +98967,10 @@ function parseMarkets2(value) {
   if (!Array.isArray(value) || value.length !== 2)
     return unavailable4();
   const [meta, ctxs] = value;
-  if (!object4(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
+  if (!object5(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
     return unavailable4();
   for (const row2 of meta.universe) {
-    if (!object4(row2) || typeof row2.name !== "string" || !integer2(row2.szDecimals) || row2.szDecimals > 6 || !integer2(row2.maxLeverage))
+    if (!object5(row2) || typeof row2.name !== "string" || !integer2(row2.szDecimals) || row2.szDecimals > 6 || !integer2(row2.maxLeverage))
       return unavailable4();
     for (const key of ["isDelisted", "onlyIsolated"])
       if (row2[key] !== undefined && typeof row2[key] !== "boolean")
@@ -98781,7 +98979,7 @@ function parseMarkets2(value) {
       return unavailable4();
   }
   for (const ctx of ctxs) {
-    if (!object4(ctx))
+    if (!object5(ctx))
       return unavailable4();
     for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
       if (ctx[key] !== undefined && ctx[key] !== null && !decimal5(ctx[key]))
@@ -98795,11 +98993,11 @@ function parseMarkets2(value) {
     if (!Array.isArray(meta.marginTables))
       return unavailable4();
     for (const entry2 of meta.marginTables) {
-      if (!Array.isArray(entry2) || !integer2(entry2[0]) || !object4(entry2[1]) || !Array.isArray(entry2[1].marginTiers))
+      if (!Array.isArray(entry2) || !integer2(entry2[0]) || !object5(entry2[1]) || !Array.isArray(entry2[1].marginTiers))
         return unavailable4();
       const tiers = [];
       for (const tier of entry2[1].marginTiers) {
-        if (!object4(tier) || nonnegative2(tier.lowerBound) === null || !integer2(tier.maxLeverage))
+        if (!object5(tier) || nonnegative2(tier.lowerBound) === null || !integer2(tier.maxLeverage))
           return unavailable4();
         tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
       }
@@ -98892,15 +99090,15 @@ function perpsCandleWindow2(opts, now) {
   if (index < 0)
     return usage6(`interval must be one of ${PERPS_CANDLE_INTERVALS2.join(" ")}.`);
   const count2 = bounded2(opts.count, 100, 1, 5000, "count");
-  const raw = opts.end;
-  const endTime = raw === undefined ? now : epoch2(raw);
+  const raw2 = opts.end;
+  const endTime = raw2 === undefined ? now : epoch2(raw2);
   const startTime = endTime - count2 * at2(INTERVAL_MS2, index);
   if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
     return usage6("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
   return { interval, count: count2, startTime, endTime };
 }
-function epoch2(raw) {
-  return typeof raw === "number" || /^\d+$/.test(raw) ? Number(raw) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw) ? Date.parse(raw) : NaN;
+function epoch2(raw2) {
+  return typeof raw2 === "number" || /^\d+$/.test(raw2) ? Number(raw2) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw2) ? Date.parse(raw2) : NaN;
 }
 var PERPS_FUNDING_HISTORY_MAX_MS2 = 30 * 86400000;
 var PERPS_FUNDING_HISTORY_MAX_ROWS2 = 500;
@@ -98926,7 +99124,7 @@ function parsePerpsFundingHistory2(value, coin, window) {
     return unavailable4();
   const funding = [];
   for (const row2 of value) {
-    if (!object4(row2) || row2.coin !== coin || !integer2(row2.time) || !decimal5(row2.fundingRate) || !decimal5(row2.premium))
+    if (!object5(row2) || row2.coin !== coin || !integer2(row2.time) || !decimal5(row2.fundingRate) || !decimal5(row2.premium))
       return unavailable4();
     if (row2.time >= window.startTime && row2.time <= window.endTime)
       funding.push({
@@ -98964,7 +99162,7 @@ class PerpsMarketReader2 {
     this.configPromise ??= (async () => {
       try {
         const value = await this.opts.readConfig();
-        if (!object4(value) || !object4(value.limits) || !integer2(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
+        if (!object5(value) || !object5(value.limits) || !integer2(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
           throw new Error("config shape");
         return {
           minOpenInterestUsd: value.limits.minOpenInterestUsd,
@@ -99012,7 +99210,7 @@ class PerpsMarketReader2 {
               if (!Array.isArray(venue) || typeof venue[0] !== "string")
                 return unavailable4();
               if (venue[0] === "HlPerp" && venue[1] !== null) {
-                if (!object4(venue[1]) || !decimal5(venue[1].fundingRate) || !integer2(venue[1].nextFundingTime))
+                if (!object5(venue[1]) || !decimal5(venue[1].fundingRate) || !integer2(venue[1].nextFundingTime))
                   return unavailable4();
                 map2.set(entry2[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
               }
@@ -99153,7 +99351,7 @@ class PerpsMarketReader2 {
       coin: canonical4,
       ...opts.sigFigs === undefined ? {} : { nSigFigs: opts.sigFigs }
     });
-    if (!object4(value) || value.coin !== canonical4 || !integer2(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
+    if (!object5(value) || value.coin !== canonical4 || !integer2(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
       return unavailable4();
     const sides = [];
     for (const side of value.levels) {
@@ -99161,7 +99359,7 @@ class PerpsMarketReader2 {
         return unavailable4();
       const levels = [];
       for (const level of side) {
-        if (!object4(level) || nonnegative2(level.px) === null || nonnegative2(level.sz) === null || !integer2(level.n))
+        if (!object5(level) || nonnegative2(level.px) === null || nonnegative2(level.sz) === null || !integer2(level.n))
           return unavailable4();
         levels.push({ px: level.px, sz: level.sz, n: level.n });
       }
@@ -99197,7 +99395,7 @@ class PerpsMarketReader2 {
       return unavailable4();
     const candles = [];
     for (const c of value) {
-      if (!object4(c) || !integer2(c.t) || !integer2(c.T) || !integer2(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative2(v) !== null) || c.s !== canonical4 || c.i !== window.interval)
+      if (!object5(c) || !integer2(c.t) || !integer2(c.T) || !integer2(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative2(v) !== null) || c.s !== canonical4 || c.i !== window.interval)
         return unavailable4();
       if (c.t <= window.endTime && c.T >= window.startTime)
         candles.push({
@@ -99341,14 +99539,14 @@ function canonical4(value) {
 function isDecimalString2(value) {
   return typeof value === "string" && /^-?[0-9]+(\.[0-9]+)?$/.test(value);
 }
-function asFill2(raw) {
-  const row2 = raw;
+function asFill2(raw2) {
+  const row2 = raw2;
   if (!row2 || typeof row2 !== "object" || typeof row2.coin !== "string" || !isTime2(row2.time) || !Number.isSafeInteger(row2.tid) || !Number.isSafeInteger(row2.oid) || !isDecimalString2(row2.px) || !isDecimalString2(row2.sz) || typeof row2.side !== "string" || !isDecimalString2(row2.closedPnl) || !isDecimalString2(row2.fee) || row2.builderFee !== undefined && !isDecimalString2(row2.builderFee))
     throw unavailable5("Hyperliquid returned a fill this client cannot read");
   return row2;
 }
-function asFunding2(raw) {
-  const row2 = raw;
+function asFunding2(raw2) {
+  const row2 = raw2;
   const delta = row2?.delta;
   if (!row2 || typeof row2 !== "object" || !isTime2(row2.time) || typeof row2.hash !== "string" || !delta || typeof delta !== "object" || typeof delta.coin !== "string" || !isDecimalString2(delta.usdc) || !isDecimalString2(delta.fundingRate) || !isDecimalString2(delta.szi))
     throw unavailable5("Hyperliquid returned a funding payment this client cannot read");
@@ -99485,11 +99683,11 @@ async function readPerpsHistoryPage2(req) {
         break;
       }
       const body = kind === "fills" ? { type: "userFillsByTime", user: state.w, startTime: t, endTime: state.e, aggregateByTime: false } : { type: "userFunding", user: state.w, startTime: t, endTime: state.e };
-      const raw = await postInfo2(req, body, kind === "fills" ? "fills" : "funding");
+      const raw2 = await postInfo2(req, body, kind === "fills" ? "fills" : "funding");
       requests++;
-      if (!Array.isArray(raw))
+      if (!Array.isArray(raw2))
         throw unavailable5(`Hyperliquid returned an unreadable ${kind} response`);
-      const rows = raw.map((r) => kind === "fills" ? asFill2(r) : asFunding2(r));
+      const rows = raw2.map((r) => kind === "fills" ? asFill2(r) : asFunding2(r));
       const keyed = rows.map((row2) => ({ row: row2, id: identity3(kind, row2) })).sort((a, b) => a.row.time - b.row.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const full = rows.length >= max;
       const startedAt = t;
@@ -99654,11 +99852,11 @@ function perpsRiskFromLimits2(body) {
   const source2 = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
   return { thresholds: { ...effective, source: source2 }, stored };
 }
-function pickSettings2(raw) {
+function pickSettings2(raw2) {
   const out = {};
   for (const field of PERPS_RISK_FIELDS2)
-    if (typeof raw[field] === "number")
-      out[field] = raw[field];
+    if (typeof raw2[field] === "number")
+      out[field] = raw2[field];
   return out;
 }
 
@@ -100875,12 +101073,12 @@ async function thresholdsWrite(verb, args, ctx) {
   else {
     const fields2 = {};
     for (const [flag, spec] of Object.entries(SET_FLAGS)) {
-      const raw = parsed.values[flag];
-      if (raw === undefined)
+      const raw2 = parsed.values[flag];
+      if (raw2 === undefined)
         continue;
-      const bps2 = thresholdBps(raw, spec.kind);
+      const bps2 = thresholdBps(raw2, spec.kind);
       if (bps2 === null)
-        return usage7(ctx, `${flag} takes ${spec.kind === "pct" ? "a percentage such as 17 or 17.5" : "a ratio such as 0.6"}, not ${raw}.`);
+        return usage7(ctx, `${flag} takes ${spec.kind === "pct" ? "a percentage such as 17 or 17.5" : "a ratio such as 0.6"}, not ${raw2}.`);
       fields2[spec.field] = bps2;
     }
     if (Object.keys(fields2).length === 0)
@@ -102064,10 +102262,10 @@ async function runPerpsTpsl2(io, params) {
   const coin = typeof server.coin === "string" ? server.coin : params.coin.toUpperCase();
   const venueLegs = snapshot.orders.filter((o) => o.coin === coin && o.tpsl !== null);
   const tracked = [];
-  for (const raw of Array.isArray(server.tracked) ? server.tracked : []) {
-    const seen = venueLegs.find((o) => o.oid === raw.oid && o.tpsl === raw.leg && (o.cloid ?? null) === (raw.cloid ?? null));
+  for (const raw2 of Array.isArray(server.tracked) ? server.tracked : []) {
+    const seen = venueLegs.find((o) => o.oid === raw2.oid && o.tpsl === raw2.leg && (o.cloid ?? null) === (raw2.cloid ?? null));
     if (seen)
-      tracked.push({ leg: raw.leg, oid: seen.oid, cloid: seen.cloid, triggerPx: seen.triggerPx });
+      tracked.push({ leg: raw2.leg, oid: seen.oid, cloid: seen.cloid, triggerPx: seen.triggerPx });
   }
   const trackedOids = new Set(tracked.map((l) => l.oid));
   const unowned = venueLegs.filter((o) => !trackedOids.has(o.oid)).map((o) => ({ leg: o.tpsl, oid: o.oid, cloid: o.cloid, triggerPx: o.triggerPx }));
@@ -102437,9 +102635,9 @@ async function perpsMargin(args, ctx) {
     }
     if (mode !== "cross" && mode !== "isolated")
       return usage9(ctx, "--mode must be cross or isolated.");
-    const raw = values["--leverage"];
-    const leverage = raw === undefined ? undefined : Number(raw);
-    if (leverage !== undefined && (!/^[1-9][0-9]{0,2}$/.test(raw) || !Number.isInteger(leverage)))
+    const raw2 = values["--leverage"];
+    const leverage = raw2 === undefined ? undefined : Number(raw2);
+    if (leverage !== undefined && (!/^[1-9][0-9]{0,2}$/.test(raw2) || !Number.isInteger(leverage)))
       return usage9(ctx, "--leverage must be a whole number of at least 1.");
     return await runPerpsWrite(ctx, {
       path: "/api/v1/agent/perps/leverage",
@@ -103068,12 +103266,12 @@ function usage10(ctx, line) {
   return 2;
 }
 function withdrawPins(env) {
-  const raw = env.CANDLE_PERPS_WITHDRAW_PINS;
-  if (raw === undefined || raw.trim() === "")
+  const raw2 = env.CANDLE_PERPS_WITHDRAW_PINS;
+  if (raw2 === undefined || raw2.trim() === "")
     return CANDLE_PERPS_WITHDRAW_PINS;
   let parsed;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(raw2);
   } catch {
     throw new TradingError("INVALID_PINS", "CANDLE_PERPS_WITHDRAW_PINS is not JSON.");
   }
@@ -103253,8 +103451,8 @@ async function perpsWithdraw(args, ctx) {
     if (Array.isArray(positions?.positions) && positions.positions.length > 0)
       notice(ctx.deps, ctx.json ? "stderr" : "stdout", "warning", `This account has open positions: withdrawing margin raises their liquidation risk.
 `.trim());
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, resolvedVault.path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, resolvedVault.path, raw2, {
       promptText: "Vault passphrase (input hidden): ",
       reason: `withdraw ${formatWithdrawAmount(amountMicros)} USDC to ${build.to.address}`
     });
@@ -103385,26 +103583,26 @@ function parseRequirements(value) {
   return { scheme, network: network2, amount, asset, payTo, maxTimeoutSeconds, ...extra ? { extra } : {} };
 }
 function decodePaymentRequired(header) {
-  const object5 = decodeHeader(header);
-  if (object5.x402Version !== X402_VERSION)
+  const object6 = decodeHeader(header);
+  if (object6.x402Version !== X402_VERSION)
     throw new X402DecodeError("x402Version is not 2");
-  const resource = object5.resource;
+  const resource = object6.resource;
   if (!isObject5(resource) || !isString(resource.url))
     throw new X402DecodeError("resource is missing");
-  if (!Array.isArray(object5.accepts))
+  if (!Array.isArray(object6.accepts))
     throw new X402DecodeError("accepts is not an array");
-  if (object5.error !== undefined && !isString(object5.error))
+  if (object6.error !== undefined && !isString(object6.error))
     throw new X402DecodeError("error is not a string");
   return {
     x402Version: X402_VERSION,
-    ...isString(object5.error) ? { error: object5.error } : {},
+    ...isString(object6.error) ? { error: object6.error } : {},
     resource: {
       url: resource.url,
       ...isString(resource.description) ? { description: resource.description } : {},
       ...isString(resource.mimeType) ? { mimeType: resource.mimeType } : {}
     },
-    accepts: object5.accepts.map(parseRequirements),
-    ...isObject5(object5.extensions) ? { extensions: object5.extensions } : {}
+    accepts: object6.accepts.map(parseRequirements),
+    ...isObject5(object6.extensions) ? { extensions: object6.extensions } : {}
   };
 }
 function paymentRequiredOf(headers2) {
@@ -103422,8 +103620,8 @@ function settlementOf(headers2) {
   if (header === undefined)
     return null;
   try {
-    const object5 = decodeHeader(header);
-    const { success: success2, errorReason, payer, transaction, network: network2 } = object5;
+    const object6 = decodeHeader(header);
+    const { success: success2, errorReason, payer, transaction, network: network2 } = object6;
     if (typeof success2 !== "boolean" || !isString(transaction) || !isString(network2))
       return null;
     return {
@@ -103500,25 +103698,25 @@ function parseSigner(value) {
 function parsePlanState(text4) {
   if (text4 === null)
     return { autoRenew: false };
-  let raw;
+  let raw2;
   try {
-    raw = JSON.parse(text4);
+    raw2 = JSON.parse(text4);
   } catch {
     return { autoRenew: false };
   }
-  if (!isObject6(raw))
+  if (!isObject6(raw2))
     return { autoRenew: false };
-  const ceiling = str(raw.renewCeilingRaw);
-  const pending = parsePending(raw.pending);
-  const signers = Array.isArray(raw.signupSigners) ? raw.signupSigners.map(parseSigner).filter((s) => s !== undefined) : [];
-  const p = plan(raw.plan);
+  const ceiling = str(raw2.renewCeilingRaw);
+  const pending = parsePending(raw2.pending);
+  const signers = Array.isArray(raw2.signupSigners) ? raw2.signupSigners.map(parseSigner).filter((s) => s !== undefined) : [];
+  const p = plan(raw2.plan);
   return {
-    autoRenew: raw.autoRenew === true,
+    autoRenew: raw2.autoRenew === true,
     ...p ? { plan: p } : {},
-    ...str(raw.payer) ? { payer: str(raw.payer) } : {},
-    ...str(raw.periodEnd) && Number.isFinite(Date.parse(str(raw.periodEnd) ?? "")) ? { periodEnd: str(raw.periodEnd) } : {},
+    ...str(raw2.payer) ? { payer: str(raw2.payer) } : {},
+    ...str(raw2.periodEnd) && Number.isFinite(Date.parse(str(raw2.periodEnd) ?? "")) ? { periodEnd: str(raw2.periodEnd) } : {},
     ...ceiling && /^[0-9]{1,20}$/.test(ceiling) ? { renewCeilingRaw: ceiling } : {},
-    ...str(raw.lastRenewAttemptAt) ? { lastRenewAttemptAt: str(raw.lastRenewAttemptAt) } : {},
+    ...str(raw2.lastRenewAttemptAt) ? { lastRenewAttemptAt: str(raw2.lastRenewAttemptAt) } : {},
     ...pending ? { pending } : {},
     ...signers.length > 0 ? { signupSigners: signers } : {}
   };
@@ -103576,14 +103774,14 @@ function isAddress2(value) {
   }
 }
 function networkConfig(env) {
-  const raw = env[NETWORK_ENV]?.trim() ?? "";
+  const raw2 = env[NETWORK_ENV]?.trim() ?? "";
   let network2;
-  if (raw === "" || raw === "mainnet" || raw === SOLANA_MAINNET)
+  if (raw2 === "" || raw2 === "mainnet" || raw2 === SOLANA_MAINNET)
     network2 = SOLANA_MAINNET;
-  else if (raw === "devnet" || raw === SOLANA_DEVNET)
+  else if (raw2 === "devnet" || raw2 === SOLANA_DEVNET)
     network2 = SOLANA_DEVNET;
   else
-    return { ok: false, message: `${NETWORK_ENV} must be mainnet or devnet, not "${raw}".` };
+    return { ok: false, message: `${NETWORK_ENV} must be mainnet or devnet, not "${raw2}".` };
   const override = env[PAY_TO_ENV]?.trim() ?? "";
   if (network2 === SOLANA_MAINNET) {
     if (override !== "") {
@@ -103737,18 +103935,18 @@ async function readIfPresent2(path) {
 var micros = (value, fallback) => typeof value === "string" && /^[0-9]{1,15}$/.test(value) ? BigInt(value) : fallback;
 async function readLimits(paths) {
   const text4 = await readIfPresent2(paths.limits);
-  let raw = {};
+  let raw2 = {};
   if (text4 !== null) {
     try {
       const parsed = JSON.parse(text4);
       if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed))
-        raw = parsed;
+        raw2 = parsed;
     } catch {}
   }
   return {
-    dailyLimitUsdMicros: micros(raw.dailyLimitUsdMicros, DEFAULT_DAILY_LIMIT_USD_MICROS),
-    maxPerCallUsdMicros: micros(raw.maxPerCallUsdMicros, DEFAULT_MAX_PER_CALL_USD_MICROS),
-    paused: raw.paused === true
+    dailyLimitUsdMicros: micros(raw2.dailyLimitUsdMicros, DEFAULT_DAILY_LIMIT_USD_MICROS),
+    maxPerCallUsdMicros: micros(raw2.maxPerCallUsdMicros, DEFAULT_MAX_PER_CALL_USD_MICROS),
+    paused: raw2.paused === true
   };
 }
 async function writeLimits(paths, limits) {
@@ -103907,8 +104105,8 @@ async function openVaultSigner(ctx, options) {
   const resolved = vaultPathFor(ctx, { positionals: [], values: {}, booleans: new Set });
   if ("error" in resolved)
     throw new VaultError("VAULT_MISSING", resolved.error);
-  const raw = await requireVaultRaw(ctx, resolved);
-  const opened = await unlockInteractively(ctx, resolved.path, raw, {
+  const raw2 = await requireVaultRaw(ctx, resolved);
+  const opened = await unlockInteractively(ctx, resolved.path, raw2, {
     reason: options.reason,
     purpose: "x402 payment"
   });
@@ -104421,8 +104619,8 @@ function isSolanaAddress2(value) {
   }
 }
 var isObject8 = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-function quotedPlanOf(raw) {
-  const plan2 = isObject8(raw) && isObject8(raw.plan) ? raw.plan : null;
+function quotedPlanOf(raw2) {
+  const plan2 = isObject8(raw2) && isObject8(raw2.plan) ? raw2.plan : null;
   if (!plan2)
     return null;
   const n = (v) => typeof v === "string" && /^[0-9]{1,20}$/.test(v) ? BigInt(v) : null;
@@ -105504,10 +105702,10 @@ init_human_output();
 init_presentation();
 init_key_output();
 var NAME_SHAPE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
-function canonicalSecretName(raw) {
-  if (!NAME_SHAPE.test(raw))
+function canonicalSecretName(raw2) {
+  if (!NAME_SHAPE.test(raw2))
     return;
-  return raw.toUpperCase();
+  return raw2.toUpperCase();
 }
 function secretRef(profile, name2) {
   return profile === undefined ? `secret:${name2}` : `profile:${profile}:secret:${name2}`;
@@ -105532,12 +105730,12 @@ async function secretsSet(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
     return usage11(ctx, parsed.error);
-  const [raw, extra] = parsed.positionals;
-  if (!raw || extra !== undefined)
+  const [raw2, extra] = parsed.positionals;
+  if (!raw2 || extra !== undefined)
     return usage11(ctx, "Usage: candle secrets set <name>");
-  const name2 = canonicalSecretName(raw);
+  const name2 = canonicalSecretName(raw2);
   if (name2 === undefined) {
-    return usage11(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+    return usage11(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw2}`);
   }
   if (!ctx.deps.isTTY.stdin || !ctx.deps.isTTY.stdout) {
     writeScreenLocalFailure(ctx.deps, {
@@ -105594,12 +105792,12 @@ async function secretsRemove(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
     return usage11(ctx, parsed.error);
-  const [raw, extra] = parsed.positionals;
-  if (!raw || extra !== undefined)
+  const [raw2, extra] = parsed.positionals;
+  if (!raw2 || extra !== undefined)
     return usage11(ctx, "Usage: candle secrets remove <name>");
-  const name2 = canonicalSecretName(raw);
+  const name2 = canonicalSecretName(raw2);
   if (name2 === undefined) {
-    return usage11(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+    return usage11(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw2}`);
   }
   await ctx.deps.secretsStore.delete(secretRef(ctx.profile, name2));
   const names = await storedSecretNames(ctx.deps, ctx.profile);
@@ -105678,8 +105876,8 @@ async function runPlugin(name2, rawArgs, ctx) {
       return usage2(ctx, resolvedVault.error);
     const vaultPath = resolvedVault.path;
     const resolved = await runVaultCommand(ctx, async ({ hold }) => {
-      const raw = await requireVaultRaw(ctx, resolvedVault);
-      const vault = hold((await unlockInteractively(promptCtx, vaultPath, raw)).vault);
+      const raw2 = await requireVaultRaw(ctx, resolvedVault);
+      const vault = hold((await unlockInteractively(promptCtx, vaultPath, raw2)).vault);
       for (const requested of split2.wallets) {
         const entry2 = findExternalEntry(vault.index, requested);
         if (entry2 === undefined) {
@@ -106449,14 +106647,14 @@ async function portfolio(args, ctx) {
     let vaultReason;
     let vaultSkipped = false;
     let known = 0;
-    const raw = noVault ? null : await readVaultRaw(resolvedVault.path);
+    const raw2 = noVault ? null : await readVaultRaw(resolvedVault.path);
     let vault;
-    if (raw !== null) {
+    if (raw2 !== null) {
       if (!refuseEnvPassphrase(ctx))
         return 1;
       try {
         const unlockCtx = refusePromptsWithoutTerminal(ctx, "portfolio");
-        vault = hold((await unlockInteractively(unlockCtx, resolvedVault.path, raw)).vault);
+        vault = hold((await unlockInteractively(unlockCtx, resolvedVault.path, raw2)).vault);
       } catch (error) {
         if (!isNoTerminalRefusal(error))
           throw error;
@@ -106464,7 +106662,7 @@ async function portfolio(args, ctx) {
     }
     if (noVault) {
       vaultReason = "not read (--no-vault)";
-    } else if (raw === null) {
+    } else if (raw2 === null) {
       vaultReason = `no vault at ${resolvedVault.path}`;
     } else if (vault === undefined) {
       vaultReason = NO_TERMINAL_REASON;
@@ -106976,13 +107174,13 @@ function solanaHoldings(read3, prices) {
   };
 }
 function valueHoldings(read3, prices) {
-  const raw = [];
+  const raw2 = [];
   if (read3.lamports !== null && BigInt(read3.lamports) > 0n) {
-    raw.push({ mint: SOL_MINT, amountRaw: read3.lamports, decimals: 9, program: "native" });
+    raw2.push({ mint: SOL_MINT, amountRaw: read3.lamports, decimals: 9, program: "native" });
   }
   for (const token2 of read3.tokens ?? [])
-    raw.push(token2);
-  return raw.map((h) => {
+    raw2.push(token2);
+  return raw2.map((h) => {
     const price = prices[h.mint];
     const priceUsd = price?.priceUsd ?? null;
     const amount = formatAmount(h.amountRaw, h.decimals);
@@ -107000,14 +107198,14 @@ function valueHoldings(read3, prices) {
 function hoodHoldings(read3, prices, tokensPart) {
   if (read3 === undefined || read3.wei === null && read3.tokens === null)
     return { holdings: null, unread: [] };
-  const raw = [];
+  const raw2 = [];
   if (read3.wei !== null && BigInt(read3.wei) > 0n) {
-    raw.push({ mint: HOOD_NATIVE, amountRaw: read3.wei, decimals: NATIVE_DECIMALS, program: "native", symbol: "ETH" });
+    raw2.push({ mint: HOOD_NATIVE, amountRaw: read3.wei, decimals: NATIVE_DECIMALS, program: "native", symbol: "ETH" });
   }
   for (const token2 of read3.tokens ?? []) {
     if (!/^\d+$/.test(token2.amountRaw) || BigInt(token2.amountRaw) === 0n)
       continue;
-    raw.push({
+    raw2.push({
       mint: token2.mint,
       amountRaw: token2.amountRaw,
       decimals: token2.decimals,
@@ -107015,7 +107213,7 @@ function hoodHoldings(read3, prices, tokensPart) {
       ...token2.symbol ? { symbol: token2.symbol } : {}
     });
   }
-  const holdings2 = raw.map(({ symbol, ...h }) => {
+  const holdings2 = raw2.map(({ symbol, ...h }) => {
     const price = prices[hoodPriceKey(h.mint)];
     const priceUsd = price?.priceUsd ?? null;
     const amount = formatAmount(h.amountRaw, h.decimals);
@@ -108268,11 +108466,11 @@ async function readMints(rpc, mints) {
   }
   return out;
 }
-function formatAmount2(raw, decimals) {
+function formatAmount2(raw2, decimals) {
   if (decimals === undefined)
-    return `${raw} raw`;
-  const negative = raw < 0n;
-  const abs = negative ? -raw : raw;
+    return `${raw2} raw`;
+  const negative = raw2 < 0n;
+  const abs = negative ? -raw2 : raw2;
   const whole = abs / 10n ** BigInt(decimals);
   const frac = (abs % 10n ** BigInt(decimals)).toString().padStart(decimals, "0").replace(/0+$/, "");
   return `${negative ? "-" : ""}${whole}${frac ? `.${frac}` : ""}`;
@@ -108370,8 +108568,8 @@ async function sign5(args, ctx) {
   return runVaultCommand(ctx, async ({ hold }) => {
     let tx;
     try {
-      const raw2 = await readInput(ctx, parsed.values["--file"]);
-      tx = decodeTransaction(decodeStrictBase64(new TextDecoder().decode(raw2)));
+      const raw3 = await readInput(ctx, parsed.values["--file"]);
+      tx = decodeTransaction(decodeStrictBase64(new TextDecoder().decode(raw3)));
     } catch (error) {
       if (error instanceof TransactionDecodeError) {
         throw new VaultError("SIGN_TRANSACTION_UNDECODABLE", `The input is not one base64 legacy or v0 transaction: ${error.message}.`, { suggestion: "Nothing was signed. Pass one base64 transaction through --file <path> or stdin." });
@@ -108389,8 +108587,8 @@ async function sign5(args, ctx) {
         });
       throw error;
     }
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(promptCtx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(promptCtx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     const vault = hold(opened.vault);
@@ -108562,8 +108760,8 @@ async function signMessage2(args, ctx) {
     } catch (error) {
       throw new VaultError("VAULT_UNREADABLE", `The message could not be read: ${error instanceof Error ? error.message : error}.`);
     }
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(promptCtx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(promptCtx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     const vault = hold(opened.vault);
@@ -108751,7 +108949,7 @@ var SCORECARD_USAGE = "Usage: candle signals scorecard [--date YYYY-MM-DD]";
 var RECORDS_USAGE = `Usage: candle signals records [--source ${RECORD_SOURCES2.join("|")}] [--before <id>] [--limit 1-${RECORDS_LIMIT_MAX2}]`;
 var RECORD_USAGE = `Usage: candle signals record <${RECORD_SOURCES2.join("|")}> <source-id>`;
 var HORIZONS = ["15m", "1h", "4h", "24h"];
-function object5(value) {
+function object6(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 function text4(value) {
@@ -108835,7 +109033,7 @@ ${SCORECARD_USAGE}`);
   if (!hacc)
     return 1;
   return answer2(ctx, await hacc.scorecard(date2), (body) => {
-    const window = object5(body.window);
+    const window = object6(body.window);
     const universes = Array.isArray(body.baseline_universes) ? body.baseline_universes.map(text4).join(", ") : "—";
     writeFields(ctx.deps, "stdout", [
       ["Date", text4(body.date)],
@@ -108846,7 +109044,7 @@ ${SCORECARD_USAGE}`);
       ["Pending 24h", text4(body.pending_24h)],
       ["Baselines", universes || "—"]
     ], "hacc scorecard");
-    const rows = Array.isArray(body.rows) ? body.rows.map(object5) : [];
+    const rows = Array.isArray(body.rows) ? body.rows.map(object6) : [];
     ctx.deps.stdout.write(`
 `);
     if (!rows.length) {
@@ -108927,7 +109125,7 @@ ${RECORDS_USAGE}`);
     ...limit !== undefined ? { limit } : {}
   };
   return answer2(ctx, await hacc.records(query3), (body) => {
-    const records = Array.isArray(body.records) ? body.records.map(object5) : [];
+    const records = Array.isArray(body.records) ? body.records.map(object6) : [];
     if (!records.length)
       ctx.deps.stdout.write(`No signal records on this page.
 `);
@@ -108952,11 +109150,11 @@ ${RECORDS_USAGE}`);
         text4(record6.chain),
         text4(record6.emitted_at),
         text4(record6.entry_status),
-        text4(object5(record6.outcome_status)["24h"]),
-        percent2(object5(record6.net_return_conservative)["24h"], true),
-        percent2(object5(record6.net_return_priced)["24h"], true),
-        text4(object5(record6.path_24h).max_multiple),
-        percent2(object5(object5(record6.baseline).net_return_conservative)["24h"], true),
+        text4(object6(record6.outcome_status)["24h"]),
+        percent2(object6(record6.net_return_conservative)["24h"], true),
+        percent2(object6(record6.net_return_priced)["24h"], true),
+        text4(object6(record6.path_24h).max_multiple),
+        percent2(object6(object6(record6.baseline).net_return_conservative)["24h"], true),
         bool(record6.backfilled)
       ]), [
         { id: true },
@@ -108991,8 +109189,8 @@ ${RECORD_USAGE}`);
   if (!hacc)
     return 1;
   return answer2(ctx, await hacc.record(source2, sourceId), (record6) => {
-    const path = object5(record6.path_24h);
-    const baseline = object5(record6.baseline);
+    const path = object6(record6.path_24h);
+    const baseline = object6(record6.baseline);
     writeFields(ctx.deps, "stdout", [
       ["Source", text4(record6.source)],
       ["Id", text4(record6.source_id)],
@@ -109004,10 +109202,10 @@ ${RECORD_USAGE}`);
     ], "hacc signal record");
     ctx.deps.stdout.write(`
 `);
-    const status = object5(record6.outcome_status);
-    const conservative = object5(record6.net_return_conservative);
-    const priced = object5(record6.net_return_priced);
-    const baselineNet = object5(baseline.net_return_conservative);
+    const status = object6(record6.outcome_status);
+    const conservative = object6(record6.net_return_conservative);
+    const priced = object6(record6.net_return_priced);
+    const baselineNet = object6(baseline.net_return_conservative);
     writeTable(ctx.deps, "stdout", ["Horizon", "Status", "Net (conservative)", "Net (priced)", "Baseline (conservative)"], HORIZONS.map((h) => [
       h,
       text4(status[h]),
@@ -109110,8 +109308,8 @@ function limitsView(limits) {
     paused: limits.paused
   };
 }
-function parseUsd(raw) {
-  const cleaned = raw.trim().replace(/^\$/, "");
+function parseUsd(raw2) {
+  const cleaned = raw2.trim().replace(/^\$/, "");
   const match = /^([0-9]{1,9})(?:\.([0-9]{1,6}))?$/.exec(cleaned);
   if (!match)
     return null;
@@ -109227,11 +109425,11 @@ async function showOrSet(args, ctx, field, word3) {
   if (!paths)
     return 2;
   const limits = await readLimits(paths);
-  const raw = parsed.positionals[0];
-  if (raw !== undefined) {
-    const value = parseUsd(raw);
+  const raw2 = parsed.positionals[0];
+  if (raw2 !== undefined) {
+    const value = parseUsd(raw2);
     if (value === null) {
-      writeUsageFailure(ctx.deps, `Not a dollar amount: ${raw}. Use a number such as 5 or 0.25.`, ctx.json);
+      writeUsageFailure(ctx.deps, `Not a dollar amount: ${raw2}. Use a number such as 5 or 0.25.`, ctx.json);
       return 2;
     }
     limits[field] = value;
@@ -109242,7 +109440,7 @@ async function showOrSet(args, ctx, field, word3) {
 `);
   else {
     const label = field === "dailyLimitUsdMicros" ? "Daily per-use limit" : "Per-call ceiling";
-    writeFields(ctx.deps, "stdout", [[label, `$${usdText(limits[field])}${raw !== undefined ? " (saved)" : ""}`]]);
+    writeFields(ctx.deps, "stdout", [[label, `$${usdText(limits[field])}${raw2 !== undefined ? " (saved)" : ""}`]]);
   }
   return 0;
 }
@@ -109757,8 +109955,8 @@ async function vaultRename(args, ctx) {
     rows = parsedFile.rows;
   }
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(promptCtx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(promptCtx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     const vault = hold(opened.vault);
@@ -109912,9 +110110,9 @@ function serverFailure(ctx, result2, pairs, batch) {
     }, json);
     return 1;
   }
-  const raw = result2.raw?.error?.findings;
-  if (Array.isArray(raw) && raw.length > 0) {
-    const findings = raw.map((finding) => {
+  const raw2 = result2.raw?.error?.findings;
+  if (Array.isArray(raw2) && raw2.length > 0) {
+    const findings = raw2.map((finding) => {
       const ids = Array.isArray(finding.matches) ? ` Candidates: ${finding.matches.map((m) => String(m.id)).join(", ")}.` : "";
       return {
         line: batch ? pairs[Number(finding.row)]?.line ?? 0 : 0,
@@ -110028,10 +110226,10 @@ async function teeRename(args, ctx) {
   const vaultPath = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
   if ("error" in vaultPath)
     return usage2(ctx, vaultPath.error);
-  const raw = rows.some((row2) => row2.tee) ? await readVaultRaw(vaultPath.path) : null;
+  const raw2 = rows.some((row2) => row2.tee) ? await readVaultRaw(vaultPath.path) : null;
   const promptCtx = refusePromptsWithoutTerminal(ctx, "tee rename");
   return runVaultCommand(ctx, async ({ hold }) => {
-    const vault = raw === null ? null : hold((await unlockInteractively(promptCtx, vaultPath.path, raw, {
+    const vault = raw2 === null ? null : hold((await unlockInteractively(promptCtx, vaultPath.path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     })).vault);
     const local = [];
@@ -111987,9 +112185,9 @@ async function vaultBackup(args, ctx) {
     notice(deps, "stderr", "note", `--to ${ICLOUD_SHORTHAND} is ${destination}
 `.trim());
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
     assertOutsideConfigDir(destination, deps.env, deps.homedir());
-    const file = parseVaultFile(raw);
+    const file = parseVaultFile(raw2);
     if (target.requires !== undefined) {
       const folder = dirname11(destination);
       try {
@@ -112016,7 +112214,7 @@ async function vaultBackup(args, ctx) {
       notice(deps, "stderr", "note", `${sealedBackupLine(verdict.destination, destination)}
 `.trim());
     }
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       ...verdict.sealed ? {
         among: {
@@ -112218,7 +112416,7 @@ async function vaultVerifyBackup(args, ctx) {
     return usage2(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
     const target = resolve5(copyPath);
     const copyRaw = await readVaultRaw(target);
     if (copyRaw === null)
@@ -112227,7 +112425,7 @@ async function vaultVerifyBackup(args, ctx) {
       });
     const copyHeader = parseVaultFile(copyRaw);
     const sealed = isSealedCopy(copyRaw);
-    const liveFile = parseVaultFile(raw);
+    const liveFile = parseVaultFile(raw2);
     const carried = liveFile.envelopes.filter((envelope) => copyHeader.envelopes.some((candidate) => sameEnvelopeBytes(candidate, envelope)));
     const facts = await currentPlatformFacts(deps);
     const usable = carried.filter((envelope) => isPassphraseEnvelope(envelope) || canDrive(envelope, facts));
@@ -112237,7 +112435,7 @@ async function vaultVerifyBackup(args, ctx) {
     const restrict = usable.length > 0 && !(requestsPassphrase && !carried.some(isPassphraseEnvelope));
     const keyUsable = usable.some(isSecurityKeyEnvelope);
     const securityKeysNotInCopy = liveFile.envelopes.filter(isSecurityKeyEnvelope).filter((key) => !copyHeader.envelopes.some((candidate) => candidate.id === key.id)).map((key) => key.id);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       ...restrict ? {
         among: {
@@ -112324,12 +112522,12 @@ function freshBackupAdvice(copyPath, keyIds) {
   return `Fresh backup advised: ${copyPath} does not carry security key ${keyIds.join(", ")}; a new \`candle vault backup\` would open with it too.`;
 }
 async function verifyCopy(_ctx, copyPath, reopen, live, purpose) {
-  const raw = await readVaultRaw(copyPath);
-  if (raw === null)
+  const raw2 = await readVaultRaw(copyPath);
+  if (raw2 === null)
     throw new VaultError("VAULT_MISSING", `No file at ${copyPath}.`, {
       suggestion: `The copy this run just wrote is not there. Check the path and the volume: ls -l ${copyPath}`
     });
-  const copy = await reopen(copyPath, raw, purpose);
+  const copy = await reopen(copyPath, raw2, purpose);
   try {
     const report2 = await verifyVaultIntegrity(copy, { live });
     const record6 = await verifyEvmRecordCopy(copy, evmRecordPath(copyPath));
@@ -112543,8 +112741,8 @@ async function vaultDemoteBatch(args, ctx) {
     solana = opened;
   }
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, resolvedVault.path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, resolvedVault.path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     const held = hold(opened.vault);
@@ -112696,8 +112894,8 @@ Summary: ${summary.done} done, ${summary.incomplete} incomplete, ${summary.faile
     return exit;
   });
 }
-async function openHeld(opened, held, raw) {
-  const vault = await reopenWithHeldDek(held.path, raw, held);
+async function openHeld(opened, held, raw2) {
+  const vault = await reopenWithHeldDek(held.path, raw2, held);
   return {
     vault,
     factor: opened.factor,
@@ -112948,8 +113146,8 @@ async function vaultExportKey(args, ctx) {
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
     await assertExportTargetWritable(destination);
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       promptText: "Vault passphrase (input hidden): "
     });
@@ -113126,13 +113324,13 @@ async function addPasskeyFactor(ctx, parsed, resolvedVault, hold) {
     version: helper.version
   };
   const association = await checkAppleAppSiteAssociation(deps, helper.identity);
-  const raw = await requireVaultRaw(ctx, resolvedVault);
+  const raw2 = await requireVaultRaw(ctx, resolvedVault);
   const envelopeId = freshEnvelopeId();
   const label = parsed.values["--label"] ?? "synced passkey";
-  const opened = await unlockInteractively(ctx, path, raw, {
+  const opened = await unlockInteractively(ctx, path, raw2, {
     acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     promptText: "Current vault passphrase, to unlock (input hidden): ",
-    among: factorAddAmong(parseVaultFile(raw).envelopes)
+    among: factorAddAmong(parseVaultFile(raw2).envelopes)
   });
   const vault = hold(opened.vault);
   const openedWith = {
@@ -113396,8 +113594,8 @@ async function addSecurityKeyFactor(ctx, parsed, resolvedVault, hold) {
   }
   const facts = await currentPlatformFacts(deps);
   assertFactorAddable("passkey-prf", facts, "ctap2");
-  const raw = await requireVaultRaw(ctx, resolvedVault);
-  const file = parseVaultFile(raw);
+  const raw2 = await requireVaultRaw(ctx, resolvedVault);
+  const file = parseVaultFile(raw2);
   const envelopeId = freshEnvelopeId();
   const vaultId = file.vaultId;
   const keysInHeader = file.envelopes.filter(isCtap2Envelope);
@@ -113410,7 +113608,7 @@ async function addSecurityKeyFactor(ctx, parsed, resolvedVault, hold) {
   let session;
   let enrolling;
   let deferredAfter;
-  const opened = await unlockInteractively(ctx, path, raw, {
+  const opened = await unlockInteractively(ctx, path, raw2, {
     acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     promptText: "Current vault passphrase, to unlock (input hidden): ",
     among: factorAddAmong(file.envelopes),
@@ -113656,13 +113854,13 @@ async function addTouchIdFactor(ctx, parsed, resolvedVault, hold) {
     version: helper.version,
     biometry: helper.biometry
   };
-  const raw = await requireVaultRaw(ctx, resolvedVault);
+  const raw2 = await requireVaultRaw(ctx, resolvedVault);
   const envelopeId = freshEnvelopeId();
   const label = parsed.values["--label"] ?? "Touch ID";
-  const opened = await unlockInteractively(ctx, path, raw, {
+  const opened = await unlockInteractively(ctx, path, raw2, {
     acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     promptText: "Current vault passphrase, to unlock (input hidden): ",
-    among: factorAddAmong(parseVaultFile(raw).envelopes)
+    among: factorAddAmong(parseVaultFile(raw2).envelopes)
   });
   const vault = hold(opened.vault);
   const openedWith = {
@@ -113859,11 +114057,11 @@ async function createVault(request2, clock) {
   }
   const path = sidecarPath(request2.path);
   await writeSidecar(path, nextSidecar(await readSidecar(path), file)).catch(() => {});
-  const raw = await readVaultRaw(request2.path);
-  if (raw === null) {
+  const raw2 = await readVaultRaw(request2.path);
+  if (raw2 === null) {
     throw new VaultError("VAULT_WRITE_FAILED", `The vault was written to ${request2.path} but could not be read back.`);
   }
-  return unlockWithPassphrase(request2.path, raw, request2.passphrase, {
+  return unlockWithPassphrase(request2.path, raw2, request2.passphrase, {
     notice: request2.notice,
     derivationLabel: request2.verificationLabel
   });
@@ -113904,8 +114102,8 @@ async function vaultPhraseShow(args, ctx) {
     return usage2(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const vault = hold((await unlockInteractively(ctx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const vault = hold((await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       promptText: "Vault passphrase (input hidden): ",
       reason: "show the recovery phrase"
@@ -114177,10 +114375,10 @@ async function vaultFactorList(args, ctx) {
     return usage2(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async () => {
-    const raw = await readVaultRaw(path);
-    if (raw === null)
+    const raw2 = await readVaultRaw(path);
+    if (raw2 === null)
       throw missingVault(ctx, resolvedVault);
-    const file = parseVaultFile(raw);
+    const file = parseVaultFile(raw2);
     const facts = await currentPlatformFacts(deps);
     const rows = file.envelopes.map((envelope) => {
       const availability = envelopeAvailability(envelope, facts);
@@ -114256,8 +114454,8 @@ async function vaultFactorAdd(args, ctx) {
     if (kind !== "passphrase") {
       return usage2(ctx, `Unknown factor: ${kind}. This release adds: passphrase, security-key, touch-id, passkey`);
     }
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       promptText: "Current vault passphrase, to unlock (input hidden): "
     });
@@ -114326,8 +114524,8 @@ async function vaultFactorRemove(args, ctx) {
     return usage2(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const vault = hold((await unlockInteractively(ctx, path, raw2, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
     const target = vault.file.envelopes.find((envelope) => envelope.id === id);
     if (!target)
       throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no envelope with id ${id}.`, {
@@ -114580,8 +114778,8 @@ async function vaultFund(args, ctx) {
     return usage2(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       reason: describeSend(amount, asset, teeAddress)
     });
@@ -114712,8 +114910,8 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
     return usage2(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       reason: describeSend(amount, asset, teeAddress)
     });
@@ -115070,11 +115268,11 @@ async function recordMigrationSidecar(vaultPath, vault, fromPath, digest, now) {
   })).catch(() => {});
 }
 async function verifyMigratedOnDisk(path, reopen, entries3, _ctx) {
-  const raw = await readVaultRaw(path);
-  if (raw === null) {
+  const raw2 = await readVaultRaw(path);
+  if (raw2 === null) {
     throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${path} could not be read back after the migration.`);
   }
-  const reopened = await reopen(path, raw);
+  const reopened = await reopen(path, raw2);
   try {
     for (const entry2 of entries3) {
       const secret = await decryptKey(reopened, entry2.id);
@@ -115261,10 +115459,10 @@ async function vaultList(args, ctx) {
   const evmRpcUrl = "url" in evmRpc ? evmRpc.url : DEFAULT_HOOD_RPC_URL;
   const promptCtx = refusePromptsWithoutTerminal(ctx, "vault list");
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await readVaultRaw(path);
-    if (raw === null)
+    const raw2 = await readVaultRaw(path);
+    if (raw2 === null)
       throw missingVault(ctx, resolvedVault);
-    const vault = hold((await unlockInteractively(promptCtx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
+    const vault = hold((await unlockInteractively(promptCtx, path, raw2, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
     const all = vault.index.entries;
     const filtered = filter === undefined ? all : all.filter((entry2) => matches2(entry2, filter));
     const showRetired = parsed.booleans.has("--all");
@@ -115963,8 +116161,8 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
   const path = resolvedVault.path;
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure");
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     let vault = hold(opened.vault);
@@ -116109,12 +116307,12 @@ async function refuseWithoutRoom(ctx) {
 }
 async function reopenFromDisk(path, reopen, previous) {
   closeVault(previous);
-  const raw = await readVaultRaw(path);
-  if (raw === null)
+  const raw2 = await readVaultRaw(path);
+  if (raw2 === null)
     throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, {
       suggestion: "The vault was there when this run started. Check nothing moved or removed it, then: candle vault status"
     });
-  return reopen(path, raw, "re-opening the vault to verify its current contents");
+  return reopen(path, raw2, "re-opening the vault to verify its current contents");
 }
 async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
   if ("error" in parsed)
@@ -116126,8 +116324,8 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
   const sweepTo = parsed.values["--sweep-to"];
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure");
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     let vault = hold(opened.vault);
@@ -116518,8 +116716,8 @@ async function runTeeImport(ctx, opts) {
   const name2 = ctx.profile ?? config.activeProfile;
   const account = name2 !== undefined ? config.profiles?.[name2]?.account ?? "" : "";
   const importedAt = new Date(ctx.deps.now()).toISOString();
-  const raw = await requireVaultRaw(ctx, opts.resolvedVault);
-  const vault = await opts.reopenForWrite(opts.resolvedVault.path, raw, "re-opening the vault to save the import result");
+  const raw2 = await requireVaultRaw(ctx, opts.resolvedVault);
+  const vault = await opts.reopenForWrite(opts.resolvedVault.path, raw2, "re-opening the vault to save the import result");
   let committed;
   try {
     committed = await commitVault(vault, {
@@ -116599,10 +116797,10 @@ function parsePairsFile(contents, opts) {
   const findings = [];
   const lines = contents.split(/\r?\n/);
   const meaningful = [];
-  for (const [at3, raw] of lines.entries()) {
-    if (raw.trim().length === 0 || COMMENT.test(raw))
+  for (const [at3, raw2] of lines.entries()) {
+    if (raw2.trim().length === 0 || COMMENT.test(raw2))
       continue;
-    meaningful.push({ line: at3 + 1, text: raw });
+    meaningful.push({ line: at3 + 1, text: raw2 });
   }
   const first = meaningful[0];
   if (first === undefined) {
@@ -116921,8 +117119,8 @@ ${table}
 ${CONTINUATION_SENTENCE(refusal5.total)}
 `);
 }
-function parseValueUsdCell(raw) {
-  const cleaned = raw.trim().replace(/^\$/, "").replace(/,/g, "");
+function parseValueUsdCell(raw2) {
+  const cleaned = raw2.trim().replace(/^\$/, "").replace(/,/g, "");
   if (cleaned.length === 0)
     return;
   const value = Number(cleaned);
@@ -117044,8 +117242,8 @@ async function vaultPromoteBatch(args, ctx) {
     };
   }
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     let current = hold(opened.vault);
@@ -117903,10 +118101,10 @@ async function discardIncompleteRestore(ctx, path, sidecarExisted) {
 }
 var RESTORED_BRANCHES = ["solanaVault", "solanaTee", "solanaExternal"];
 function parseCounts(count3, teeCount, externalCount, rpcUrl, evmCount, evmTeeCount) {
-  const parse = (raw, flag) => {
-    if (raw === undefined)
+  const parse = (raw2, flag) => {
+    if (raw2 === undefined)
       return;
-    const value = Number(raw);
+    const value = Number(raw2);
     if (!Number.isInteger(value) || value < 0)
       return { error: `${flag} must be a whole number, zero or greater.` };
     return value;
@@ -118310,8 +118508,8 @@ async function vaultReconcileExposure(args, ctx) {
     return usage2(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const vault = hold((await unlockInteractively(ctx, path, raw2, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
     const apiKey = await resolveApiKey(deps, ctx.profile);
     if (apiKey === undefined) {
       throw new VaultError("VAULT_UNREADABLE", "No API key is stored for this profile, so there is no account to reconcile against.", {
@@ -118569,10 +118767,10 @@ async function vaultStatus(args, ctx) {
   const unlock = parsed.booleans.has("--unlock");
   const unlockCtx = refusePromptsWithoutTerminal(ctx, "vault status --unlock");
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await readVaultRaw(path);
-    if (raw === null)
+    const raw2 = await readVaultRaw(path);
+    if (raw2 === null)
       throw missingVault(ctx, resolvedVault);
-    const file = parseVaultFile(raw);
+    const file = parseVaultFile(raw2);
     if (unlock)
       assertVaultHelperIdentities(deps, file.envelopes);
     const facts = await currentPlatformFacts(deps);
@@ -118584,7 +118782,7 @@ async function vaultStatus(args, ctx) {
     const backup = sidecar ? describeLastBackup(sidecar, file.envelopes) : undefined;
     let unlocked;
     if (unlock) {
-      const vault = hold((await unlockInteractively(unlockCtx, path, raw, {
+      const vault = hold((await unlockInteractively(unlockCtx, path, raw2, {
         acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
       })).vault);
       unlocked = {
@@ -118851,8 +119049,8 @@ async function vaultTransfer(args, ctx) {
     return usage2(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
+    const raw2 = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       promptText: "Vault passphrase (input hidden): ",
       reason: describeSend(amount, asset, to)
@@ -120077,8 +120275,8 @@ function configFilePath() {
 }
 async function readConfig() {
   try {
-    const raw = await readFile20(configFilePath(), "utf8");
-    return JSON.parse(raw);
+    const raw2 = await readFile20(configFilePath(), "utf8");
+    return JSON.parse(raw2);
   } catch (err) {
     if (err.code === "ENOENT")
       return {};

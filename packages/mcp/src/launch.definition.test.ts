@@ -4,6 +4,7 @@ import {
   launchFieldHelp,
   launchTokenShape,
   MCP_IMAGE_PATH_KEYS,
+  MCP_QUOTE_CONTROL_KEYS,
   mcpLaunchFields,
   mcpLaunchTopKeys,
   SEED_LEGACY_KEYS,
@@ -53,8 +54,12 @@ function registered(env?: Record<string, string>, fetch?: FetchLike) {
 
 test("shape keys equal the definition's MCP keys plus each tool's legacy keys", () => {
   const defined = mcpLaunchTopKeys()
-  expect(sorted(Object.keys(launchTokenShape))).toEqual(sorted([...defined, ...TOKEN_LEGACY_KEYS]))
-  expect(sorted(Object.keys(launchAndSeedShape))).toEqual(sorted([...defined, ...SEED_LEGACY_KEYS]))
+  expect(sorted(Object.keys(launchTokenShape))).toEqual(
+    sorted([...defined, ...TOKEN_LEGACY_KEYS, ...MCP_QUOTE_CONTROL_KEYS]),
+  )
+  expect(sorted(Object.keys(launchAndSeedShape))).toEqual(
+    sorted([...defined, ...SEED_LEGACY_KEYS, ...MCP_QUOTE_CONTROL_KEYS]),
+  )
   expect(defined).not.toContain("wallet")
   expect(defined).not.toContain("buy")
   expect(Object.keys(launchTokenShape)).not.toContain("candle_launch")

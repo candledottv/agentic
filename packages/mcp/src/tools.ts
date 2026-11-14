@@ -64,7 +64,10 @@ import {
   UPLOADED_IMAGE_NOTE,
 } from "./image"
 import { executeLabTool, LAB_DESCRIPTIONS, type LabToolName, labShapes } from "./lab-tools"
+import { launchCheck, launchControlError, launchExecutionArgs } from "./launch-check"
+import { LaunchCheckError } from "./launch-preflight"
 import {
+  checkableLaunchShape,
   LAUNCH_SHARED_SENTENCES,
   launchAndSeedShape,
   launchSchemaField,
@@ -2016,9 +2019,24 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything. " +
         LAUNCH_SHARED_SENTENCES +
         (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
-      inputSchema: (imageDir ? localLaunchTokenShape : launchTokenShape) as typeof localLaunchTokenShape,
+      inputSchema: checkableLaunchShape(
+        imageDir ? localLaunchTokenShape : launchTokenShape,
+      ) as typeof localLaunchTokenShape,
     },
     async (args) => {
+      if ("check" in args && args.check === true) return launchCheck(args, getConfig(), doFetch)
+      try {
+        args = launchExecutionArgs(args)
+        if (!imageDir && args.imageUrl === undefined && !("imagePath" in args))
+          return launchControlError(new LaunchCheckError("VALIDATION_FAILED", "imageUrl is required for a launch."))
+        const parsed = z
+          .object(imageDir ? localLaunchTokenShape : launchTokenShape)
+          .omit({ imageUrl: true })
+          .safeParse(args)
+        if (!parsed.success) return launchControlError(new LaunchCheckError("VALIDATION_FAILED", parsed.error.message))
+      } catch (error) {
+        return launchControlError(error)
+      }
       const socialsProblem = socialsRefusal("socials" in args ? (args as { socials?: unknown }).socials : undefined)
       if (socialsProblem) {
         return { content: [{ type: "text", text: imageRefusalBody(socialsProblem) }], isError: true }
@@ -2982,9 +3000,24 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "and top up with candle_trade. " +
         LAUNCH_SHARED_SENTENCES +
         (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
-      inputSchema: (imageDir ? localLaunchAndSeedShape : launchAndSeedShape) as typeof localLaunchAndSeedShape,
+      inputSchema: checkableLaunchShape(
+        imageDir ? localLaunchAndSeedShape : launchAndSeedShape,
+      ) as typeof localLaunchAndSeedShape,
     },
     async (args) => {
+      if ("check" in args && args.check === true) return launchCheck(args, getConfig(), doFetch)
+      try {
+        args = launchExecutionArgs(args)
+        if (!imageDir && args.imageUrl === undefined && !("imagePath" in args))
+          return launchControlError(new LaunchCheckError("VALIDATION_FAILED", "imageUrl is required for a launch."))
+        const parsed = z
+          .object(imageDir ? localLaunchAndSeedShape : launchAndSeedShape)
+          .omit({ imageUrl: true })
+          .safeParse(args)
+        if (!parsed.success) return launchControlError(new LaunchCheckError("VALIDATION_FAILED", parsed.error.message))
+      } catch (error) {
+        return launchControlError(error)
+      }
       const result = await executeLaunchAndSeed(args as never, getConfig(), doFetch, imageDir, undefined, {
         headlessSeed: options.headlessSeed === true,
       })

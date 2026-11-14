@@ -18,6 +18,9 @@ export const LAUNCH_DEFINITION = {
   },
   "quoteSelection": {
     "flag": "--quote",
+    "key": "quote",
+    "checkKey": "check",
+    "checkHelp": "Read launch paths and quote admission without uploading, building, signing or sending. No name, image or launch id is needed. Pass check or dryRun, never both. Admission is separate from executionEnabled; a successful check does not enable a new quote.",
     "value": "<symbol|address>",
     "help": "Select a quote by featured symbol or token address. With --check, show admission checks, curve figures, graduation raise and issuer disclosure. New quotes require server launch support; --quote-asset remains supported for fixed pairs.",
     "fixedPairs": [

@@ -123,6 +123,23 @@ the caller's draft untouched. Feature-off, missing scope/auth, insufficient hold
 proof, unsafe text, unavailable eligibility and old-server errors remain refusals for the caller to
 handle. Do not log content bodies, credentials or creator signatures.
 
+## Quote admission checks (source only)
+
+`await candle.launch({ check: true, quote: "NVDA", chain: "hood", mode: "open" })`
+reads the same preflight as `candle launch --quote NVDA --check`. No token name,
+image, launch id or signer is needed. `checkLaunch()` accepts the same request.
+The result includes `quote.checks`, raw curve figures, graduation raise,
+`economicsDigest`, issuer disclosure and `executionEnabled`. `works` combines
+wallet availability and admission; it does not enable execution. Omit `wallet`
+to check all paths, or name an embedded/TEE wallet as on the CLI.
+
+Pass `quote` or the legacy `quoteAsset`, never both. Symbols and addresses of
+existing fixed pairs map to their existing launch path and figures. New quotes
+are check-only: execution refuses with `QUOTE_LAUNCH_UNAVAILABLE`. A server
+without quote checks, or without the required receiver context, fails closed
+with `QUOTE_CHECK_UNAVAILABLE`. Named admission refusals remain in `quote.checks`
+with `works: false`. This build changes no package version or deployment.
+
 ## Embedded launches with built-in idempotent retries
 
 `launch()` fills in a `clientLaunchId` (`"sdk-" + crypto.randomUUID()`) when you omit one, and

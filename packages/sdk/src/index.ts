@@ -349,6 +349,7 @@ export {
   type LabReplayStarted,
   type LabStatus,
 } from "./lab"
+export type { LaunchCheckRequest, LaunchCheckResult, LaunchPreflight, LaunchQuoteCheck } from "./launch-preflight"
 export {
   PERPS_HISTORY_DEFAULT_LIMIT,
   PERPS_HISTORY_MAX_LIMIT,

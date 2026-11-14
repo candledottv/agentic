@@ -47,10 +47,16 @@ export const TOKEN_LEGACY_KEYS = ["buyAmount"] as const
 export const SEED_LEGACY_KEYS = ["devBuy"] as const
 /** Present only when CANDLE_IMAGE_DIR is set. Not launch-definition fields. */
 export const MCP_IMAGE_PATH_KEYS = ["imagePath", "bannerPath"] as const
+export const MCP_QUOTE_CONTROL_KEYS = [
+  LAUNCH_DEFINITION.quoteSelection.key,
+  LAUNCH_DEFINITION.quoteSelection.checkKey,
+] as const
 
-export const LAUNCH_SHARED_SENTENCES = mcpLaunchFields()
-  .map((field) => field.help)
-  .join(" ")
+export const LAUNCH_SHARED_SENTENCES = [
+  ...mcpLaunchFields().map((field) => field.help),
+  LAUNCH_DEFINITION.quoteSelection.help,
+  LAUNCH_DEFINITION.quoteSelection.checkHelp,
+].join(" ")
 
 function fieldByKey(key: string): LaunchField {
   const field = LAUNCH_DEFINITION.fields.find((item) => item.key === key)
@@ -223,6 +229,11 @@ const DEV_BUY_DESCRIPTION =
 
 export function buildLaunchTokenShape(): Record<string, z.ZodTypeAny> {
   const shape: Record<string, z.ZodTypeAny> = {}
+  shape[LAUNCH_DEFINITION.quoteSelection.key] = z.string().optional().describe(LAUNCH_DEFINITION.quoteSelection.help)
+  shape[LAUNCH_DEFINITION.quoteSelection.checkKey] = z
+    .boolean()
+    .optional()
+    .describe(LAUNCH_DEFINITION.quoteSelection.checkHelp)
   for (const field of mcpLaunchFields()) {
     const key = mcpKey(field)
     if (!key) continue
@@ -239,6 +250,13 @@ export function buildLaunchTokenShape(): Record<string, z.ZodTypeAny> {
 }
 
 export const launchTokenShape = buildLaunchTokenShape()
+
+/** MCP raw shapes cannot express check-dependent required fields. Validate the write shape in the handler. */
+export function checkableLaunchShape(shape: Record<string, z.ZodTypeAny>): Record<string, z.ZodTypeAny> {
+  return Object.fromEntries(
+    Object.entries(shape).map(([key, value]) => [key, value.optional().describe(value.description ?? "")]),
+  )
+}
 
 export const launchAndSeedShape: Record<string, z.ZodTypeAny> = (() => {
   const { buyAmount: _rawBuyAmount, ...seedable } = launchTokenShape

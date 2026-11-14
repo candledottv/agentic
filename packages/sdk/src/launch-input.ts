@@ -1,6 +1,7 @@
 import type { Chain, LaunchRequest } from "./client"
 import { CandleApiError } from "./errors"
 import { LAUNCH_DEFINITION } from "./launch-definition"
+import { fixedLaunchQuote, LaunchCheckError } from "./launch-preflight"
 
 export function embeddedLaunchWallet(wallet: LaunchRequest["wallet"]): boolean {
   return (
@@ -15,6 +16,12 @@ export function launchInputError(field: string, message: string, code = "VALIDAT
 
 /** Local shape refusals happen before discovery, build or signing. Server limits stay server-owned. */
 export function validateLaunchInput(req: LaunchRequest): void {
+  try {
+    fixedLaunchQuote(req)
+  } catch (error) {
+    if (error instanceof LaunchCheckError) throw launchInputError(error.field ?? "quote", error.message, error.code)
+    throw error
+  }
   if (req.buy !== undefined && req.buyAmount !== undefined)
     throw launchInputError("buy", "Pass buy or the deprecated buyAmount, never both.")
   if (req.wallet !== undefined && "linkedWalletId" in req)
@@ -57,8 +64,15 @@ export function validateLaunchInput(req: LaunchRequest): void {
 }
 
 /** Strip SDK controls and translate the whole-unit first buy without floating point rounding. */
-export function launchBody(req: LaunchRequest, chain?: Chain): Omit<LaunchRequest, "wallet" | "buy"> {
-  const { wallet: _wallet, buy, ...body } = req
+export function launchBody(req: LaunchRequest, chain?: Chain): Omit<LaunchRequest, "wallet" | "buy" | "quote"> {
+  const { wallet: _wallet, buy, quote: _quote, ...body } = req
+  try {
+    const quote = fixedLaunchQuote({ ...req, chain: chain ?? req.chain })
+    if (quote !== undefined) body.quoteAsset = quote as LaunchRequest["quoteAsset"]
+  } catch (error) {
+    if (error instanceof LaunchCheckError) throw launchInputError(error.field ?? "quote", error.message, error.code)
+    throw error
+  }
   // Multi-EVM F5: `Chain` is registry-wide, while a launch still names one of the chains with
   // launch contracts (the generated definition's enum). A chain outside it fails closed two
   // lines below: no default quote, so "Unsupported launch quote asset".
@@ -66,6 +80,7 @@ export function launchBody(req: LaunchRequest, chain?: Chain): Omit<LaunchReques
   const quote = body.quoteAsset ?? LAUNCH_DEFINITION.defaultQuote[body.chain ?? "solana"]
   const quoteChain = LAUNCH_DEFINITION.quoteChains[quote]
   if (!quoteChain) throw launchInputError("quoteAsset", "Unsupported launch quote asset.")
+  if (_quote !== undefined && body.chain === undefined) body.chain = quoteChain
   if (body.chain !== undefined && body.chain !== quoteChain)
     throw launchInputError("quoteAsset", "The quote asset disagrees with the launch chain.", "CHAIN_MISMATCH")
   if (buy === undefined || buy.trim() === "" || /^0+(\.0+)?$/.test(buy)) return body

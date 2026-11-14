@@ -72,6 +72,20 @@ Both take decimal amounts, never raw base units, and resolve the scale themselve
   there the caller genuinely picks the new token's quote pair: `quoteAsset` if given, otherwise
   SOL on Solana and ETH on Hood.
 
+Both launch tools accept `check: true, quote: "NVDA", chain: "hood"` (source only).
+This reads the CLI's launch preflight before any image handling: no name, image,
+launch id, upload, build, signing or seed buy is needed. It returns the server's
+named checks, raw curve figures, graduation raise, economics digest and issuer
+disclosure. `works` checks the embedded wallet path used by these tools; admission
+does not enable execution (`quote.executionEnabled` is separate). Named refusals
+set `works: false` and MCP `isError`; HTTP errors preserve the server's body.
+Do not combine `check` with `dryRun`, or `quote` with `quoteAsset`.
+
+Existing fixed-pair symbols and addresses map to their existing launch path and
+figures. New-quote execution refuses with `QUOTE_LAUNCH_UNAVAILABLE` before image
+reads or uploads. Old servers and missing quote-observation/receiver context
+fail closed with `QUOTE_CHECK_UNAVAILABLE`. This build publishes or enables nothing.
+
 Both launch tools also take `mode: "exp-custom"` with `curve: { virtualQuote, threshold }`: a
 Solana curve with your own V and G, in whole SOL or CNDL as decimal strings, inside limits the
 API enforces and each tool's description states. Any `exp-` mode takes `creatorFeeBps` (0, 100 or

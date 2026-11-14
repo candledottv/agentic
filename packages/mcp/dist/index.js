@@ -1143,9 +1143,6 @@ async function executeLabTool(name, args, cfg, env, doFetch) {
   }
 }
 
-// src/launch-schema.ts
-import { z as z4 } from "zod";
-
 // src/launch-definition.ts
 var LAUNCH_DEFINITION = {
   version: 1,
@@ -1165,6 +1162,9 @@ var LAUNCH_DEFINITION = {
   },
   quoteSelection: {
     flag: "--quote",
+    key: "quote",
+    checkKey: "check",
+    checkHelp: "Read launch paths and quote admission without uploading, building, signing or sending. No name, image or launch id is needed. Pass check or dryRun, never both. Admission is separate from executionEnabled; a successful check does not enable a new quote.",
     value: "<symbol|address>",
     help: "Select a quote by featured symbol or token address. With --check, show admission checks, curve figures, graduation raise and issuer disclosure. New quotes require server launch support; --quote-asset remains supported for fixed pairs.",
     fixedPairs: [
@@ -2139,7 +2139,155 @@ var LAUNCH_DEFINITION = {
   ]
 };
 
+// src/launch-preflight.ts
+class LaunchCheckError extends Error {
+  code;
+  field;
+  constructor(code, message, field) {
+    super(message);
+    this.code = code;
+    this.field = field;
+  }
+}
+function fixedLaunchQuote(input) {
+  if (input.quote === undefined)
+    return input.quoteAsset;
+  if (typeof input.quote !== "string" || !input.quote.trim() || input.quote.trim().length > 120)
+    throw new LaunchCheckError("VALIDATION_FAILED", "quote needs a symbol or token address.", "quote");
+  if (input.quoteAsset !== undefined)
+    throw new LaunchCheckError("VALIDATION_FAILED", "Pass quote or quoteAsset, never both.", "quote");
+  const value = input.quote.trim();
+  const pair = LAUNCH_DEFINITION.quoteSelection.fixedPairs.find((p) => p.id === value.toLowerCase() || p.address === value || p.chain === "hood" && p.address.toLowerCase() === value.toLowerCase());
+  if (!pair)
+    throw new LaunchCheckError("QUOTE_LAUNCH_UNAVAILABLE", "New-quote execution is unavailable. Use check: true for admission and economics only.", "quote");
+  if (input.chain !== undefined && input.chain !== pair.chain)
+    throw new LaunchCheckError("CHAIN_MISMATCH", "The quote disagrees with the launch chain.", "quote");
+  return pair.id;
+}
+function launchCheckPath(input) {
+  if (input.dryRun)
+    throw new LaunchCheckError("VALIDATION_FAILED", "Pass check or dryRun, never both.", "check");
+  if (input.quote !== undefined && input.quoteAsset !== undefined)
+    throw new LaunchCheckError("VALIDATION_FAILED", "Pass quote or quoteAsset, never both.", "quote");
+  const query2 = new URLSearchParams;
+  if (input.quote !== undefined) {
+    if (typeof input.quote !== "string" || !input.quote.trim() || input.quote.trim().length > 120)
+      throw new LaunchCheckError("VALIDATION_FAILED", "quote needs a symbol or token address.", "quote");
+    query2.set("quote", input.quote.trim());
+    for (const key of ["chain", "mode", "stakerAllocationBps", "dexVersion"])
+      if (input[key] !== undefined)
+        query2.set(key, String(input[key]));
+  }
+  return `/api/v1/launch/preflight${query2.size ? `?${query2}` : ""}`;
+}
+function object(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+var positive = (value) => typeof value === "number" && Number.isFinite(value) && value > 0;
+var raw = (value) => typeof value === "string" && /^\d+$/.test(value);
+function readLaunchCheck(value, input) {
+  const fail2 = (message) => {
+    throw new LaunchCheckError("QUOTE_CHECK_UNAVAILABLE", message);
+  };
+  if (!object(value) || value.success !== true || !object(value.key) || !object(value.switches) || !Array.isArray(value.wallets))
+    return fail2("The server returned an invalid launch preflight.");
+  const { key, switches } = value;
+  if (typeof key.keyPrefix !== "string" || typeof key.tier !== "string" || !Array.isArray(key.scopes) || !key.scopes.every((s) => typeof s === "string") || typeof key.selfLaunch !== "boolean" || !["allowed", "denied"].includes(String(key.embeddedWalletPermission)) || ["headlessLaunch", "agentTrading", "teeLaunchBuys"].some((k) => typeof switches[k] !== "boolean"))
+    return fail2("The server returned incomplete launch permissions.");
+  for (const wallet of value.wallets)
+    if (!object(wallet) || ["id", "address", "chain"].some((k) => typeof wallet[k] !== "string") || !(wallet.label === null || typeof wallet.label === "string") || typeof wallet.allowLaunch !== "boolean" || typeof wallet.active !== "boolean")
+      return fail2("The server returned an invalid launch wallet.");
+  if (value.embedded !== undefined) {
+    if (!object(value.embedded))
+      return fail2("The server returned invalid embedded wallets.");
+    for (const chain2 of ["solana", "evm"]) {
+      const wallet = value.embedded[chain2];
+      if (wallet != null && (!object(wallet) || typeof wallet.address !== "string" || wallet.delegated !== undefined && typeof wallet.delegated !== "boolean"))
+        return fail2("The server returned an invalid embedded wallet.");
+    }
+  }
+  const q = value.quote;
+  if (input.quote !== undefined) {
+    if (!object(q) || q.requested !== input.quote.trim() || typeof q.ok !== "boolean" || typeof q.executionEnabled !== "boolean" || !(q.disclosure === null || typeof q.disclosure === "string") || !Array.isArray(q.checks) || q.checks.length === 0 || q.checks.some((c) => !object(c) || typeof c.check !== "string" || typeof c.message !== "string" || !["pass", "skip", "refuse"].includes(String(c.status)) || c.code !== undefined && typeof c.code !== "string") || q.chain !== undefined && q.chain !== "solana" && q.chain !== "hood" || ["address", "symbol"].some((k) => q[k] !== undefined && typeof q[k] !== "string") || q.decimals !== undefined && (!Number.isInteger(q.decimals) || Number(q.decimals) < 0 || Number(q.decimals) > 255) || q.classification !== undefined && !["ordinary", "featured", "trusted", "stock"].includes(String(q.classification)))
+      return fail2("The server did not return a valid check for the requested quote.");
+    const e = q.economics;
+    if (e !== undefined && (!object(e) || !["fixed", "derived"].includes(String(e.kind)) || typeof e.economicsDigest !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(e.economicsDigest) || !raw(e.thresholdRaw) || !positive(e.startFdv) || !positive(e.bondingFdv) || !object(e.curve) || !Object.values(e.curve).every(raw) || e.priceUsd !== undefined && !positive(e.priceUsd) || e.raiseUsd !== undefined && !positive(e.raiseUsd)))
+      return fail2("The server returned invalid quote economics.");
+    const refused = q.checks.some((c) => c.status === "refuse");
+    if (q.ok && (!e || !q.chain || !q.address || q.decimals === undefined || refused) || !q.ok && !refused)
+      return fail2("The server returned contradictory quote admission.");
+    if (input.chain && q.chain && input.chain !== q.chain)
+      throw new LaunchCheckError("CHAIN_MISMATCH", "The checked quote disagrees with the launch chain.");
+  }
+  const answer = value;
+  const chain = input.chain ?? answer.quote?.chain;
+  const embeddedOnly = input.wallet !== undefined && LAUNCH_DEFINITION.wallet.embeddedNames.includes(input.wallet);
+  const named = input.wallet === undefined || embeddedOnly ? answer.wallets : answer.wallets.filter((w) => w.id === input.wallet || w.address === input.wallet || w.label === input.wallet);
+  if (input.wallet !== undefined && !embeddedOnly && named.length !== 1)
+    throw new LaunchCheckError("TEE_WALLET_REQUIRED", "Name exactly one bound TEE wallet by id, address or label.", "wallet");
+  const embedded = (chain ? [chain] : ["solana", "hood"]).some((c) => {
+    const wallet = c === "solana" ? answer.embedded?.solana : answer.embedded?.evm;
+    return wallet != null && wallet.delegated !== false;
+  });
+  const walletWorks = key.scopes.includes("launch:write") && switches.headlessLaunch === true && ((input.wallet === undefined || embeddedOnly) && key.embeddedWalletPermission === "allowed" && embedded || !embeddedOnly && key.selfLaunch === true && named.some((w) => w.active && w.allowLaunch && (!chain || (w.chain === "evm" ? "hood" : w.chain) === chain)));
+  return {
+    ...answer,
+    check: true,
+    walletWorks,
+    works: walletWorks && (input.quote === undefined || answer.quote?.ok === true)
+  };
+}
+
+// src/launch-check.ts
+async function launchCheck(args, cfg, fetch2) {
+  try {
+    if (!cfg.apiKey)
+      throw new LaunchCheckError("UNAUTHORIZED", "An API key is required for launch checks.");
+    const input = args;
+    const path = launchCheckPath(input);
+    const response = await fetch2(`${cfg.apiUrl.replace(/\/$/, "")}${path}`, {
+      method: "GET",
+      headers: { "x-api-key": cfg.apiKey }
+    });
+    const text = await response.text();
+    if (!response.ok)
+      return { content: [{ type: "text", text }], isError: true };
+    const result = readLaunchCheck(JSON.parse(text), { ...input, wallet: "embedded" });
+    return {
+      content: [{ type: "text", text: JSON.stringify(result) }],
+      ...!result.works ? { isError: true } : {}
+    };
+  } catch (error) {
+    return launchControlError(error);
+  }
+}
+function launchControlError(error) {
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          success: false,
+          error: {
+            code: error instanceof LaunchCheckError ? error.code : "QUOTE_CHECK_UNAVAILABLE",
+            message: error instanceof Error ? error.message : "Launch check unavailable.",
+            ...error instanceof LaunchCheckError && error.field ? { field: error.field } : {}
+          }
+        })
+      }
+    ],
+    isError: true
+  };
+}
+function launchExecutionArgs(args) {
+  const { quote, check: _check, ...body } = args;
+  const quoteAsset = fixedLaunchQuote({ quote, quoteAsset: args.quoteAsset, chain: args.chain });
+  const chain = quote === undefined || body.chain !== undefined ? body.chain : LAUNCH_DEFINITION.quoteChains[quoteAsset];
+  return { ...body, ...quoteAsset === undefined ? {} : { quoteAsset }, ...chain === undefined ? {} : { chain } };
+}
+
 // src/launch-schema.ts
+import { z as z4 } from "zod";
 var M2_TOP_KEYS = new Set(["wallet", "buy", "feeWallet", "feeWalletMultisig"]);
 var GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee", "launchRules"]);
 function mcpKey(field) {
@@ -2155,7 +2303,15 @@ function mcpLaunchFields() {
     return key !== undefined && !M2_TOP_KEYS.has(topKey(key));
   });
 }
-var LAUNCH_SHARED_SENTENCES = mcpLaunchFields().map((field) => field.help).join(" ");
+var MCP_QUOTE_CONTROL_KEYS = [
+  LAUNCH_DEFINITION.quoteSelection.key,
+  LAUNCH_DEFINITION.quoteSelection.checkKey
+];
+var LAUNCH_SHARED_SENTENCES = [
+  ...mcpLaunchFields().map((field) => field.help),
+  LAUNCH_DEFINITION.quoteSelection.help,
+  LAUNCH_DEFINITION.quoteSelection.checkHelp
+].join(" ");
 function fieldByKey(key) {
   const field = LAUNCH_DEFINITION.fields.find((item) => item.key === key);
   if (!field)
@@ -2299,6 +2455,8 @@ var BUY_AMOUNT_DESCRIPTION = "Initial buy, in quote base units (string or number
 var DEV_BUY_DESCRIPTION = 'Seed buy in DECIMAL units of the quote asset this launch selects (e.g. "0.25" SOL, or ' + "ETH on hood), paid from the account's embedded wallet; the tool's description says how " + "each chain sends it. Follows quoteAsset, which defaults to sol on solana and eth on hood. " + "Capped by the platform dev-buy ceiling; for a larger seed, launch then follow with candle_trade.";
 function buildLaunchTokenShape() {
   const shape = {};
+  shape[LAUNCH_DEFINITION.quoteSelection.key] = z4.string().optional().describe(LAUNCH_DEFINITION.quoteSelection.help);
+  shape[LAUNCH_DEFINITION.quoteSelection.checkKey] = z4.boolean().optional().describe(LAUNCH_DEFINITION.quoteSelection.checkHelp);
   for (const field of mcpLaunchFields()) {
     const key = mcpKey(field);
     if (!key)
@@ -2316,6 +2474,9 @@ function buildLaunchTokenShape() {
   return shape;
 }
 var launchTokenShape = buildLaunchTokenShape();
+function checkableLaunchShape(shape) {
+  return Object.fromEntries(Object.entries(shape).map(([key, value]) => [key, value.optional().describe(value.description ?? "")]));
+}
 var launchAndSeedShape = (() => {
   const { buyAmount: _rawBuyAmount, ...seedable } = launchTokenShape;
   return {
@@ -3217,10 +3378,10 @@ function actionShapeProblem(action) {
   const orders = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : [];
   if (!Array.isArray(orders))
     return "invalid orders";
-  for (const raw of orders) {
-    if (!exactKeys(raw, ["a", "b", "p", "s", "r", "t"], ["c"]))
+  for (const raw2 of orders) {
+    if (!exactKeys(raw2, ["a", "b", "p", "s", "r", "t"], ["c"]))
       return "an order carries unexpected or missing fields";
-    const o = raw;
+    const o = raw2;
     const t = o.t;
     const limit = exactKeys(t, ["limit"]) && exactKeys(t.limit, ["tif"]);
     const trigger = exactKeys(t, ["trigger"]) && exactKeys(t.trigger, ["isMarket", "triggerPx", "tpsl"]);
@@ -3253,10 +3414,10 @@ function checkActionIntent(action, opts) {
   const orderList = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : [];
   if (!Array.isArray(orderList))
     return "invalid orders";
-  for (const raw of orderList) {
-    if (!raw || typeof raw !== "object")
+  for (const raw2 of orderList) {
+    if (!raw2 || typeof raw2 !== "object")
       return "invalid order";
-    const o = raw;
+    const o = raw2;
     if (!mainAsset(o.a))
       return "order asset is outside the main perp universe";
     if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal(o.s) ?? 0n) <= 0n || (decimal(o.p) ?? 0n) <= 0n)
@@ -3724,8 +3885,8 @@ async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.n
   if (!Array.isArray(open2))
     throw new Error("Hyperliquid returned an unreadable order list");
   const orders = [];
-  for (const raw of open2) {
-    const o = raw;
+  for (const raw2 of open2) {
+    const o = raw2;
     const coin = o?.coin;
     if (typeof coin !== "string") {
       unsupported.push("an unreadable order");
@@ -4068,10 +4229,10 @@ async function runPerpsTpsl(io, params) {
   const coin = typeof server.coin === "string" ? server.coin : params.coin.toUpperCase();
   const venueLegs = snapshot.orders.filter((o) => o.coin === coin && o.tpsl !== null);
   const tracked = [];
-  for (const raw of Array.isArray(server.tracked) ? server.tracked : []) {
-    const seen = venueLegs.find((o) => o.oid === raw.oid && o.tpsl === raw.leg && (o.cloid ?? null) === (raw.cloid ?? null));
+  for (const raw2 of Array.isArray(server.tracked) ? server.tracked : []) {
+    const seen = venueLegs.find((o) => o.oid === raw2.oid && o.tpsl === raw2.leg && (o.cloid ?? null) === (raw2.cloid ?? null));
     if (seen)
-      tracked.push({ leg: raw.leg, oid: seen.oid, cloid: seen.cloid, triggerPx: seen.triggerPx });
+      tracked.push({ leg: raw2.leg, oid: seen.oid, cloid: seen.cloid, triggerPx: seen.triggerPx });
   }
   const trackedOids = new Set(tracked.map((l) => l.oid));
   const unowned = venueLegs.filter((o) => !trackedOids.has(o.oid)).map((o) => ({ leg: o.tpsl, oid: o.oid, cloid: o.cloid, triggerPx: o.triggerPx }));
@@ -4383,7 +4544,7 @@ function unavailable() {
 function usage(message) {
   throw new PerpsMarketError("PERPS_USAGE", message);
 }
-function object(value) {
+function object2(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 function decimal2(value) {
@@ -4419,10 +4580,10 @@ function parseMarkets(value) {
   if (!Array.isArray(value) || value.length !== 2)
     return unavailable();
   const [meta, ctxs] = value;
-  if (!object(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
+  if (!object2(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
     return unavailable();
   for (const row of meta.universe) {
-    if (!object(row) || typeof row.name !== "string" || !integer(row.szDecimals) || row.szDecimals > 6 || !integer(row.maxLeverage))
+    if (!object2(row) || typeof row.name !== "string" || !integer(row.szDecimals) || row.szDecimals > 6 || !integer(row.maxLeverage))
       return unavailable();
     for (const key of ["isDelisted", "onlyIsolated"])
       if (row[key] !== undefined && typeof row[key] !== "boolean")
@@ -4431,7 +4592,7 @@ function parseMarkets(value) {
       return unavailable();
   }
   for (const ctx of ctxs) {
-    if (!object(ctx))
+    if (!object2(ctx))
       return unavailable();
     for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
       if (ctx[key] !== undefined && ctx[key] !== null && !decimal2(ctx[key]))
@@ -4445,11 +4606,11 @@ function parseMarkets(value) {
     if (!Array.isArray(meta.marginTables))
       return unavailable();
     for (const entry of meta.marginTables) {
-      if (!Array.isArray(entry) || !integer(entry[0]) || !object(entry[1]) || !Array.isArray(entry[1].marginTiers))
+      if (!Array.isArray(entry) || !integer(entry[0]) || !object2(entry[1]) || !Array.isArray(entry[1].marginTiers))
         return unavailable();
       const tiers = [];
       for (const tier of entry[1].marginTiers) {
-        if (!object(tier) || nonnegative(tier.lowerBound) === null || !integer(tier.maxLeverage))
+        if (!object2(tier) || nonnegative(tier.lowerBound) === null || !integer(tier.maxLeverage))
           return unavailable();
         tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
       }
@@ -4542,15 +4703,15 @@ function perpsCandleWindow(opts, now) {
   if (index < 0)
     return usage(`interval must be one of ${PERPS_CANDLE_INTERVALS.join(" ")}.`);
   const count = bounded(opts.count, 100, 1, 5000, "count");
-  const raw = opts.end;
-  const endTime = raw === undefined ? now : epoch(raw);
+  const raw2 = opts.end;
+  const endTime = raw2 === undefined ? now : epoch(raw2);
   const startTime = endTime - count * at(INTERVAL_MS, index);
   if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
     return usage("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
   return { interval, count, startTime, endTime };
 }
-function epoch(raw) {
-  return typeof raw === "number" || /^\d+$/.test(raw) ? Number(raw) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw) ? Date.parse(raw) : NaN;
+function epoch(raw2) {
+  return typeof raw2 === "number" || /^\d+$/.test(raw2) ? Number(raw2) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw2) ? Date.parse(raw2) : NaN;
 }
 var PERPS_FUNDING_HISTORY_MAX_MS = 30 * 86400000;
 var PERPS_FUNDING_HISTORY_MAX_ROWS = 500;
@@ -4576,7 +4737,7 @@ function parsePerpsFundingHistory(value, coin, window) {
     return unavailable();
   const funding = [];
   for (const row of value) {
-    if (!object(row) || row.coin !== coin || !integer(row.time) || !decimal2(row.fundingRate) || !decimal2(row.premium))
+    if (!object2(row) || row.coin !== coin || !integer(row.time) || !decimal2(row.fundingRate) || !decimal2(row.premium))
       return unavailable();
     if (row.time >= window.startTime && row.time <= window.endTime)
       funding.push({
@@ -4614,7 +4775,7 @@ class PerpsMarketReader {
     this.configPromise ??= (async () => {
       try {
         const value = await this.opts.readConfig();
-        if (!object(value) || !object(value.limits) || !integer(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
+        if (!object2(value) || !object2(value.limits) || !integer(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
           throw new Error("config shape");
         return {
           minOpenInterestUsd: value.limits.minOpenInterestUsd,
@@ -4662,7 +4823,7 @@ class PerpsMarketReader {
               if (!Array.isArray(venue) || typeof venue[0] !== "string")
                 return unavailable();
               if (venue[0] === "HlPerp" && venue[1] !== null) {
-                if (!object(venue[1]) || !decimal2(venue[1].fundingRate) || !integer(venue[1].nextFundingTime))
+                if (!object2(venue[1]) || !decimal2(venue[1].fundingRate) || !integer(venue[1].nextFundingTime))
                   return unavailable();
                 map.set(entry[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
               }
@@ -4803,7 +4964,7 @@ class PerpsMarketReader {
       coin: canonical2,
       ...opts.sigFigs === undefined ? {} : { nSigFigs: opts.sigFigs }
     });
-    if (!object(value) || value.coin !== canonical2 || !integer(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
+    if (!object2(value) || value.coin !== canonical2 || !integer(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
       return unavailable();
     const sides = [];
     for (const side of value.levels) {
@@ -4811,7 +4972,7 @@ class PerpsMarketReader {
         return unavailable();
       const levels = [];
       for (const level of side) {
-        if (!object(level) || nonnegative(level.px) === null || nonnegative(level.sz) === null || !integer(level.n))
+        if (!object2(level) || nonnegative(level.px) === null || nonnegative(level.sz) === null || !integer(level.n))
           return unavailable();
         levels.push({ px: level.px, sz: level.sz, n: level.n });
       }
@@ -4847,7 +5008,7 @@ class PerpsMarketReader {
       return unavailable();
     const candles = [];
     for (const c of value) {
-      if (!object(c) || !integer(c.t) || !integer(c.T) || !integer(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative(v) !== null) || c.s !== canonical2 || c.i !== window.interval)
+      if (!object2(c) || !integer(c.t) || !integer(c.T) || !integer(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative(v) !== null) || c.s !== canonical2 || c.i !== window.interval)
         return unavailable();
       if (c.t <= window.endTime && c.T >= window.startTime)
         candles.push({
@@ -4991,14 +5152,14 @@ function canonical2(value) {
 function isDecimalString(value) {
   return typeof value === "string" && /^-?[0-9]+(\.[0-9]+)?$/.test(value);
 }
-function asFill(raw) {
-  const row = raw;
+function asFill(raw2) {
+  const row = raw2;
   if (!row || typeof row !== "object" || typeof row.coin !== "string" || !isTime(row.time) || !Number.isSafeInteger(row.tid) || !Number.isSafeInteger(row.oid) || !isDecimalString(row.px) || !isDecimalString(row.sz) || typeof row.side !== "string" || !isDecimalString(row.closedPnl) || !isDecimalString(row.fee) || row.builderFee !== undefined && !isDecimalString(row.builderFee))
     throw unavailable2("Hyperliquid returned a fill this client cannot read");
   return row;
 }
-function asFunding(raw) {
-  const row = raw;
+function asFunding(raw2) {
+  const row = raw2;
   const delta = row?.delta;
   if (!row || typeof row !== "object" || !isTime(row.time) || typeof row.hash !== "string" || !delta || typeof delta !== "object" || typeof delta.coin !== "string" || !isDecimalString(delta.usdc) || !isDecimalString(delta.fundingRate) || !isDecimalString(delta.szi))
     throw unavailable2("Hyperliquid returned a funding payment this client cannot read");
@@ -5135,11 +5296,11 @@ async function readPerpsHistoryPage(req) {
         break;
       }
       const body = kind === "fills" ? { type: "userFillsByTime", user: state.w, startTime: t, endTime: state.e, aggregateByTime: false } : { type: "userFunding", user: state.w, startTime: t, endTime: state.e };
-      const raw = await postInfo(req, body, kind === "fills" ? "fills" : "funding");
+      const raw2 = await postInfo(req, body, kind === "fills" ? "fills" : "funding");
       requests++;
-      if (!Array.isArray(raw))
+      if (!Array.isArray(raw2))
         throw unavailable2(`Hyperliquid returned an unreadable ${kind} response`);
-      const rows = raw.map((r) => kind === "fills" ? asFill(r) : asFunding(r));
+      const rows = raw2.map((r) => kind === "fills" ? asFill(r) : asFunding(r));
       const keyed = rows.map((row) => ({ row, id: identity(kind, row) })).sort((a, b) => a.row.time - b.row.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       const full = rows.length >= max;
       const startedAt = t;
@@ -5254,11 +5415,11 @@ function perpsRiskFromLimits(body) {
   const source = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
   return { thresholds: { ...effective, source }, stored };
 }
-function pickSettings(raw) {
+function pickSettings(raw2) {
   const out = {};
   for (const field of PERPS_RISK_FIELDS)
-    if (typeof raw[field] === "number")
-      out[field] = raw[field];
+    if (typeof raw2[field] === "number")
+      out[field] = raw2[field];
   return out;
 }
 
@@ -6438,8 +6599,8 @@ function rawUnits(amount, decimals) {
   const [whole = "", fraction = ""] = amount.split(".");
   if (fraction.length > decimals)
     return null;
-  const raw = BigInt(whole + fraction.padEnd(decimals, "0"));
-  return raw > 0n ? raw.toString() : null;
+  const raw2 = BigInt(whole + fraction.padEnd(decimals, "0"));
+  return raw2 > 0n ? raw2.toString() : null;
 }
 function pickWallet(rows, chain, name, what) {
   const onChain = rows.filter((row) => row.chain === chain);
@@ -7489,10 +7650,10 @@ var PROFILE_EDIT_TOOL_NAMES = [
 ];
 var isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name);
 function resolveToolAllowlist(env) {
-  const raw = env.CANDLE_MCP_TOOLS?.trim();
-  if (!raw)
+  const raw2 = env.CANDLE_MCP_TOOLS?.trim();
+  if (!raw2)
     return new Set(TOOL_NAMES);
-  const requested = raw.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
+  const requested = raw2.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
   const unknown = requested.filter((name) => !TOOL_NAMES.includes(name));
   if (requested.length === 0 || unknown.length > 0) {
     throw new Error(`CANDLE_MCP_TOOLS contains unknown tool name(s): ${unknown.join(", ") || "(none given)"}. Valid names: ${TOOL_NAMES.join(", ")}`);
@@ -8432,8 +8593,20 @@ function registerToolSubset(server, options) {
   register("candle_launch_token", {
     title: "Launch a token on Candle",
     description: "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything. " + LAUNCH_SHARED_SENTENCES + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
-    inputSchema: imageDir ? localLaunchTokenShape : launchTokenShape
+    inputSchema: checkableLaunchShape(imageDir ? localLaunchTokenShape : launchTokenShape)
   }, async (args) => {
+    if ("check" in args && args.check === true)
+      return launchCheck(args, getConfig(), doFetch);
+    try {
+      args = launchExecutionArgs(args);
+      if (!imageDir && args.imageUrl === undefined && !("imagePath" in args))
+        return launchControlError(new LaunchCheckError("VALIDATION_FAILED", "imageUrl is required for a launch."));
+      const parsed = z11.object(imageDir ? localLaunchTokenShape : launchTokenShape).omit({ imageUrl: true }).safeParse(args);
+      if (!parsed.success)
+        return launchControlError(new LaunchCheckError("VALIDATION_FAILED", parsed.error.message));
+    } catch (error) {
+      return launchControlError(error);
+    }
     const socialsProblem = socialsRefusal("socials" in args ? args.socials : undefined);
     if (socialsProblem) {
       return { content: [{ type: "text", text: imageRefusalBody(socialsProblem) }], isError: true };
@@ -8809,8 +8982,20 @@ function registerToolSubset(server, options) {
   register("candle_launch_and_seed", {
     title: "Launch a token and seed it",
     description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed, then " + "return the fresh market state and token links in one result. On solana a seed makes this " + (options.headlessSeed === true ? "the seed is a separate first-buy transaction in the same Jito bundle as the launch, so " + "both land or neither does. That works on every plan, Free included, and needs no " + "swap:write. On hood the seed is " : "the atomic launch: the launch and the seed are two transactions Candle signs and sends as " + "one Jito bundle, so both land or neither does. That needs Pro or Max (TIER_REQUIRED " + "otherwise) and swap:write on the key, and the result carries bundleId. On hood the seed is ") + "a best-effort follow-up. A launch with no seed works on every plan, Free included. MOVES " + "REAL FUNDS unless dryRun; dry-run first, which spends nothing. Seeds above the platform " + "dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH): at most 0.5 SOL / 500 USDC / 2,000,000 " + "CNDL, or on an exp- curve 10% of the threshold when that is lower; the server holds the " + "creator's own seed to the effective ceiling, so launch with the largest devBuy it allows " + "and top up with candle_trade. " + LAUNCH_SHARED_SENTENCES + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
-    inputSchema: imageDir ? localLaunchAndSeedShape : launchAndSeedShape
+    inputSchema: checkableLaunchShape(imageDir ? localLaunchAndSeedShape : launchAndSeedShape)
   }, async (args) => {
+    if ("check" in args && args.check === true)
+      return launchCheck(args, getConfig(), doFetch);
+    try {
+      args = launchExecutionArgs(args);
+      if (!imageDir && args.imageUrl === undefined && !("imagePath" in args))
+        return launchControlError(new LaunchCheckError("VALIDATION_FAILED", "imageUrl is required for a launch."));
+      const parsed = z11.object(imageDir ? localLaunchAndSeedShape : launchAndSeedShape).omit({ imageUrl: true }).safeParse(args);
+      if (!parsed.success)
+        return launchControlError(new LaunchCheckError("VALIDATION_FAILED", parsed.error.message));
+    } catch (error) {
+      return launchControlError(error);
+    }
     const result2 = await executeLaunchAndSeed(args, getConfig(), doFetch, imageDir, undefined, {
       headlessSeed: options.headlessSeed === true
     });

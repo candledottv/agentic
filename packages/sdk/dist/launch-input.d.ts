@@ -5,5 +5,5 @@ export declare function launchInputError(field: string, message: string, code?: 
 /** Local shape refusals happen before discovery, build or signing. Server limits stay server-owned. */
 export declare function validateLaunchInput(req: LaunchRequest): void;
 /** Strip SDK controls and translate the whole-unit first buy without floating point rounding. */
-export declare function launchBody(req: LaunchRequest, chain?: Chain): Omit<LaunchRequest, "wallet" | "buy">;
+export declare function launchBody(req: LaunchRequest, chain?: Chain): Omit<LaunchRequest, "wallet" | "buy" | "quote">;
 //# sourceMappingURL=launch-input.d.ts.map

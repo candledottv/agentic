@@ -7,6 +7,7 @@ import type { HyperliquidPnlSection } from "./hyperliquid-pnl";
 import { type PerpsAccountLine, type PerpsAccountReport, type PerpsPortfolioSection, type PerpsPositionRow, type PerpsRiskReport, type PerpsRiskSettings, type PerpsRiskThresholds, type PerpsRiskThresholdsReport, type PerpsWatchEvent } from "./hyperliquid-risk";
 import { type PerpsWithdrawAuthorization, type PerpsWithdrawBuild, type PerpsWithdrawPins } from "./hyperliquid-withdraw";
 import type { GeneratedLaunchFields } from "./launch-definition";
+import { type LaunchCheckRequest, type LaunchCheckResult } from "./launch-preflight";
 import { type PerpsFillsPage, type PerpsFundingPage, type PerpsHistoryOptions } from "./perps-history";
 import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans";
 import type { SecretStore } from "./secret-store";
@@ -204,6 +205,8 @@ export interface LaunchCurve {
 }
 /** Shared launch fields, plus SDK wallet identifiers and the legacy raw first buy. */
 export interface LaunchRequest extends Omit<GeneratedLaunchFields, "wallet" | "dryRun"> {
+    /** Featured symbol or token address. New quotes currently support check: true only. */
+    quote?: string;
     /** Omitted means embedded. A TEE wallet may be named by label, address or id. */
     wallet?: string | {
         linkedWalletId: string;
@@ -246,7 +249,7 @@ export interface AllowlistProofResult {
     proof?: string[];
 }
 /** POST /api/v1/launch/self/build request body. Extends LaunchRequest with linkedWalletId. */
-export interface BuildSelfLaunchRequest extends Omit<LaunchRequest, "wallet" | "buy"> {
+export interface BuildSelfLaunchRequest extends Omit<LaunchRequest, "wallet" | "buy" | "quote"> {
     linkedWalletId: string;
 }
 /** POST /api/v1/launch/self/build response for Solana (unsigned transaction). */
@@ -3364,7 +3367,7 @@ export interface AtomicFirstBuyRequest {
  * buy via `firstBuys` instead, so it lands as bundle leg 1 against a still-virgin curve) plus the
  * creator's own payer and 1-4 first-buy legs.
  */
-export interface BuildAtomicLaunchRequest extends Omit<LaunchRequest, "buyAmount" | "buy" | "wallet"> {
+export interface BuildAtomicLaunchRequest extends Omit<LaunchRequest, "buyAmount" | "buy" | "wallet" | "quote"> {
     payer: AtomicLaunchPayer;
     /** 1 to 4 buy legs, sharing the launch transaction's own recent blockhash and landing atomically with it (Jito's 5-transaction bundle cap: 1 launch + up to 4 buys). */
     firstBuys: AtomicFirstBuyRequest[];
@@ -3732,7 +3735,10 @@ export declare class CandleClient {
      * store it before the call when you can: an error can carry the id only if the process is
      * still running to catch it.
      */
+    launch(req: LaunchCheckRequest): Promise<LaunchCheckResult>;
     launch(req: LaunchRequest): Promise<LaunchResult>;
+    /** CLI --check parity: one authenticated GET, no upload, discovery, build, id claim or signing. */
+    checkLaunch(req: LaunchCheckRequest): Promise<LaunchCheckResult>;
     /**
      * Fire-and-poll launch: sends `async: true`, returns the 202 body. Single attempt (poll
      * `waitForLaunch` instead of retrying the POST). Generates `clientLaunchId` like `launch()`

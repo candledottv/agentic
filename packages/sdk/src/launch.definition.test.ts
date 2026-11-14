@@ -4,7 +4,10 @@ import { type GeneratedLaunchFields, LAUNCH_DEFINITION } from "./launch-definiti
 
 // SDK controls are intentionally explicit: dryRun is a method, wallet also accepts linked ids,
 // and buyAmount is a deprecated SDK-only input for one release.
-type ExpectedKeys = Exclude<keyof GeneratedLaunchFields, "dryRun"> | "buyAmount"
+type ExpectedKeys =
+  | Exclude<keyof GeneratedLaunchFields, "dryRun">
+  | "buyAmount"
+  | typeof LAUNCH_DEFINITION.quoteSelection.key
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 const keysMatch: Equal<keyof LaunchRequest, ExpectedKeys> = true
 const requestKeys = {
@@ -18,6 +21,7 @@ const requestKeys = {
   socials: true,
   chain: true,
   quoteAsset: true,
+  quote: true,
   mode: true,
   curve: true,
   creatorFeeBps: true,
@@ -38,6 +42,8 @@ test("SDK launch keys equal the definition plus the named SDK-only input", () =>
   expect(keysMatch).toBe(true)
   const sharedKeys = LAUNCH_DEFINITION.fields.map((field) => field.surfaces.sdk.key.split(".")[0] as string)
   expect(Object.keys(requestKeys).sort()).toEqual(
-    [...new Set([...sharedKeys.filter((key) => key !== "dryRun"), "buyAmount"])].sort(),
+    [
+      ...new Set([...sharedKeys.filter((key) => key !== "dryRun"), "buyAmount", LAUNCH_DEFINITION.quoteSelection.key]),
+    ].sort(),
   )
 })
