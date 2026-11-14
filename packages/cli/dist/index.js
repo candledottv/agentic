@@ -6553,6 +6553,38 @@ var init_launch_definition = __esm(() => {
       eth: 18,
       usdg: 6
     },
+    quoteSelection: {
+      flag: "--quote",
+      value: "<symbol|address>",
+      help: "Select a quote by featured symbol or token address. With --check, show admission checks, curve figures, graduation raise and issuer disclosure. New quotes require server launch support; --quote-asset remains supported for fixed pairs.",
+      fixedPairs: [
+        {
+          id: "sol",
+          address: "So11111111111111111111111111111111111111112",
+          chain: "solana"
+        },
+        {
+          id: "usdc",
+          address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          chain: "solana"
+        },
+        {
+          id: "cndl",
+          address: "9dXSV8VWuYvGfTzqvkBeoFwH9ihVTybDuWo5VaJPCNDL",
+          chain: "solana"
+        },
+        {
+          id: "eth",
+          address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+          chain: "hood"
+        },
+        {
+          id: "usdg",
+          address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+          chain: "hood"
+        }
+      ]
+    },
     quoteChains: {
       sol: "solana",
       usdc: "solana",
@@ -11827,8 +11859,6 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       if (problem)
         return fail2("MCP_VALIDATION", problem);
     }
-    if (args.submit !== false && name !== "embedded" && !env.CANDLE_KEY_SIGNER_PEM_FILE?.trim())
-      return fail2("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE for TEE signing, or name wallet embedded.");
     const { row, appId } = await walletFor(cfg, fetch2, name, "perps:write");
     if (row.id === "embedded" && ["open", "close"].includes(method) && clientId2 === undefined) {
       clientId2 = `0x${randomBytes2(16).toString("hex")}`;
@@ -64517,7 +64547,7 @@ class ZodType2 {
     const result2 = await (isAsync2(maybeAsyncResult) ? maybeAsyncResult : Promise.resolve(maybeAsyncResult));
     return handleResult2(ctx, result2);
   }
-  refine(check, message) {
+  refine(check2, message) {
     const getIssueProperties = (val) => {
       if (typeof message === "string" || typeof message === "undefined") {
         return { message };
@@ -64528,7 +64558,7 @@ class ZodType2 {
       }
     };
     return this._refinement((val, ctx) => {
-      const result2 = check(val);
+      const result2 = check2(val);
       const setError = () => ctx.addIssue({
         code: ZodIssueCode2.custom,
         ...getIssueProperties(val)
@@ -64551,9 +64581,9 @@ class ZodType2 {
       }
     });
   }
-  refinement(check, refinementData) {
+  refinement(check2, refinementData) {
     return this._refinement((val, ctx) => {
-      if (!check(val)) {
+      if (!check2(val)) {
         ctx.addIssue(typeof refinementData === "function" ? refinementData(val, ctx) : refinementData);
         return false;
       } else {
@@ -64906,70 +64936,70 @@ var init_types3 = __esm(() => {
       }
       const status = new ParseStatus2;
       let ctx = undefined;
-      for (const check of this._def.checks) {
-        if (check.kind === "min") {
-          if (input.data.length < check.value) {
+      for (const check2 of this._def.checks) {
+        if (check2.kind === "min") {
+          if (input.data.length < check2.value) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.too_small,
-              minimum: check.value,
+              minimum: check2.value,
               type: "string",
               inclusive: true,
               exact: false,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "max") {
-          if (input.data.length > check.value) {
+        } else if (check2.kind === "max") {
+          if (input.data.length > check2.value) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.too_big,
-              maximum: check.value,
+              maximum: check2.value,
               type: "string",
               inclusive: true,
               exact: false,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "length") {
-          const tooBig = input.data.length > check.value;
-          const tooSmall = input.data.length < check.value;
+        } else if (check2.kind === "length") {
+          const tooBig = input.data.length > check2.value;
+          const tooSmall = input.data.length < check2.value;
           if (tooBig || tooSmall) {
             ctx = this._getOrReturnCtx(input, ctx);
             if (tooBig) {
               addIssueToContext2(ctx, {
                 code: ZodIssueCode2.too_big,
-                maximum: check.value,
+                maximum: check2.value,
                 type: "string",
                 inclusive: true,
                 exact: true,
-                message: check.message
+                message: check2.message
               });
             } else if (tooSmall) {
               addIssueToContext2(ctx, {
                 code: ZodIssueCode2.too_small,
-                minimum: check.value,
+                minimum: check2.value,
                 type: "string",
                 inclusive: true,
                 exact: true,
-                message: check.message
+                message: check2.message
               });
             }
             status.dirty();
           }
-        } else if (check.kind === "email") {
+        } else if (check2.kind === "email") {
           if (!emailRegex2.test(input.data)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               validation: "email",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "emoji") {
+        } else if (check2.kind === "emoji") {
           if (!emojiRegex3) {
             emojiRegex3 = new RegExp(_emojiRegex2, "u");
           }
@@ -64978,61 +65008,61 @@ var init_types3 = __esm(() => {
             addIssueToContext2(ctx, {
               validation: "emoji",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "uuid") {
+        } else if (check2.kind === "uuid") {
           if (!uuidRegex2.test(input.data)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               validation: "uuid",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "nanoid") {
+        } else if (check2.kind === "nanoid") {
           if (!nanoidRegex2.test(input.data)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               validation: "nanoid",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "cuid") {
+        } else if (check2.kind === "cuid") {
           if (!cuidRegex2.test(input.data)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               validation: "cuid",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "cuid2") {
+        } else if (check2.kind === "cuid2") {
           if (!cuid2Regex2.test(input.data)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               validation: "cuid2",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "ulid") {
+        } else if (check2.kind === "ulid") {
           if (!ulidRegex2.test(input.data)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               validation: "ulid",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "url") {
+        } else if (check2.kind === "url") {
           try {
             new URL(input.data);
           } catch {
@@ -65040,153 +65070,153 @@ var init_types3 = __esm(() => {
             addIssueToContext2(ctx, {
               validation: "url",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "regex") {
-          check.regex.lastIndex = 0;
-          const testResult = check.regex.test(input.data);
+        } else if (check2.kind === "regex") {
+          check2.regex.lastIndex = 0;
+          const testResult = check2.regex.test(input.data);
           if (!testResult) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               validation: "regex",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "trim") {
+        } else if (check2.kind === "trim") {
           input.data = input.data.trim();
-        } else if (check.kind === "includes") {
-          if (!input.data.includes(check.value, check.position)) {
+        } else if (check2.kind === "includes") {
+          if (!input.data.includes(check2.value, check2.position)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.invalid_string,
-              validation: { includes: check.value, position: check.position },
-              message: check.message
+              validation: { includes: check2.value, position: check2.position },
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "toLowerCase") {
+        } else if (check2.kind === "toLowerCase") {
           input.data = input.data.toLowerCase();
-        } else if (check.kind === "toUpperCase") {
+        } else if (check2.kind === "toUpperCase") {
           input.data = input.data.toUpperCase();
-        } else if (check.kind === "startsWith") {
-          if (!input.data.startsWith(check.value)) {
+        } else if (check2.kind === "startsWith") {
+          if (!input.data.startsWith(check2.value)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.invalid_string,
-              validation: { startsWith: check.value },
-              message: check.message
+              validation: { startsWith: check2.value },
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "endsWith") {
-          if (!input.data.endsWith(check.value)) {
+        } else if (check2.kind === "endsWith") {
+          if (!input.data.endsWith(check2.value)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.invalid_string,
-              validation: { endsWith: check.value },
-              message: check.message
+              validation: { endsWith: check2.value },
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "datetime") {
-          const regex = datetimeRegex2(check);
+        } else if (check2.kind === "datetime") {
+          const regex = datetimeRegex2(check2);
           if (!regex.test(input.data)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.invalid_string,
               validation: "datetime",
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "date") {
+        } else if (check2.kind === "date") {
           const regex = dateRegex2;
           if (!regex.test(input.data)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.invalid_string,
               validation: "date",
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "time") {
-          const regex = timeRegex2(check);
+        } else if (check2.kind === "time") {
+          const regex = timeRegex2(check2);
           if (!regex.test(input.data)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.invalid_string,
               validation: "time",
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "duration") {
+        } else if (check2.kind === "duration") {
           if (!durationRegex2.test(input.data)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               validation: "duration",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "ip") {
-          if (!isValidIP2(input.data, check.version)) {
+        } else if (check2.kind === "ip") {
+          if (!isValidIP2(input.data, check2.version)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               validation: "ip",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "jwt") {
-          if (!isValidJWT2(input.data, check.alg)) {
+        } else if (check2.kind === "jwt") {
+          if (!isValidJWT2(input.data, check2.alg)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               validation: "jwt",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "cidr") {
-          if (!isValidCidr2(input.data, check.version)) {
+        } else if (check2.kind === "cidr") {
+          if (!isValidCidr2(input.data, check2.version)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               validation: "cidr",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "base64") {
+        } else if (check2.kind === "base64") {
           if (!base64Regex2.test(input.data)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               validation: "base64",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "base64url") {
+        } else if (check2.kind === "base64url") {
           if (!base64urlRegex2.test(input.data)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               validation: "base64url",
               code: ZodIssueCode2.invalid_string,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
         } else {
-          util3.assertNever(check);
+          util3.assertNever(check2);
         }
       }
       return { status: status.value, value: input.data };
@@ -65198,10 +65228,10 @@ var init_types3 = __esm(() => {
         ...errorUtil2.errToObj(message)
       });
     }
-    _addCheck(check) {
+    _addCheck(check2) {
       return new ZodString2({
         ...this._def,
-        checks: [...this._def.checks, check]
+        checks: [...this._def.checks, check2]
       });
     }
     email(message) {
@@ -65455,67 +65485,67 @@ var init_types3 = __esm(() => {
       }
       let ctx = undefined;
       const status = new ParseStatus2;
-      for (const check of this._def.checks) {
-        if (check.kind === "int") {
+      for (const check2 of this._def.checks) {
+        if (check2.kind === "int") {
           if (!util3.isInteger(input.data)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.invalid_type,
               expected: "integer",
               received: "float",
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "min") {
-          const tooSmall = check.inclusive ? input.data < check.value : input.data <= check.value;
+        } else if (check2.kind === "min") {
+          const tooSmall = check2.inclusive ? input.data < check2.value : input.data <= check2.value;
           if (tooSmall) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.too_small,
-              minimum: check.value,
+              minimum: check2.value,
               type: "number",
-              inclusive: check.inclusive,
+              inclusive: check2.inclusive,
               exact: false,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "max") {
-          const tooBig = check.inclusive ? input.data > check.value : input.data >= check.value;
+        } else if (check2.kind === "max") {
+          const tooBig = check2.inclusive ? input.data > check2.value : input.data >= check2.value;
           if (tooBig) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.too_big,
-              maximum: check.value,
+              maximum: check2.value,
               type: "number",
-              inclusive: check.inclusive,
+              inclusive: check2.inclusive,
               exact: false,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "multipleOf") {
-          if (floatSafeRemainder2(input.data, check.value) !== 0) {
+        } else if (check2.kind === "multipleOf") {
+          if (floatSafeRemainder2(input.data, check2.value) !== 0) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.not_multiple_of,
-              multipleOf: check.value,
-              message: check.message
+              multipleOf: check2.value,
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "finite") {
+        } else if (check2.kind === "finite") {
           if (!Number.isFinite(input.data)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.not_finite,
-              message: check.message
+              message: check2.message
             });
             status.dirty();
           }
         } else {
-          util3.assertNever(check);
+          util3.assertNever(check2);
         }
       }
       return { status: status.value, value: input.data };
@@ -65546,10 +65576,10 @@ var init_types3 = __esm(() => {
         ]
       });
     }
-    _addCheck(check) {
+    _addCheck(check2) {
       return new ZodNumber2({
         ...this._def,
-        checks: [...this._def.checks, check]
+        checks: [...this._def.checks, check2]
       });
     }
     int(message) {
@@ -65684,45 +65714,45 @@ var init_types3 = __esm(() => {
       }
       let ctx = undefined;
       const status = new ParseStatus2;
-      for (const check of this._def.checks) {
-        if (check.kind === "min") {
-          const tooSmall = check.inclusive ? input.data < check.value : input.data <= check.value;
+      for (const check2 of this._def.checks) {
+        if (check2.kind === "min") {
+          const tooSmall = check2.inclusive ? input.data < check2.value : input.data <= check2.value;
           if (tooSmall) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.too_small,
               type: "bigint",
-              minimum: check.value,
-              inclusive: check.inclusive,
-              message: check.message
+              minimum: check2.value,
+              inclusive: check2.inclusive,
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "max") {
-          const tooBig = check.inclusive ? input.data > check.value : input.data >= check.value;
+        } else if (check2.kind === "max") {
+          const tooBig = check2.inclusive ? input.data > check2.value : input.data >= check2.value;
           if (tooBig) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.too_big,
               type: "bigint",
-              maximum: check.value,
-              inclusive: check.inclusive,
-              message: check.message
+              maximum: check2.value,
+              inclusive: check2.inclusive,
+              message: check2.message
             });
             status.dirty();
           }
-        } else if (check.kind === "multipleOf") {
-          if (input.data % check.value !== BigInt(0)) {
+        } else if (check2.kind === "multipleOf") {
+          if (input.data % check2.value !== BigInt(0)) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.not_multiple_of,
-              multipleOf: check.value,
-              message: check.message
+              multipleOf: check2.value,
+              message: check2.message
             });
             status.dirty();
           }
         } else {
-          util3.assertNever(check);
+          util3.assertNever(check2);
         }
       }
       return { status: status.value, value: input.data };
@@ -65762,10 +65792,10 @@ var init_types3 = __esm(() => {
         ]
       });
     }
-    _addCheck(check) {
+    _addCheck(check2) {
       return new ZodBigInt2({
         ...this._def,
-        checks: [...this._def.checks, check]
+        checks: [...this._def.checks, check2]
       });
     }
     positive(message) {
@@ -65885,35 +65915,35 @@ var init_types3 = __esm(() => {
       }
       const status = new ParseStatus2;
       let ctx = undefined;
-      for (const check of this._def.checks) {
-        if (check.kind === "min") {
-          if (input.data.getTime() < check.value) {
+      for (const check2 of this._def.checks) {
+        if (check2.kind === "min") {
+          if (input.data.getTime() < check2.value) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.too_small,
-              message: check.message,
+              message: check2.message,
               inclusive: true,
               exact: false,
-              minimum: check.value,
+              minimum: check2.value,
               type: "date"
             });
             status.dirty();
           }
-        } else if (check.kind === "max") {
-          if (input.data.getTime() > check.value) {
+        } else if (check2.kind === "max") {
+          if (input.data.getTime() > check2.value) {
             ctx = this._getOrReturnCtx(input, ctx);
             addIssueToContext2(ctx, {
               code: ZodIssueCode2.too_big,
-              message: check.message,
+              message: check2.message,
               inclusive: true,
               exact: false,
-              maximum: check.value,
+              maximum: check2.value,
               type: "date"
             });
             status.dirty();
           }
         } else {
-          util3.assertNever(check);
+          util3.assertNever(check2);
         }
       }
       return {
@@ -65921,10 +65951,10 @@ var init_types3 = __esm(() => {
         value: new Date(input.data.getTime())
       };
     }
-    _addCheck(check) {
+    _addCheck(check2) {
       return new ZodDate2({
         ...this._def,
-        checks: [...this._def.checks, check]
+        checks: [...this._def.checks, check2]
       });
     }
     min(minDate, message) {
@@ -72542,7 +72572,7 @@ var init_schemas3 = __esm(() => {
     inst.safeDecode = (data, params) => safeDecode2(inst, data, params);
     inst.safeEncodeAsync = async (data, params) => safeEncodeAsync2(inst, data, params);
     inst.safeDecodeAsync = async (data, params) => safeDecodeAsync2(inst, data, params);
-    inst.refine = (check, params) => inst.check(refine(check, params));
+    inst.refine = (check2, params) => inst.check(refine(check2, params));
     inst.superRefine = (refinement) => inst.check(superRefine(refinement));
     inst.overwrite = (fn) => inst.check(_overwrite(fn));
     inst.optional = () => optional2(inst);
@@ -77612,6 +77642,38 @@ var LAUNCH_DEFINITION2 = {
     eth: 18,
     usdg: 6
   },
+  quoteSelection: {
+    flag: "--quote",
+    value: "<symbol|address>",
+    help: "Select a quote by featured symbol or token address. With --check, show admission checks, curve figures, graduation raise and issuer disclosure. New quotes require server launch support; --quote-asset remains supported for fixed pairs.",
+    fixedPairs: [
+      {
+        id: "sol",
+        address: "So11111111111111111111111111111111111111112",
+        chain: "solana"
+      },
+      {
+        id: "usdc",
+        address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        chain: "solana"
+      },
+      {
+        id: "cndl",
+        address: "9dXSV8VWuYvGfTzqvkBeoFwH9ihVTybDuWo5VaJPCNDL",
+        chain: "solana"
+      },
+      {
+        id: "eth",
+        address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+        chain: "hood"
+      },
+      {
+        id: "usdg",
+        address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+        chain: "hood"
+      }
+    ]
+  },
   quoteChains: {
     sol: "solana",
     usdc: "solana",
@@ -78777,7 +78839,7 @@ var LAUNCH_USAGE = `candle launch ${launchFlagFields.map((field) => {
   if (field.key === "imageUrl")
     return `--image <path>|${invocation}`;
   return "required" in field && field.required ? invocation : `[${invocation}]`;
-}).join(" ")} [--check] [--yes] [--require-fee-wallet] [--rpc-url <url>] [--json]`;
+}).join(" ")} [--quote <symbol|address>] [--check] [--yes] [--require-fee-wallet] [--rpc-url <url>] [--json]`;
 function launchFieldProblem(flags) {
   for (const field of launchFlagFields) {
     const value = flags[field.cli.flag];
@@ -79388,12 +79450,16 @@ var HELP = {
     flags: [
       ...launchFlagRows,
       {
+        invocation: `${LAUNCH_DEFINITION2.quoteSelection.flag} ${LAUNCH_DEFINITION2.quoteSelection.value}`,
+        description: LAUNCH_DEFINITION2.quoteSelection.help
+      },
+      {
         invocation: "--image <path>",
         description: "Upload a local PNG, JPEG, GIF or WebP (at most 10MB) instead of --image-url; public and permanent before confirmation."
       },
       {
         invocation: "--check",
-        description: "Answer which launch path works (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, before any image upload; nothing is sent. Exits 1 when no path works."
+        description: "Answer which launch path works before any image upload; with --quote, also print quote admission, curve figures, graduation raise and issuer disclosure. Exits 1 when the wallet or quote is refused. Nothing is built or sent."
       },
       { invocation: "--yes", description: "Confirm the launch without an interactive prompt." },
       {
@@ -79407,6 +79473,7 @@ var HELP = {
     ],
     examples: [
       "candle launch --check",
+      "candle launch --quote NVDA --check --json",
       "candle launch --check --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image ./logo.png --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne",
@@ -95460,6 +95527,69 @@ function readLaunchBundle(args) {
 
 // src/launch-check.ts
 init_zod();
+
+// src/launch-quote-check.ts
+init_zod();
+init_trading();
+var check = exports_external.object({
+  check: exports_external.string(),
+  status: exports_external.enum(["pass", "skip", "refuse"]),
+  code: exports_external.string().optional(),
+  message: exports_external.string()
+});
+var launchQuoteCheckSchema = exports_external.object({
+  requested: exports_external.string(),
+  ok: exports_external.boolean(),
+  chain: exports_external.enum(["solana", "hood"]).optional(),
+  address: exports_external.string().optional(),
+  symbol: exports_external.string().optional(),
+  decimals: exports_external.number().int().min(0).max(255).optional(),
+  classification: exports_external.enum(["ordinary", "featured", "trusted", "stock"]).optional(),
+  checks: exports_external.array(check).min(1),
+  economics: exports_external.object({
+    kind: exports_external.enum(["fixed", "derived"]),
+    economicsDigest: exports_external.string().regex(/^0x[0-9a-fA-F]{64}$/),
+    thresholdRaw: exports_external.string().regex(/^\d+$/),
+    startFdv: exports_external.number().finite().positive(),
+    bondingFdv: exports_external.number().finite().positive(),
+    curve: exports_external.record(exports_external.string().regex(/^\d+$/)),
+    priceUsd: exports_external.number().finite().positive().optional(),
+    raiseUsd: exports_external.number().finite().positive().optional()
+  }).optional(),
+  disclosure: exports_external.string().nullable(),
+  executionEnabled: exports_external.boolean()
+}).superRefine((quote, ctx) => {
+  if (quote.ok && (!quote.economics || !quote.address || !quote.chain || quote.decimals === undefined || quote.checks.some((c) => c.status === "refuse")))
+    ctx.addIssue({ code: "custom", message: "An admitted quote needs complete economics and passing checks" });
+  if (!quote.ok && !quote.checks.some((c) => c.status === "refuse"))
+    ctx.addIssue({ code: "custom", message: "A refused quote needs a named check" });
+});
+function launchQuoteLines(quote) {
+  const symbol = safeText(quote.symbol ?? quote.requested);
+  const lines = [
+    `Quote ${symbol}${quote.address ? ` (${safeText(quote.address)})` : ""}: ${quote.ok ? "admitted" : "refused"}.`
+  ];
+  for (const c of quote.checks)
+    lines.push(`  ${c.status.toUpperCase()} ${safeText(c.code ?? c.check)}: ${safeText(c.message)}`);
+  const e = quote.economics;
+  if (e) {
+    const raise = quote.decimals === undefined ? `${e.thresholdRaw} raw` : decimalAmount(e.thresholdRaw, quote.decimals).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+    lines.push(`Curve (${e.kind}): starting FDV ${e.startFdv} ${symbol}; graduation FDV ${e.bondingFdv} ${symbol}.`);
+    lines.push(`Graduation raise: ${raise} ${symbol}${e.raiseUsd === undefined ? "" : ` ($${e.raiseUsd})`}.`);
+    if (e.priceUsd !== undefined)
+      lines.push(`Quote price: $${e.priceUsd}.`);
+    for (const [key, value] of Object.entries(e.curve))
+      lines.push(`  ${safeText(key)}: ${value}`);
+    lines.push(`Economics digest: ${e.economicsDigest}`);
+  }
+  if (quote.disclosure)
+    lines.push(safeText(quote.disclosure));
+  if (!quote.executionEnabled)
+    lines.push("New-quote launch execution is not enabled; this result is a read-only check.");
+  return lines;
+}
+
+// src/launch-check.ts
 init_trading();
 var checkSchema = exports_external.object({
   key: exports_external.object({
@@ -95487,7 +95617,8 @@ var checkSchema = exports_external.object({
     label: exports_external.string().nullable(),
     allowLaunch: exports_external.boolean(),
     active: exports_external.boolean()
-  }))
+  })),
+  quote: launchQuoteCheckSchema.optional()
 }).passthrough();
 var EMBEDDED_NAMES = new Set(LAUNCH_DEFINITION2.wallet.embeddedNames);
 function walletName(row2) {
@@ -95576,8 +95707,27 @@ function embeddedWorks(answer2, requestedChain) {
 function describeRow(row2) {
   return `${row2.label ? `${row2.label} ` : ""}(${row2.id}, ${row2.address})`;
 }
-async function launchCheck(ctx, key, walletFlag, requestedChain, feeWallet = undefined) {
-  const answer2 = checkSchema.parse(await request(ctx, key, "/api/v1/launch/preflight"));
+async function launchCheck(ctx, key, walletFlag, requestedChain, feeWallet = undefined, selection = {}) {
+  const query3 = new URLSearchParams;
+  if (selection.quote !== undefined) {
+    query3.set("quote", selection.quote);
+    if (requestedChain)
+      query3.set("chain", requestedChain);
+    if (selection.mode)
+      query3.set("mode", selection.mode);
+    if (selection.stakerAllocationBps)
+      query3.set("stakerAllocationBps", selection.stakerAllocationBps);
+    if (selection.dexVersion)
+      query3.set("dexVersion", selection.dexVersion);
+  }
+  const answer2 = checkSchema.parse(await request(ctx, key, `/api/v1/launch/preflight${query3.size ? `?${query3}` : ""}`));
+  if (selection.quote !== undefined) {
+    if (!answer2.quote || answer2.quote.requested !== selection.quote)
+      throw new TradingError("QUOTE_CHECK_UNAVAILABLE", "This server did not check the requested quote. Update the server before retrying; nothing was uploaded or built.");
+    if (requestedChain && answer2.quote.chain && requestedChain !== answer2.quote.chain)
+      throw new TradingError("CHAIN_MISMATCH", "The checked quote disagrees with the requested launch chain.");
+    requestedChain ??= answer2.quote.chain;
+  }
   const embeddedOnly = walletFlag !== undefined && EMBEDDED_NAMES.has(walletFlag);
   const named = walletFlag === undefined || embeddedOnly ? [] : answer2.wallets.filter((row2) => row2.id === walletFlag || row2.address === walletFlag || row2.label === walletFlag);
   if (walletFlag !== undefined && !embeddedOnly && named.length !== 1)
@@ -95595,12 +95745,16 @@ async function launchCheck(ctx, key, walletFlag, requestedChain, feeWallet = und
     lines.push(...embeddedLines(answer2, requestedChain));
   for (const row2 of shownWallets)
     lines.push(...walletLines(answer2, row2, requestedChain));
-  const works = (walletFlag === undefined || embeddedOnly ? embeddedWorks(answer2, requestedChain) : false) || shownWallets.some((row2) => walletWorks(answer2, row2, requestedChain));
-  lines.push(works ? "Nothing was uploaded, built or sent; this was the whole check." : "No launch path works for this key. Nothing was uploaded, built or sent.");
+  const walletWorksForRequest = (walletFlag === undefined || embeddedOnly ? embeddedWorks(answer2, requestedChain) : false) || shownWallets.some((row2) => walletWorks(answer2, row2, requestedChain));
+  const works = walletWorksForRequest && (selection.quote === undefined || answer2.quote?.ok === true);
+  if (selection.quote !== undefined && answer2.quote)
+    lines.push(...launchQuoteLines(answer2.quote));
+  lines.push(works ? "Nothing was uploaded, built or sent; this was the whole check." : walletWorksForRequest && selection.quote !== undefined ? "The quote check refused this launch. Nothing was uploaded, built or sent." : "No launch path works for this key. Nothing was uploaded, built or sent.");
   const result2 = {
     success: true,
     check: true,
     works,
+    ...selection.quote !== undefined ? { walletWorks: walletWorksForRequest, quote: answer2.quote } : {},
     ...requestedChain ? { requestedChain } : {},
     key: answer2.key,
     switches: answer2.switches,
@@ -95678,6 +95832,7 @@ var LAUNCH_ARG_SPEC = {
   valueFlags: [
     ...launchFlagFields.filter((field) => field.type !== "boolean").map((field) => field.cli.flag),
     LAUNCH_IMAGE_FLAG,
+    "--quote",
     "--rpc-url"
   ],
   booleanFlags: [
@@ -95761,6 +95916,11 @@ function flagChain(flags) {
   const quoteChain = quote === undefined ? undefined : QUOTE_CHAIN[quote.toLowerCase()];
   if (quoteChain)
     said.push([`--quote-asset ${quote}`, quoteChain]);
+  const selected = flags["--quote"];
+  if (selected && /^0x[0-9a-fA-F]{40}$/.test(selected))
+    said.push(["--quote address", "hood"]);
+  else if (selected && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(selected))
+    said.push(["--quote mint", "solana"]);
   if (flags["--dex-version"] !== undefined)
     said.push(["--dex-version", "hood"]);
   const [first, ...rest] = said;
@@ -95776,13 +95936,29 @@ async function launch(args, ctx) {
     return 2;
   }
   const flags = parsed.values;
+  if (flags["--quote"] !== undefined && flags["--quote-asset"] !== undefined) {
+    writeUsageFailure(ctx.deps, "Pass --quote or --quote-asset, not both.", ctx.json);
+    return 2;
+  }
+  const selectedQuote = flags["--quote"]?.trim();
+  if (selectedQuote !== undefined)
+    flags["--quote"] = selectedQuote;
+  if (selectedQuote !== undefined) {
+    if (!selectedQuote.trim() || selectedQuote.length > 120) {
+      writeUsageFailure(ctx.deps, "--quote takes a symbol or token address (at most 120 characters).", ctx.json);
+      return 2;
+    }
+    const pair = LAUNCH_DEFINITION2.quoteSelection.fixedPairs.find((p) => p.id === selectedQuote.toLowerCase() || p.address === selectedQuote || p.chain === "hood" && p.address.toLowerCase() === selectedQuote.toLowerCase());
+    if (pair)
+      flags["--quote-asset"] = pair.id;
+  }
   if (flags["--quote-asset"])
     flags["--quote-asset"] = flags["--quote-asset"].toLowerCase();
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID9()}`;
   const embedded = EMBEDDED_WALLET_NAMES.has(flags["--wallet"] ?? "");
   const dryRun = parsed.booleans.has("--dry-run");
-  const check = parsed.booleans.has("--check");
-  if (check && dryRun) {
+  const check2 = parsed.booleans.has("--check");
+  if (check2 && dryRun) {
     writeUsageFailure(ctx.deps, `--check and --dry-run are two different stops; pass one. ${USAGE11}`, ctx.json);
     return 2;
   }
@@ -95809,7 +95985,7 @@ async function launch(args, ctx) {
     return 2;
   }
   const missingRequired = !flags["--name"] || !flags["--symbol"] || flags["--image"] === undefined && flags["--image-url"] === undefined || !flags["--wallet"];
-  if (parsed.positionals.length || !check && missingRequired || !validClientId(id)) {
+  if (parsed.positionals.length || !check2 && missingRequired || !validClientId(id)) {
     writeUsageFailure(ctx.deps, USAGE11, ctx.json);
     return 2;
   }
@@ -95834,17 +96010,19 @@ async function launch(args, ctx) {
     if (flags["--buy"]?.trim() && !/^0+(\.0+)?$/.test(flags["--buy"]))
       launchBuyRaw(flags["--buy"], 18);
     const hinted = flagChain(flags);
+    if (selectedQuote !== undefined && !check2 && !flags["--quote-asset"])
+      return tradingFailure(ctx, new TradingError("QUOTE_LAUNCH_UNAVAILABLE", "New-quote launch execution is not enabled. Run candle launch --quote <symbol|address> --check to inspect admission and economics; nothing was uploaded or built."));
     if (hinted === "hood" && feeWalletGiven(flags)) {
       writeUsageFailure(ctx.deps, `--fee-wallet is Solana only; a Hood launch cannot take it. ${USAGE11}`, ctx.json);
       return 2;
     }
-    if (!check && hinted === "hood" && flags["--dex-version"] === undefined) {
+    if (!check2 && hinted === "hood" && flags["--dex-version"] === undefined) {
       writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE11}`, ctx.json);
       return 2;
     }
     let image;
     let banner;
-    if (!check) {
+    if (!check2) {
       try {
         if (flags["--image"] !== undefined)
           image = await readLocalImage(flags["--image"]);
@@ -95855,7 +96033,7 @@ async function launch(args, ctx) {
       }
     }
     let rules;
-    if (!check && launchRulesGiven(flags)) {
+    if (!check2 && launchRulesGiven(flags)) {
       if (hinted === "hood") {
         writeUsageFailure(ctx.deps, `${LAUNCH_RULES_SOLANA_ONLY} ${USAGE11}`, ctx.json);
         return 2;
@@ -95870,8 +96048,13 @@ async function launch(args, ctx) {
       }
     }
     const key = await tradingKey(ctx);
-    if (check)
-      return await launchCheck(ctx, key, flags["--wallet"], hinted, feeWallet);
+    if (check2)
+      return await launchCheck(ctx, key, flags["--wallet"], hinted, feeWallet, {
+        quote: selectedQuote,
+        mode: flags["--mode"],
+        stakerAllocationBps: flags["--staker-allocation-bps"],
+        dexVersion: flags["--dex-version"]
+      });
     const prior = dryRun ? null : await lookupOperation(ctx, key, id, "launch");
     let retry;
     if (prior) {
@@ -96004,7 +96187,7 @@ async function launch(args, ctx) {
     const result2 = await request(ctx, key, "/api/v1/launch/self/confirm", { clientLaunchId: id, signature });
     return printTradingResult(ctx, { ...result2, clientTradeId: id, kind: "launch", quote, ...used });
   } catch (error) {
-    return tradingFailure(ctx, error, dryRun || check ? undefined : id);
+    return tradingFailure(ctx, error, dryRun || check2 ? undefined : id);
   }
 }
 async function uploadLaunchImages(ctx, key, args) {
@@ -100992,13 +101175,13 @@ async function runPerpsWrite(ctx, opts) {
     intent: { method, params: opts.body },
     keyReduceOnly: build.perpsReduceOnly === true
   };
-  const check = method === "setup" ? verifyPerpsBuild2(build, verifyOpts) : await verifyPerpsBuildAgainstVenue2(build, {
+  const check2 = method === "setup" ? verifyPerpsBuild2(build, verifyOpts) : await verifyPerpsBuildAgainstVenue2(build, {
     ...verifyOpts,
     fetcher: ctx.deps.fetch,
     now: ctx.deps.now
   });
-  if (!check.ok)
-    throw new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`);
+  if (!check2.ok)
+    throw new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check2.reason}. Nothing was signed.`);
   if (!opts.submit)
     return printTradingResult(ctx, { ...build, signed: wallet3.id === "embedded", submitted: false });
   if (!await confirm(ctx, build, wallet3.address, opts.yes)) {
@@ -101758,7 +101941,7 @@ async function runStep2(io, step, path, body, intent) {
   step.nonce = typeof build.nonce === "number" ? build.nonce : null;
   if (typeof build.cloid === "string")
     step.cloid = build.cloid;
-  const check = await verifyPerpsBuildAgainstVenue2(build, {
+  const check2 = await verifyPerpsBuildAgainstVenue2(build, {
     builder: io.builder,
     network: io.network,
     address: io.address,
@@ -101767,9 +101950,9 @@ async function runStep2(io, step, path, body, intent) {
     now: io.now,
     keyReduceOnly: io.keyReduceOnly
   });
-  if (!check.ok) {
+  if (!check2.ok) {
     step.status = "rejected";
-    step.detail = `Refused to sign this build: ${check.reason}. Nothing was signed.`;
+    step.detail = `Refused to sign this build: ${check2.reason}. Nothing was signed.`;
     return false;
   }
   step.status = "built";
@@ -111317,7 +111500,7 @@ async function update(args, ctx, current = CLI_VERSION) {
       writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
       return 2;
     }
-    const check = parsed.booleans.has("--check");
+    const check2 = parsed.booleans.has("--check");
     const pinned = parsed.values["--to"];
     const pinnedVersion = pinned === undefined ? undefined : versionOfTag(pinned);
     if (pinned !== undefined && pinnedVersion === null) {
@@ -111385,7 +111568,7 @@ npm i -g @candledottv/cli@latest`);
       return 1;
     }
     const order = compareVersions(current, target.version);
-    if (check) {
+    if (check2) {
       if (json) {
         const payload = { current, latest: target.version, updated: false, path: realExec };
         deps.stdout.write(`${JSON.stringify(payload)}
@@ -116659,8 +116842,8 @@ async function preflightBatch(index, rows, opts) {
       continue;
     }
     try {
-      const check = opts.chain === "evm" ? assertEvmInPlacePreconditions : assertInPlacePreconditions;
-      const { subject, destination, resume } = check(projection, row2.label, row2.destination, {
+      const check2 = opts.chain === "evm" ? assertEvmInPlacePreconditions : assertInPlacePreconditions;
+      const { subject, destination, resume } = check2(projection, row2.label, row2.destination, {
         acceptUnknownExposure: opts.acceptUnknownExposure
       });
       if (resume) {

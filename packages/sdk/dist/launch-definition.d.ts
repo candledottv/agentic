@@ -11,6 +11,32 @@ export declare const LAUNCH_DEFINITION: {
         readonly eth: 18;
         readonly usdg: 6;
     };
+    readonly quoteSelection: {
+        readonly flag: "--quote";
+        readonly value: "<symbol|address>";
+        readonly help: "Select a quote by featured symbol or token address. With --check, show admission checks, curve figures, graduation raise and issuer disclosure. New quotes require server launch support; --quote-asset remains supported for fixed pairs.";
+        readonly fixedPairs: readonly [{
+            readonly id: "sol";
+            readonly address: "So11111111111111111111111111111111111111112";
+            readonly chain: "solana";
+        }, {
+            readonly id: "usdc";
+            readonly address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+            readonly chain: "solana";
+        }, {
+            readonly id: "cndl";
+            readonly address: "9dXSV8VWuYvGfTzqvkBeoFwH9ihVTybDuWo5VaJPCNDL";
+            readonly chain: "solana";
+        }, {
+            readonly id: "eth";
+            readonly address: "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73";
+            readonly chain: "hood";
+        }, {
+            readonly id: "usdg";
+            readonly address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168";
+            readonly chain: "hood";
+        }];
+    };
     readonly quoteChains: {
         readonly sol: "solana";
         readonly usdc: "solana";

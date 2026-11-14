@@ -731,6 +731,10 @@ export const HELP: Record<string, Topic> = {
     flags: [
       ...launchFlagRows,
       {
+        invocation: `${LAUNCH_DEFINITION.quoteSelection.flag} ${LAUNCH_DEFINITION.quoteSelection.value}`,
+        description: LAUNCH_DEFINITION.quoteSelection.help,
+      },
+      {
         invocation: "--image <path>",
         description:
           "Upload a local PNG, JPEG, GIF or WebP (at most 10MB) instead of --image-url; public and permanent before confirmation.",
@@ -738,7 +742,7 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "--check",
         description:
-          "Answer which launch path works (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, before any image upload; nothing is sent. Exits 1 when no path works.",
+          "Answer which launch path works before any image upload; with --quote, also print quote admission, curve figures, graduation raise and issuer disclosure. Exits 1 when the wallet or quote is refused. Nothing is built or sent.",
       },
       { invocation: "--yes", description: "Confirm the launch without an interactive prompt." },
       {
@@ -753,6 +757,7 @@ export const HELP: Record<string, Topic> = {
     ],
     examples: [
       "candle launch --check",
+      "candle launch --quote NVDA --check --json",
       "candle launch --check --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image ./logo.png --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne",

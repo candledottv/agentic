@@ -97,6 +97,7 @@ export const LAUNCH_ARG_SPEC: ArgSpec = {
   valueFlags: [
     ...launchFlagFields.filter((field) => field.type !== "boolean").map((field) => field.cli.flag),
     LAUNCH_IMAGE_FLAG,
+    "--quote",
     "--rpc-url",
   ],
   booleanFlags: [
@@ -227,6 +228,10 @@ function flagChain(flags: Record<string, string>): TradeChain | undefined {
   const quote = flags["--quote-asset"]
   const quoteChain = quote === undefined ? undefined : QUOTE_CHAIN[quote.toLowerCase()]
   if (quoteChain) said.push([`--quote-asset ${quote}`, quoteChain])
+  const selected = flags["--quote"]
+  // chain-lint-allowed: this launch surface supports only Solana and Hood's audited launch stack, as the shared launch definition declares.
+  if (selected && /^0x[0-9a-fA-F]{40}$/.test(selected)) said.push(["--quote address", "hood"])
+  else if (selected && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(selected)) said.push(["--quote mint", "solana"])
   if (flags["--dex-version"] !== undefined) said.push(["--dex-version", "hood"])
   const [first, ...rest] = said
   const other = rest.find(([, chain]) => chain !== first?.[1])
@@ -248,6 +253,27 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     return 2
   }
   const flags = parsed.values
+  if (flags["--quote"] !== undefined && flags["--quote-asset"] !== undefined) {
+    writeUsageFailure(ctx.deps, "Pass --quote or --quote-asset, not both.", ctx.json)
+    return 2
+  }
+  const selectedQuote = flags["--quote"]?.trim()
+  if (selectedQuote !== undefined) flags["--quote"] = selectedQuote
+  if (selectedQuote !== undefined) {
+    if (!selectedQuote.trim() || selectedQuote.length > 120) {
+      writeUsageFailure(ctx.deps, "--quote takes a symbol or token address (at most 120 characters).", ctx.json)
+      return 2
+    }
+    // Map fixed addresses to the existing pair id; Solana addresses remain case sensitive.
+    const pair = LAUNCH_DEFINITION.quoteSelection.fixedPairs.find(
+      (p) =>
+        p.id === selectedQuote.toLowerCase() ||
+        p.address === selectedQuote ||
+        // chain-lint-allowed: case folding is only for the Hood addresses in the fixed launch matrix.
+        (p.chain === "hood" && p.address.toLowerCase() === selectedQuote.toLowerCase()),
+    )
+    if (pair) flags["--quote-asset"] = pair.id
+  }
   if (flags["--quote-asset"]) flags["--quote-asset"] = flags["--quote-asset"].toLowerCase()
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID()}`
   const embedded = EMBEDDED_WALLET_NAMES.has(flags["--wallet"] ?? "")
@@ -334,6 +360,14 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     // Before any request, as `candle swap` checks `--amount`; the quote asset's decimals come later.
     if (flags["--buy"]?.trim() && !/^0+(\.0+)?$/.test(flags["--buy"])) launchBuyRaw(flags["--buy"], 18)
     const hinted = flagChain(flags)
+    if (selectedQuote !== undefined && !check && !flags["--quote-asset"])
+      return tradingFailure(
+        ctx,
+        new TradingError(
+          "QUOTE_LAUNCH_UNAVAILABLE",
+          "New-quote launch execution is not enabled. Run candle launch --quote <symbol|address> --check to inspect admission and economics; nothing was uploaded or built.",
+        ),
+      )
     // BE-2519: the fee wallet is Solana only, as the API's parseFeeWallet refuses it on Hood.
     if (hinted === "hood" && feeWalletGiven(flags)) {
       writeUsageFailure(ctx.deps, `--fee-wallet is Solana only; a Hood launch cannot take it. ${USAGE}`, ctx.json)
@@ -375,7 +409,13 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     }
     const key = await tradingKey(ctx)
     // BE-2139 (surfaces item B): the one preflight call, before any upload, build or id claim.
-    if (check) return await launchCheck(ctx, key, flags["--wallet"], hinted, feeWallet)
+    if (check)
+      return await launchCheck(ctx, key, flags["--wallet"], hinted, feeWallet, {
+        quote: selectedQuote,
+        mode: flags["--mode"],
+        stakerAllocationBps: flags["--staker-allocation-bps"],
+        dexVersion: flags["--dex-version"],
+      })
     // A dry run reads no operation and resumes none: it records nothing under the id.
     const prior = dryRun ? null : await lookupOperation(ctx, key, id, "launch")
     /** BE-1721 (R4): a same-id re-run of an atomic launch whose bundle did not land, and the image it was built with. */

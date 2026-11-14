@@ -3,7 +3,14 @@ import { durationProblem, launchRulesFlagProblem } from "./launch-rules"
 
 /** Local file input is an alternative source for imageUrl, rather than another wire field. */
 export const LAUNCH_IMAGE_FLAG = "--image"
-export const LAUNCH_CLI_CONTROLS = ["--check", "--yes", "--require-fee-wallet", "--rpc-url", "--json"] as const
+export const LAUNCH_CLI_CONTROLS = [
+  "--quote",
+  "--check",
+  "--yes",
+  "--require-fee-wallet",
+  "--rpc-url",
+  "--json",
+] as const
 export const launchFlagFields = LAUNCH_DEFINITION.fields.flatMap((field) =>
   "flag" in field.surfaces.cli ? [{ ...field, cli: field.surfaces.cli }] : [],
 )
@@ -18,7 +25,7 @@ export const LAUNCH_USAGE = `candle launch ${launchFlagFields
     if (field.key === "imageUrl") return `--image <path>|${invocation}`
     return "required" in field && field.required ? invocation : `[${invocation}]`
   })
-  .join(" ")} [--check] [--yes] [--require-fee-wallet] [--rpc-url <url>] [--json]`
+  .join(" ")} [--quote <symbol|address>] [--check] [--yes] [--require-fee-wallet] [--rpc-url <url>] [--json]`
 
 /** Generic local checks use the same field ranges and enums as the help. The server remains authoritative. */
 export function launchFieldProblem(flags: Record<string, string>): string | undefined {

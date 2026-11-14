@@ -16,6 +16,38 @@ export const LAUNCH_DEFINITION = {
     "eth": 18,
     "usdg": 6
   },
+  "quoteSelection": {
+    "flag": "--quote",
+    "value": "<symbol|address>",
+    "help": "Select a quote by featured symbol or token address. With --check, show admission checks, curve figures, graduation raise and issuer disclosure. New quotes require server launch support; --quote-asset remains supported for fixed pairs.",
+    "fixedPairs": [
+      {
+        "id": "sol",
+        "address": "So11111111111111111111111111111111111111112",
+        "chain": "solana"
+      },
+      {
+        "id": "usdc",
+        "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "chain": "solana"
+      },
+      {
+        "id": "cndl",
+        "address": "9dXSV8VWuYvGfTzqvkBeoFwH9ihVTybDuWo5VaJPCNDL",
+        "chain": "solana"
+      },
+      {
+        "id": "eth",
+        "address": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+        "chain": "hood"
+      },
+      {
+        "id": "usdg",
+        "address": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+        "chain": "hood"
+      }
+    ]
+  },
   "quoteChains": {
     "sol": "solana",
     "usdc": "solana",

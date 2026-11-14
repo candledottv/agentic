@@ -12,6 +12,7 @@ import type { CommandContext } from "./deps"
 import type { FeeWalletSelection } from "./fee-wallet"
 import { feeWalletLines } from "./fee-wallet"
 import { LAUNCH_DEFINITION } from "./launch-definition"
+import { launchQuoteCheckSchema, launchQuoteLines } from "./launch-quote-check"
 import { chainName, type Json, request, rowChain, type TradeChain, TradingError } from "./trading"
 
 /** GET /launch/preflight's answer. Every field is a fact the server owns; the wording below is ours. */
@@ -49,6 +50,7 @@ const checkSchema = z
         active: z.boolean(),
       }),
     ),
+    quote: launchQuoteCheckSchema.optional(),
   })
   .passthrough()
 
@@ -186,8 +188,27 @@ export async function launchCheck(
   walletFlag: string | undefined,
   requestedChain?: TradeChain,
   feeWallet: FeeWalletSelection | undefined = undefined,
+  selection: { quote?: string; mode?: string; stakerAllocationBps?: string; dexVersion?: string } = {},
 ): Promise<number> {
-  const answer = checkSchema.parse(await request(ctx, key, "/api/v1/launch/preflight"))
+  const query = new URLSearchParams()
+  if (selection.quote !== undefined) {
+    query.set("quote", selection.quote)
+    if (requestedChain) query.set("chain", requestedChain)
+    if (selection.mode) query.set("mode", selection.mode)
+    if (selection.stakerAllocationBps) query.set("stakerAllocationBps", selection.stakerAllocationBps)
+    if (selection.dexVersion) query.set("dexVersion", selection.dexVersion)
+  }
+  const answer = checkSchema.parse(await request(ctx, key, `/api/v1/launch/preflight${query.size ? `?${query}` : ""}`))
+  if (selection.quote !== undefined) {
+    if (!answer.quote || answer.quote.requested !== selection.quote)
+      throw new TradingError(
+        "QUOTE_CHECK_UNAVAILABLE",
+        "This server did not check the requested quote. Update the server before retrying; nothing was uploaded or built.",
+      )
+    if (requestedChain && answer.quote.chain && requestedChain !== answer.quote.chain)
+      throw new TradingError("CHAIN_MISMATCH", "The checked quote disagrees with the requested launch chain.")
+    requestedChain ??= answer.quote.chain
+  }
   const embeddedOnly = walletFlag !== undefined && EMBEDDED_NAMES.has(walletFlag)
   const named =
     walletFlag === undefined || embeddedOnly
@@ -215,18 +236,23 @@ export async function launchCheck(
     lines.push(...feeWalletLines(feeWallet, undefined, launcherDefault))
   if (walletFlag === undefined || embeddedOnly) lines.push(...embeddedLines(answer, requestedChain))
   for (const row of shownWallets) lines.push(...walletLines(answer, row, requestedChain))
-  const works =
+  const walletWorksForRequest =
     (walletFlag === undefined || embeddedOnly ? embeddedWorks(answer, requestedChain) : false) ||
     shownWallets.some((row) => walletWorks(answer, row, requestedChain))
+  const works = walletWorksForRequest && (selection.quote === undefined || answer.quote?.ok === true)
+  if (selection.quote !== undefined && answer.quote) lines.push(...launchQuoteLines(answer.quote))
   lines.push(
     works
       ? "Nothing was uploaded, built or sent; this was the whole check."
-      : "No launch path works for this key. Nothing was uploaded, built or sent.",
+      : walletWorksForRequest && selection.quote !== undefined
+        ? "The quote check refused this launch. Nothing was uploaded, built or sent."
+        : "No launch path works for this key. Nothing was uploaded, built or sent.",
   )
   const result: Json = {
     success: true,
     check: true,
     works,
+    ...(selection.quote !== undefined ? { walletWorks: walletWorksForRequest, quote: answer.quote } : {}),
     ...(requestedChain ? { requestedChain } : {}),
     key: answer.key,
     switches: answer.switches,
