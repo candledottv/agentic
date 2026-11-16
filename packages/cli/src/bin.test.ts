@@ -18,6 +18,13 @@ const tempDir = tempDirs()
 
 const pkgDir = resolve(import.meta.dir, "..")
 const bundle = join(pkgDir, "dist", "index.js")
+// The first spawn of the ~MB bundle on a cold runner (empty page cache, busy host) can take well
+// over the 4s this file used to allow, and a SIGKILLed child reports status null (BE-3588: a
+// scheduled staging run failed `expected 0` at 4015ms). Budgets are generous, never tight; the
+// spawn timeout stays below the per-test deadline so a stuck child is still reaped first.
+const BUILD_TIMEOUT_MS = 120_000
+const SPAWN_TIMEOUT_MS = 30_000
+const TEST_TIMEOUT_MS = 45_000
 let node: string
 let nodeEnv: Record<string, string>
 
@@ -31,76 +38,92 @@ beforeAll(() => {
   const home = tempDir("candle-bin-home-")
   // main() resolves both credential stores before dispatch, even for --version/--help.
   // Inheriting PATH lets host `which`/`secret-tool` and a Secret Service probe consume the
-  // test's 5s budget. These entry/dispatch checks need no OS keychain or caller credentials.
+  // test's time budget. These entry/dispatch checks need no OS keychain or caller credentials.
   // Resolve node first, then give the child an empty tool directory and a fresh home/config.
   nodeEnv = { PATH: tempDir("candle-bin-path-"), HOME: home, CANDLE_CONFIG_DIR: home }
-})
+}, BUILD_TIMEOUT_MS)
 
 function runNode(entry: string, args: string[]) {
   return spawnSync(node, [entry, ...args], {
     env: nodeEnv,
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",
-    // A stuck child must be reaped before Bun's 5s test deadline.
-    timeout: 4_000,
+    // A stuck child must be reaped before the per-test deadline.
+    timeout: SPAWN_TIMEOUT_MS,
     killSignal: "SIGKILL",
   })
 }
 
 describe("the built bin entry", () => {
-  test("runs when invoked by its direct path", () => {
-    const res = runNode(bundle, ["--version"])
-    expect(res.status).toBe(0)
-    expect(res.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/)
-  })
+  test(
+    "runs when invoked by its direct path",
+    () => {
+      const res = runNode(bundle, ["--version"])
+      expect(res.status).toBe(0)
+      expect(res.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/)
+    },
+    TEST_TIMEOUT_MS,
+  )
 
-  test("runs when invoked through a symlink, the way bunx and npx execute a bin", () => {
-    const dir = tempDir("candle-bin-")
-    const link = join(dir, "candle")
-    symlinkSync(bundle, link)
-    const res = runNode(link, ["--version"])
-    // The unfixed guard exits 0 with EMPTY output here, so assert on stdout, not just the code.
-    expect(res.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/)
-    expect(res.status).toBe(0)
-  })
+  test(
+    "runs when invoked through a symlink, the way bunx and npx execute a bin",
+    () => {
+      const dir = tempDir("candle-bin-")
+      const link = join(dir, "candle")
+      symlinkSync(bundle, link)
+      const res = runNode(link, ["--version"])
+      // The unfixed guard exits 0 with EMPTY output here, so assert on stdout, not just the code.
+      expect(res.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/)
+      expect(res.status).toBe(0)
+    },
+    TEST_TIMEOUT_MS,
+  )
 
-  test("carries the Sigstore verifier inside the bundle, with no runtime dependency to install", () => {
-    // The three @sigstore packages are devDependencies. `bun build` inlines them into
-    // dist/index.js, so the published package still declares no runtime dependencies at all
-    // (README.md's opening paragraph) and `engines: node >=18` stays true -- as runtime
-    // dependencies they would be installed on their own terms, and @sigstore/verify's own engines
-    // floor refuses Node 18 and 20.
-    //
-    // What makes that move safe is not the manifest but this: the bundle alone, run by plain node
-    // with nothing installed beside it, verifies a real Sigstore bundle.
-    expect((pkg as { dependencies?: Record<string, string> }).dependencies ?? {}).toEqual({})
-    expect(readFileSync(bundle, "utf8")).toContain("sigstore")
+  test(
+    "carries the Sigstore verifier inside the bundle, with no runtime dependency to install",
+    () => {
+      // The three @sigstore packages are devDependencies. `bun build` inlines them into
+      // dist/index.js, so the published package still declares no runtime dependencies at all
+      // (README.md's opening paragraph) and `engines: node >=18` stays true -- as runtime
+      // dependencies they would be installed on their own terms, and @sigstore/verify's own engines
+      // floor refuses Node 18 and 20.
+      //
+      // What makes that move safe is not the manifest but this: the bundle alone, run by plain node
+      // with nothing installed beside it, verifies a real Sigstore bundle.
+      expect((pkg as { dependencies?: Record<string, string> }).dependencies ?? {}).toEqual({})
+      expect(readFileSync(bundle, "utf8")).toContain("sigstore")
 
-    const fx = join(pkgDir, "test-fixtures", "sigstore")
-    const res = runNode(bundle, [
-      "verify",
-      join(fx, "fixture.bin"),
-      "--bundle",
-      join(fx, "fixture.sigstore.json"),
-      "--identity",
-      readFileSync(join(fx, "identity.txt"), "utf8").trim(),
-      "--issuer",
-      readFileSync(join(fx, "issuer.txt"), "utf8").trim(),
-    ])
-    expect(res.stdout).toContain("Release signature verified")
-    expect(res.status).toBe(0)
-  })
+      const fx = join(pkgDir, "test-fixtures", "sigstore")
+      const res = runNode(bundle, [
+        "verify",
+        join(fx, "fixture.bin"),
+        "--bundle",
+        join(fx, "fixture.sigstore.json"),
+        "--identity",
+        readFileSync(join(fx, "identity.txt"), "utf8").trim(),
+        "--issuer",
+        readFileSync(join(fx, "issuer.txt"), "utf8").trim(),
+      ])
+      expect(res.stdout).toContain("Release signature verified")
+      expect(res.status).toBe(0)
+    },
+    TEST_TIMEOUT_MS,
+  )
 
-  test("through a symlink, a real command still dispatches (bunx passthrough token included)", () => {
-    const dir = tempDir("candle-bin-")
-    const link = join(dir, "candle")
-    symlinkSync(bundle, link)
-    // `candle` as the first token mirrors bunx passing the bin name through; the dispatcher
-    // strips one leading `candle`. `--help` proves main() ran and dispatch executed.
-    const res = runNode(link, ["candle", "--help"])
-    expect(res.status).toBe(0)
-    expect(res.stdout).toContain("Usage:")
-  })
+  test(
+    "through a symlink, a real command still dispatches (bunx passthrough token included)",
+    () => {
+      const dir = tempDir("candle-bin-")
+      const link = join(dir, "candle")
+      symlinkSync(bundle, link)
+      // `candle` as the first token mirrors bunx passing the bin name through; the dispatcher
+      // strips one leading `candle`. `--help` proves main() ran and dispatch executed.
+      const res = runNode(link, ["candle", "--help"])
+      expect(res.status).toBe(0)
+      expect(res.stdout).toContain("Usage:")
+    },
+    TEST_TIMEOUT_MS,
+  )
 })
 
 // BE-299, T5: T1 and T2 of stdout-drain.compiled.test.ts, through the npm shape. An agent running
