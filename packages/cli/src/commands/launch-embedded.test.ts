@@ -37,6 +37,10 @@ async function fixture(
     prompt?: string
     badFill?: boolean
     lost?: boolean
+    /** BE-3575: the headless route's refusal, as `fail()` sends it. */
+    headlessError?: Record<string, unknown>
+    /** BE-3575: one `getSignatureStatuses` value per read, the last repeated; a string throws. */
+    chain?: Array<Record<string, unknown> | null | "rpc-error">
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "candle-headless-launch-"))
@@ -51,8 +55,16 @@ async function fixture(
     stderr,
     promptLine: async () => opts.prompt ?? "y",
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
-      const path = new URL(String(input)).pathname
+      const url = new URL(String(input))
+      const path = url.pathname
       const body = typeof init?.body === "string" ? JSON.parse(init.body) : {}
+      if (url.host === "api.mainnet-beta.solana.com") {
+        calls.push({ path: `rpc:${body.method}`, body })
+        const reads = calls.filter((call) => call.path === "rpc:getSignatureStatuses").length
+        const answer = opts.chain?.[Math.min(reads, opts.chain.length) - 1] ?? null
+        if (answer === "rpc-error") return new Response("down", { status: 503 })
+        return Response.json({ jsonrpc: "2.0", id: body.id, result: { context: { slot: 1 }, value: [answer] } })
+      }
       calls.push({ path, body })
       if (path === "/api/v1/agent/wallets/embedded")
         return Response.json({
@@ -92,6 +104,7 @@ async function fixture(
       if (path === "/api/v1/launch/headless") {
         sent = true
         if (opts.lost) throw new Error("lost answer")
+        if (opts.headlessError) return Response.json({ success: false, error: opts.headlessError }, { status: 500 })
         // launch-creator-buy.ts legacyResult: headless success shape, retaining bundleId.
         return Response.json({
           success: true,
@@ -349,5 +362,109 @@ describe("embedded launch through headless, with an optional first buy", () => {
     const hood = await fixture()
     expect(await run([...launchArgs, "--quote-asset", "eth", "--dex-version", "v4", "--yes"], hood.deps)).toBe(0)
     expect(humanText(hood.stderr.text)).not.toContain("No --fee-wallet given")
+  })
+})
+
+// BE-3575: the headless route answers LAUNCH_FAILED with `stage: "unconfirmed"` when its
+// confirmation wait runs out. The launch may have landed, so the CLI reads the signature on chain
+// before it reports anything, and never reports a landed launch as LAUNCH_FAILED exit 1.
+describe("an unconfirmed headless launch is read on chain before it is reported", () => {
+  const SIG = "48FAKusdN2wCDbWFriS1TU4AzyS45oj7tXHhGAm71xnuMRZsV8XGZotdAr1BaNdNKGdx7aNDQcgKJz8AuKvFgVVd"
+  const unconfirmed = {
+    code: "LAUNCH_FAILED",
+    message:
+      "The launch may already be on chain. This clientLaunchId will not start another attempt. Check the mint on chain before using a new id.",
+    retryable: false,
+    stage: "unconfirmed",
+    signature: SIG,
+    recorded: true,
+  }
+  const signatureReads = (f: { paths: () => string[] }) =>
+    f.paths().filter((path) => path === "rpc:getSignatureStatuses").length
+
+  test("landed but unconfirmed by Candle: finalized late without an error is a landed launch, exit 0", async () => {
+    // The fake confirms late: no status, then processed, then confirmed, then finalized.
+    const f = await fixture({
+      headlessError: unconfirmed,
+      chain: [
+        null,
+        { confirmationStatus: "processed", err: null },
+        { confirmationStatus: "confirmed", err: null },
+        { confirmationStatus: "finalized", err: null, slot: 470213483 },
+      ],
+    })
+    expect(await run([...launchArgs, "--yes"], f.deps)).toBe(0)
+    expect(signatureReads(f)).toBe(4)
+    expect(f.calls.find((call) => call.path === "rpc:getSignatureStatuses")?.body.params).toEqual([
+      [SIG],
+      { searchTransactionHistory: true },
+    ])
+    const out = json(f.stdout.text)
+    expect(out).toMatchObject({
+      success: true,
+      status: "landed",
+      kind: "launch",
+      clientTradeId: "launch-1",
+      clientLaunchId: "launch-1",
+      signature: SIG,
+      slot: 470213483,
+      confirmation: "finalized",
+      recorded: false,
+    })
+    expect(out.code).toBeUndefined()
+    expect(humanText(f.stderr.text)).toContain("it landed")
+    // Exactly one launch was sent; nothing was re-sent.
+    expect(f.calls.filter((call) => call.path === "/api/v1/launch/headless")).toHaveLength(1)
+  })
+
+  test("finalized with an error is the one LAUNCH_FAILED, exit 1", async () => {
+    const f = await fixture({
+      headlessError: unconfirmed,
+      chain: [{ confirmationStatus: "finalized", err: { InstructionError: [0, "Custom"] } }],
+    })
+    expect(await run([...launchArgs, "--yes"], f.deps)).toBe(1)
+    const out = json(f.stdout.text)
+    expect(out.code).toBe("LAUNCH_FAILED")
+    expect(out.message).toContain("finalized on chain with an error")
+    expect(out.details).toMatchObject({ stage: "unconfirmed", signature: SIG, onChain: "failed" })
+  })
+
+  test.each([
+    ["no status on any read", [null]],
+    ["confirmed but never finalized", [{ confirmationStatus: "confirmed", err: null }]],
+    ["an RPC that fails every read", ["rpc-error" as const]],
+  ])("%s: LAUNCH_UNCONFIRMED, exit 3, never LAUNCH_FAILED", async (_label, chain) => {
+    const f = await fixture({ headlessError: unconfirmed, chain })
+    expect(await run([...launchArgs, "--yes"], f.deps)).toBe(3)
+    const out = json(f.stdout.text)
+    expect(out.code).toBe("LAUNCH_UNCONFIRMED")
+    expect(out.message).toContain("do not launch again under a new id")
+    expect(out.details).toMatchObject({ stage: "unconfirmed", serverCode: "LAUNCH_FAILED", signature: SIG })
+    expect(signatureReads(f)).toBeGreaterThanOrEqual(6)
+    expect(f.stdout.text).not.toContain("api.mainnet-beta.solana.com/")
+  })
+
+  test.each([
+    ["an unconfirmed refusal without a signature", { ...unconfirmed, signature: undefined }],
+    ["a landed launch whose recording did not finish", { ...unconfirmed, stage: "executed", mint: EMBEDDED }],
+  ])("%s is exit 3 with no chain read", async (_label, headlessError) => {
+    const f = await fixture({ headlessError })
+    expect(await run([...launchArgs, "--yes"], f.deps)).toBe(3)
+    expect(json(f.stdout.text).code).toBe("LAUNCH_UNCONFIRMED")
+    expect(signatureReads(f)).toBe(0)
+  })
+
+  test("a Hood unconfirmed refusal is exit 3, not LAUNCH_FAILED", async () => {
+    const f = await fixture({ headlessError: { ...unconfirmed, signature: "0xabc" } })
+    expect(await run([...launchArgs, "--quote-asset", "eth", "--dex-version", "v4", "--yes"], f.deps)).toBe(3)
+    expect(json(f.stdout.text).code).toBe("LAUNCH_UNCONFIRMED")
+    expect(signatureReads(f)).toBe(0)
+  })
+
+  test("a refusal with no stage still fails as before", async () => {
+    const f = await fixture({ headlessError: { code: "LAUNCH_FAILED", message: "Reverted", retryable: true } })
+    expect(await run([...launchArgs, "--yes"], f.deps)).toBe(1)
+    expect(json(f.stdout.text).code).toBe("LAUNCH_FAILED")
+    expect(signatureReads(f)).toBe(0)
   })
 })

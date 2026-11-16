@@ -79637,7 +79637,7 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
-    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, launch:write, a bound key and verified authority; a server with TEE_LAUNCH_BY_SCOPE_ENABLED off also asks for the owner's allowLaunch (deprecated), and with it on a TEE first buy also needs swap:write. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the wallet that launches the token where the server has LAUNCH_FEE_WALLET_FROM_LAUNCHER on (an embedded launch already earns to its embedded wallet), otherwise to the account wallet, and the preview, the confirm and --check all say which; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. On Solana, where the server has CURVE_LAUNCH_RULES_ENABLED on, launch rules are fixed at launch and enforced by the curve program: --open-in delays the open (until then only the launching wallet may buy, up to --dev-buy-max, which defaults to the buy), --max-buy-per-wallet with --cap-window caps what each wallet spends on the curve after the open, and --allowlist <file> with --allowlist-window lets only the listed wallets buy; durations are seconds or 90m, 6h, 2d and amounts are whole quote units, each is checked here before any request, and the preview prints a Launch rules block. Nobody can change the rules after the launch. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works. status reads one launch by its mint or clientLaunchId: build, signed, confirmed, trading, bonded, then migrated, with the market's lifecycle and migration fields. --wait follows it until the token is trading, the launch has failed, or ten minutes pass.",
+    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, launch:write, a bound key and verified authority; a server with TEE_LAUNCH_BY_SCOPE_ENABLED off also asks for the owner's allowLaunch (deprecated), and with it on a TEE first buy also needs swap:write. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the wallet that launches the token where the server has LAUNCH_FEE_WALLET_FROM_LAUNCHER on (an embedded launch already earns to its embedded wallet), otherwise to the account wallet, and the preview, the confirm and --check all say which; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. On Solana, where the server has CURVE_LAUNCH_RULES_ENABLED on, launch rules are fixed at launch and enforced by the curve program: --open-in delays the open (until then only the launching wallet may buy, up to --dev-buy-max, which defaults to the buy), --max-buy-per-wallet with --cap-window caps what each wallet spends on the curve after the open, and --allowlist <file> with --allowlist-window lets only the listed wallets buy; durations are seconds or 90m, 6h, 2d and amounts are whole quote units, each is checked here before any request, and the preview prints a Launch rules block. Nobody can change the rules after the launch. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works. status reads one launch by its mint or clientLaunchId: build, signed, confirmed, trading, bonded, then migrated, with the market's lifecycle and migration fields. --wait follows it until the token is trading, the launch has failed, or ten minutes pass. An embedded Solana launch that Candle could not confirm in time is read on chain over the Solana RPC before anything is reported: finalized without an error prints status landed (exit 0), finalized with an error is LAUNCH_FAILED (exit 1), and anything else is LAUNCH_UNCONFIRMED (exit 3); never launch it again under a new id.",
     usage: [LAUNCH_USAGE, "candle launch status <mint-or-client-launch-id> [--wait]"],
     rows: [
       {
@@ -79666,7 +79666,7 @@ var HELP = {
       },
       {
         invocation: "--rpc-url <url>",
-        description: "The Solana RPC for a TEE launch with no first buy, or the Hood RPC for receipt reads."
+        description: "The Solana RPC for a TEE launch with no first buy, or for reading an embedded launch Candle could not confirm; the Hood RPC for receipt reads."
       }
     ],
     examples: [
@@ -95975,6 +95975,30 @@ async function launchCheck2(ctx, key, walletFlag, requestedChain, feeWallet = un
   return works ? 0 : 1;
 }
 
+// src/launch-landed.ts
+var LAUNCH_SIGNATURE_READS = 6;
+var LAUNCH_SIGNATURE_POLL_MS = 5000;
+async function checkLaunchSignature(read2, sleep, signature, reads = LAUNCH_SIGNATURE_READS) {
+  let detail = "the RPC has no status for it";
+  for (let attempt = 0;attempt < reads; attempt++) {
+    if (attempt > 0)
+      await sleep(LAUNCH_SIGNATURE_POLL_MS);
+    let observed;
+    try {
+      observed = classifyStatus(await read2(signature));
+    } catch {
+      detail = "the RPC read failed";
+      continue;
+    }
+    if (observed.kind === "finalized")
+      return observed.slot !== undefined ? { kind: "landed", slot: observed.slot } : { kind: "landed" };
+    if (observed.kind === "failed")
+      return { kind: "reverted", err: observed.err };
+    detail = observed.kind === "missing" ? "the RPC has no status for it" : `the RPC sees it at ${observed.confirmationStatus ?? "an unknown"} commitment, not finalized`;
+  }
+  return { kind: "unknown", detail };
+}
+
 // src/commands/launch.ts
 init_presentation();
 init_render();
@@ -96880,6 +96904,12 @@ async function embeddedLaunch(ctx, key, args) {
   });
   if (!result2.ok) {
     const raw2 = result2.raw;
+    const refusal4 = raw2?.error !== null && typeof raw2?.error === "object" ? raw2.error : undefined;
+    if (mayHaveLanded(refusal4?.stage))
+      return await settleUnconfirmedLaunch(ctx, flags, id, chain2, refusal4, result2.code, result2.message, {
+        quote,
+        used
+      });
     const unresolved = result2.status === 0 || raw2?.status === "timeout";
     throw new TradingError(result2.code ?? (unresolved ? "BUNDLE_UNRESOLVED" : "REQUEST_FAILED"), result2.message, {
       ...unresolved ? { exitCode: 3 } : {},
@@ -96893,6 +96923,50 @@ async function embeddedLaunch(ctx, key, args) {
     kind: "launch",
     quote,
     ...used
+  });
+}
+async function settleUnconfirmedLaunch(ctx, flags, id, chain2, refusal4, serverCode, serverMessage, shown) {
+  const stage = String(refusal4.stage);
+  const signature = typeof refusal4.signature === "string" && refusal4.signature ? refusal4.signature : undefined;
+  const mint = typeof refusal4.mint === "string" && refusal4.mint ? refusal4.mint : undefined;
+  const details = {
+    stage,
+    ...serverCode ? { serverCode } : {},
+    ...signature ? { signature } : {},
+    ...mint ? { mint } : {}
+  };
+  const statusHint = `candle launch status ${id}`;
+  let unread = "Candle did not return the launch signature, so it was not read on chain";
+  if (chain2 === "solana" && stage === "unconfirmed" && signature) {
+    notice(ctx.deps, "stderr", "note", `Candle could not confirm launch ${safeText(signature)} in time. Reading it on chain before reporting anything.`);
+    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"]);
+    const check2 = await checkLaunchSignature((sig) => solana.rpc.getSignatureStatus(sig), (ms) => ctx.deps.sleep(ms), signature);
+    if (check2.kind === "landed") {
+      notice(ctx.deps, "stderr", "note", `Launch ${safeText(signature)} is finalized on chain without an error: it landed. Candle is still recording it; read it with ${statusHint}. Do not launch again under a new id.`);
+      return printTradingResult(ctx, {
+        success: true,
+        status: "landed",
+        chain: chain2,
+        clientLaunchId: id,
+        signature,
+        ...mint ? { mint } : {},
+        ...check2.slot !== undefined ? { slot: check2.slot } : {},
+        confirmation: "finalized",
+        recorded: false,
+        clientTradeId: id,
+        kind: "launch",
+        quote: shown.quote,
+        ...shown.used
+      });
+    }
+    if (check2.kind === "reverted")
+      throw new TradingError("LAUNCH_FAILED", `Launch ${safeText(signature)} is finalized on chain with an error, so no token was created. Candle still holds launch id ${id} for it; a new --client-trade-id starts a clean launch.`, { details: { ...details, onChain: "failed" } });
+    unread = `On chain, ${check2.detail}`;
+  }
+  throw new TradingError("LAUNCH_UNCONFIRMED", `${safeText(serverMessage)} ${unread}. The launch may be on chain: do not launch again under a new id.`, {
+    exitCode: 3,
+    suggestion: `Re-run with the same --client-trade-id ${id}, or read ${statusHint}; nothing is re-sent.`,
+    details
   });
 }
 async function hoodLaunch(ctx, key, args) {

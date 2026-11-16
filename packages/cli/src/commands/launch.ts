@@ -34,6 +34,7 @@ import { writeFields } from "../human-output"
 import { BundleReadError, readLaunchBundle } from "../launch-bundle"
 import { launchCheck } from "../launch-check"
 import { LAUNCH_DEFINITION } from "../launch-definition"
+import { checkLaunchSignature } from "../launch-landed"
 import { LAUNCH_IMAGE_FLAG, LAUNCH_USAGE, launchFieldProblem, launchFlagFields } from "../launch-options"
 import {
   type LaunchRulesBody,
@@ -56,6 +57,7 @@ import {
   HOOD_BASES,
   type Json,
   launchBuildSchema,
+  mayHaveLanded,
   payerSignature,
   type QuoteDisplay,
   rawAmount,
@@ -1413,6 +1415,13 @@ async function embeddedLaunch(
   })
   if (!result.ok) {
     const raw = result.raw as Json | undefined
+    const refusal = raw?.error !== null && typeof raw?.error === "object" ? (raw.error as Json) : undefined
+    // BE-3575: a refusal that names a stage where the launch may be on chain is not a failed launch.
+    if (mayHaveLanded(refusal?.stage))
+      return await settleUnconfirmedLaunch(ctx, flags, id, chain, refusal as Json, result.code, result.message, {
+        quote,
+        used,
+      })
     const unresolved = result.status === 0 || raw?.status === "timeout"
     throw new TradingError(result.code ?? (unresolved ? "BUNDLE_UNRESOLVED" : "REQUEST_FAILED"), result.message, {
       ...(unresolved ? { exitCode: 3 as const } : {}),
@@ -1427,6 +1436,94 @@ async function embeddedLaunch(
     quote,
     ...used,
   })
+}
+
+/**
+ * BE-3575: the headless route answered `stage: "unconfirmed"` (its confirmation wait ran out) or
+ * `"executed"` (the launch landed and recording did not finish). Either way the launch may be on
+ * chain, and the server holds this clientLaunchId, so this is never `LAUNCH_FAILED` exit 1: a
+ * caller that retried that under a new id would launch, and spend, twice.
+ *
+ * A Solana `unconfirmed` refusal that carries the launch signature is read on chain first, over
+ * the same RPC `--rpc-url` names. Finalized without an error is a launch that landed: exit 0 with
+ * `status: "landed"`. Finalized with an error is a launch that can never land: `LAUNCH_FAILED`,
+ * exit 1. Everything else, and every refusal this cannot read on chain (Hood, no signature,
+ * `executed`), is `LAUNCH_UNCONFIRMED`, exit 3: re-run the same id or read `candle launch status`.
+ */
+async function settleUnconfirmedLaunch(
+  ctx: CommandContext,
+  flags: Record<string, string>,
+  id: string,
+  chain: TradeChain,
+  refusal: Json,
+  serverCode: string | undefined,
+  serverMessage: string,
+  shown: { quote: QuoteDisplay & Json; used: Json },
+): Promise<number> {
+  const stage = String(refusal.stage)
+  const signature = typeof refusal.signature === "string" && refusal.signature ? refusal.signature : undefined
+  const mint = typeof refusal.mint === "string" && refusal.mint ? refusal.mint : undefined
+  const details: Json = {
+    stage,
+    ...(serverCode ? { serverCode } : {}),
+    ...(signature ? { signature } : {}),
+    ...(mint ? { mint } : {}),
+  }
+  const statusHint = `candle launch status ${id}`
+  let unread = "Candle did not return the launch signature, so it was not read on chain"
+  if (chain === "solana" && stage === "unconfirmed" && signature) {
+    notice(
+      ctx.deps,
+      "stderr",
+      "note",
+      `Candle could not confirm launch ${safeText(signature)} in time. Reading it on chain before reporting anything.`,
+    )
+    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"])
+    const check = await checkLaunchSignature(
+      (sig) => solana.rpc.getSignatureStatus(sig),
+      (ms) => ctx.deps.sleep(ms),
+      signature,
+    )
+    if (check.kind === "landed") {
+      notice(
+        ctx.deps,
+        "stderr",
+        "note",
+        `Launch ${safeText(signature)} is finalized on chain without an error: it landed. Candle is still recording it; read it with ${statusHint}. Do not launch again under a new id.`,
+      )
+      return printTradingResult(ctx, {
+        success: true,
+        status: "landed",
+        chain,
+        clientLaunchId: id,
+        signature,
+        ...(mint ? { mint } : {}),
+        ...(check.slot !== undefined ? { slot: check.slot } : {}),
+        confirmation: "finalized",
+        recorded: false,
+        clientTradeId: id,
+        kind: "launch",
+        quote: shown.quote,
+        ...shown.used,
+      })
+    }
+    if (check.kind === "reverted")
+      throw new TradingError(
+        "LAUNCH_FAILED",
+        `Launch ${safeText(signature)} is finalized on chain with an error, so no token was created. Candle still holds launch id ${id} for it; a new --client-trade-id starts a clean launch.`,
+        { details: { ...details, onChain: "failed" } },
+      )
+    unread = `On chain, ${check.detail}`
+  }
+  throw new TradingError(
+    "LAUNCH_UNCONFIRMED",
+    `${safeText(serverMessage)} ${unread}. The launch may be on chain: do not launch again under a new id.`,
+    {
+      exitCode: 3,
+      suggestion: `Re-run with the same --client-trade-id ${id}, or read ${statusHint}; nothing is re-sent.`,
+      details,
+    },
+  )
 }
 
 // ── Phase 4b-2: a launch from a Hood TEE wallet (D9) ──────────────────────────────────────────
