@@ -11,6 +11,14 @@
 /** Relay's depository on Hood (chain 4663). Every Hood-origin deposit, and every approve's spender. */
 export const RELAY_HOOD_DEPOSITORY = "0x4cd00e387622c35bddb9b4c962c136462338bc31"
 
+/**
+ * Relay's same-chain swap contracts on Hood (chain 4663, v3.2, from Relay's `/chains`), the target of
+ * an ETH <-> USDG `swap` step on `POST /agent/swap`. `erc20Router` is the ETH origin's target;
+ * `approvalProxy` is the USDG origin's approve spender and swap target.
+ */
+export const RELAY_HOOD_ERC20_ROUTER = "0x0729e2a4716d9f7dd17858d5d504426d228697f7"
+export const RELAY_HOOD_APPROVAL_PROXY = "0x5567954cd026cebfe486062cb75848e0f1c12e58"
+
 /** `deposit(address depositor, bytes32 id)` with `value` = the amount: a native ETH origin. */
 export const RELAY_HOOD_DEPOSIT_NATIVE_SELECTOR = "0x49290c1c"
 
