@@ -60,6 +60,8 @@ yet: let an unwanted build expire. `deferExecution` cannot be combined with `pap
 back to the paper book is refused rather than built. One execution per build: a repeat call returns the stored
 result, or `IDEMPOTENCY_CONFLICT` while the first is unconfirmed (read `candle_get_operation`).
 
+`candle_trade`, `candle_swap` and `candle_launch_and_seed` take `hide: true` to keep the order out of the public activity stream (no agent mark, no handle); `candle_launch_token` takes it too, from the shared launch definition. It is sent only when true. The API must confirm it with a `hide: true` echo: without that, the tool answers an error (`HIDE_NOT_CONFIRMED`) and, where this server signs, nothing is signed or submitted first. `hide` cannot be combined with `paper`, and it is rejected while the API has it switched off. A hidden launch's creator wallet is still public on chain.
+
 Both take decimal amounts, never raw base units, and resolve the scale themselves:
 
 - A `candle_trade` **buy** is denominated in the token's OWN quote asset, whatever it was launched

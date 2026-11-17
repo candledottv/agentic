@@ -307,6 +307,12 @@ are refused before signing. Builder rotation requires a reviewed client release.
 Limit orders are a REST surface only (`/api/v1/trade/agent/orders`); the SDK has no method for
 them.
 
+## Keeping an order out of the public stream (`hide`)
+
+`hide?: boolean` is accepted by `swap()`, `buildTrade()`, `trade()`, `swapFromLinked()`, the Hood swap build and every launch request (the field comes from the shared launch definition). It keeps the order out of Candle's public activity stream: no agent mark and no handle. It is sent only when `true`; the same `true`, `"true"` and `1` the API reads are accepted, and any other unreadable value throws.
+
+The API echoes `hide: true`. A successful response without that echo throws `CandleApiError` with code `HIDE_NOT_CONFIRMED`, before signing wherever the caller signs (linked swap, self launch, atomic build). With the embedded wallet the build is the executed order, so there the error says the order may have been placed publicly. The API rejects `hide` while it is switched off on the server, and currently refuses it on swaps, so `swap()` with `hide` fails until the API supports it. A hidden launch removes Candle's identity layer, but the creator wallet is public on chain.
+
 ## Retrying a write that failed or timed out
 
 Six methods send an idempotency id, and generate one (`"sdk-" + crypto.randomUUID()`) when you
