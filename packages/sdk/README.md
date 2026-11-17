@@ -578,6 +578,8 @@ async function handleWebhook(req: Request): Promise<Response> {
 The verifier never throws: malformed headers, stale timestamps, wrong secrets, and tampered
 bodies all return `false`. Comparison is constant-time (`timingSafeEqual`).
 
+Hidden orders (`@candledottv/agent-sdk` 0.6.23). `swap()`, `buildTrade()`, `trade()`, `swapFromLinked()` and every launch method take `hide?: boolean`, sent only when true (`true`, `"true"` or `1`; any other unreadable value throws). It keeps the order out of the public activity stream. The API echoes `hide: true`; a successful response without the echo throws `CandleApiError` with `code: "HIDE_NOT_CONFIRMED"`, before signing where you sign (linked swap, self launch, atomic build). With the embedded wallet the build is the executed order, so there the error says the order may have been placed publicly: read it back before you send another. `hide` needs an API with `AGENT_HIDE_ENABLED` on, and the API refuses it on swaps until it supports hide there. A hidden launch removes Candle's identity layer, but the creator wallet is public on chain.
+
 ## Errors
 
 Every non-2xx response throws `CandleApiError` with `code`, `status`, `retryable`, and
