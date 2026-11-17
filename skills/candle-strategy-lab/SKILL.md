@@ -25,10 +25,13 @@ Both surfaces need a production agent key (`cndl_live_`). A device token or a te
 | Cancel | `candle lab replay cancel <job-id>` | none; use the CLI |
 | Measured runners | `candle lab runners [--hours n] [--min-wallets n]` | `candle_lab_runners` |
 | Signal edges | `candle lab edges [--days n] [--min-n n]` | `candle_lab_edges` |
+| Per-signal forward returns | none yet; direct HTTP: `GET https://api.hacc.fun/v1/strategy-lab/ledger-export?days=&limit=&after_at=&after_key=` with `Authorization: Bearer <cndl_live_ key>` | none |
 
 Run `status` first. The CLI waits for a replay by default (5 second polls, up to 11 minutes); `--no-wait` prints the
 job id instead. `--json` keeps the server's body unchanged. Cost: pass `--fee-bps` and `--slippage-bps` for your own
 tier; without them the CLI reads your fee from Candle and falls back to the lab's default if that read fails.
+
+The export returns up to 500 signals a page, resumable with `next_after_at` plus `next_after_key` while `truncated` is true. Pro may pull 5 pages a day and Max 20, drawn from the same daily ceiling as replays; a refusal is 429 `lab_quota` with `resets_at`. Full fields, limits and a resumable script: the Data and strategy API page, "Per-signal forward returns export".
 
 TypeScript callers can use `createLabClient` from `@candledottv/agent-sdk`; the CLI and MCP use the same client.
 
