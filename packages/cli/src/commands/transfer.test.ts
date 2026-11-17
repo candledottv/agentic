@@ -56,8 +56,14 @@ async function fixture(
     approved?: { id: string; address: string; label?: string; chain?: string; revokedAt?: number }[]
     /** What /transfer/build answers; a `{ error }` answers that Candle error. */
     build?: Record<string, unknown> | { error: { code: string; message: string } }
+    /** What POST /transfer (the embedded rail) answers; a `{ error }` answers that Candle error. */
+    embeddedError?: { code: string; message: string; retryable?: boolean; signature?: string; stage?: string }
+    embeddedStatus?: number
+    embeddedNetworkFailure?: boolean
     /** BE-503: `embeddedWalletPermission` on GET /wallets/embedded; absent as an older API answers. */
     embeddedPermission?: "allowed" | "denied"
+    /** The embedded wallet's Hood (EVM) address; null as before when absent. */
+    embeddedEvm?: string
     /** SEC-003: the transaction /transfer/build returns and the chain it simulates against. Honest by default. */
     scenario?: (honest: TransferBuild) => SolanaScenario
   } = {},
@@ -90,7 +96,7 @@ async function fixture(
     if (path === "/api/v1/agent/wallets/embedded")
       return ok({
         success: true,
-        wallets: { solana: { address: EMBEDDED }, evm: null },
+        wallets: { solana: { address: EMBEDDED }, evm: opts.embeddedEvm ? { address: opts.embeddedEvm } : null },
         ...(opts.embeddedPermission !== undefined ? { embeddedWalletPermission: opts.embeddedPermission } : {}),
       })
     if (path === "/api/v1/agent/wallets")
@@ -112,6 +118,12 @@ async function fixture(
         boundKeyPrefix: "bound",
         ...(opts.vault === null ? {} : { vaultDestination: opts.vault ?? VAULT }),
       })
+    if (path === "/api/v1/agent/transfer") {
+      if (opts.embeddedNetworkFailure) throw new TypeError("fetch failed")
+      if (opts.embeddedError)
+        return Response.json({ error: opts.embeddedError }, { status: opts.embeddedStatus ?? 502 })
+      return ok({ success: true, transferId: "tr-e", status: "confirmed", signature: "EmbeddedSig1", to: body?.to })
+    }
     if (path === "/api/v1/agent/transfer/build") {
       if (opts.build && "error" in opts.build) return Response.json({ error: opts.build.error }, { status: 403 })
       const amountRaw = body?.amountRaw === "max" ? "999990000" : String(body?.amountRaw)
@@ -414,12 +426,139 @@ describe("candle transfer (R19)", () => {
     expect(JSON.parse(f.stdout.text).message).toContain("transfer:write")
   })
 
-  test("the embedded wallet is refused as a payer: this command moves a linked wallet", async () => {
+  // 2026-11-13 (Andrew): an agent on the embedded wallet has the same features as on a TEE wallet.
+  // The embedded wallet pays through POST /transfer, the rail MCP candle_transfer uses.
+  test("the embedded wallet pays through POST /transfer, raw units, to the named address", async () => {
     const f = await fixture({ teeWallets: 0 })
-    const code = await run(["transfer", "--to", "treasury", "--asset", "USDC", "--amount", "1", "--json"], f.deps)
-    expect(code).toBe(1)
-    expect(JSON.parse(f.stdout.text).code).toBe("PAYER_UNSUPPORTED")
+    const code = await run(
+      ["transfer", "--to", TREASURY, "--asset", "USDC", "--amount", "1.5", "--client-id", "e-1", "--yes", "--json"],
+      f.deps,
+    )
+    expect(code).toBe(0)
+    const call = f.calls.find((c) => c.path === "/api/v1/agent/transfer")
+    expect(call?.body).toEqual({
+      chain: "solana",
+      asset: "USDC",
+      amountRaw: "1500000",
+      to: TREASURY,
+      clientTransferId: "e-1",
+    })
     expect(f.paths()).not.toContain("/api/v1/agent/transfer/build")
+  })
+
+  test("the embedded wallet pays a Hood asset through the same rail, in wei", async () => {
+    const f = await fixture({ teeWallets: 0, embeddedEvm: "0x2222222222222222222222222222222222222222" })
+    const to = "0x1111111111111111111111111111111111111111"
+    const code = await run(["transfer", "--to", to, "--asset", "ETH", "--amount", "0.01", "--yes", "--json"], f.deps)
+    expect(code).toBe(0)
+    expect(f.calls.find((c) => c.path === "/api/v1/agent/transfer")?.body).toMatchObject({
+      chain: "hood",
+      asset: "ETH",
+      amountRaw: "10000000000000000",
+      to,
+    })
+  })
+
+  test("the embedded wallet takes --amount max as amountRaw max", async () => {
+    const f = await fixture({ teeWallets: 0 })
+    const code = await run(
+      ["transfer", "--to", TREASURY, "--asset", "SOL", "--amount", "max", "--yes", "--json"],
+      f.deps,
+    )
+    expect(code).toBe(0)
+    expect(f.calls.find((c) => c.path === "/api/v1/agent/transfer")?.body).toMatchObject({
+      asset: "SOL",
+      amountRaw: "max",
+    })
+  })
+
+  test("the embedded wallet needs a plain address for --to, and builds nothing on a name", async () => {
+    const f = await fixture({ teeWallets: 0 })
+    const code = await run(
+      ["transfer", "--to", "treasury", "--asset", "USDC", "--amount", "1", "--yes", "--json"],
+      f.deps,
+    )
+    expect(code).toBe(1)
+    expect(JSON.parse(f.stdout.text).code).toBe("VALIDATION_FAILED")
+    expect(f.paths()).not.toContain("/api/v1/agent/transfer")
+  })
+
+  // Spec 2026-11-13 row 12: a TRANSFER_FAILED from the embedded rail may have landed, and a run
+  // under a new client id sends again. Exit 3 (may have landed), never a retryable failure.
+  test("a TRANSFER_FAILED from the embedded rail exits 3: may have landed, never retryable", async () => {
+    const f = await fixture({
+      teeWallets: 0,
+      embeddedError: { code: "TRANSFER_FAILED", message: "The broadcast did not confirm.", retryable: true },
+    })
+    const code = await run(["transfer", "--to", TREASURY, "--asset", "SOL", "--amount", "1", "--yes", "--json"], f.deps)
+    expect(code).toBe(3)
+    const failure = JSON.parse(f.stdout.text)
+    expect(failure.code).toBe("TRANSFER_FAILED")
+    expect(failure.message).toContain("may have landed")
+    expect(failure.message).toContain("candle activity")
+    expect(failure.message).not.toContain("retryable")
+    // The id the CLI picked is named, so the transfer can be read back.
+    const sent = f.calls.find((c) => c.path === "/api/v1/agent/transfer")?.body as { clientTransferId: string }
+    expect(failure.message).toContain(`candle transfer status ${sent.clientTransferId}`)
+  })
+
+  test("a may-have-landed embedded TRANSFER_FAILED names the caller's own --client-id", async () => {
+    const f = await fixture({
+      teeWallets: 0,
+      embeddedError: { code: "TRANSFER_FAILED", message: "The broadcast did not confirm.", retryable: false },
+    })
+    const code = await run(
+      ["transfer", "--to", TREASURY, "--asset", "SOL", "--amount", "1", "--client-id", "pay-7", "--yes", "--json"],
+      f.deps,
+    )
+    expect(code).toBe(3)
+    expect(JSON.parse(f.stdout.text).message).toContain("candle transfer status pay-7")
+  })
+
+  test("a dropped connection after the POST exits 3 and names the id the CLI picked", async () => {
+    const f = await fixture({ teeWallets: 0, embeddedNetworkFailure: true })
+    const code = await run(["transfer", "--to", TREASURY, "--asset", "SOL", "--amount", "1", "--yes", "--json"], f.deps)
+    expect(code).toBe(3)
+    const sent = f.calls.find((c) => c.path === "/api/v1/agent/transfer")?.body as { clientTransferId: string }
+    expect(sent.clientTransferId).toMatch(/^transfer-[0-9a-f-]{36}$/)
+    const failure = JSON.parse(f.stdout.text)
+    expect(failure.message).toContain(`candle transfer status ${sent.clientTransferId}`)
+    expect(failure.details.clientTransferId).toBe(sent.clientTransferId)
+  })
+
+  test("a 5xx with another code exits 3 and names the id; a signature and stage are kept", async () => {
+    const f = await fixture({
+      teeWallets: 0,
+      embeddedStatus: 500,
+      embeddedError: { code: "INTERNAL_ERROR", message: "Something broke.", signature: "Sig9", stage: "unconfirmed" },
+    })
+    const code = await run(["transfer", "--to", TREASURY, "--asset", "SOL", "--amount", "1", "--yes", "--json"], f.deps)
+    expect(code).toBe(3)
+    const sent = f.calls.find((c) => c.path === "/api/v1/agent/transfer")?.body as { clientTransferId: string }
+    const failure = JSON.parse(f.stdout.text)
+    expect(failure.message).toContain(`candle transfer status ${sent.clientTransferId}`)
+    expect(failure.details).toMatchObject({
+      clientTransferId: sent.clientTransferId,
+      signature: "Sig9",
+      stage: "unconfirmed",
+    })
+  })
+
+  test("a definite 4xx refusal stays exit 1, and the id is shown before the send and in the receipt", async () => {
+    const refused = await fixture({
+      teeWallets: 0,
+      embeddedStatus: 403,
+      embeddedError: { code: "TRANSFER_NOT_PERMITTED", message: "Not allowed." },
+    })
+    expect(
+      await run(["transfer", "--to", TREASURY, "--asset", "SOL", "--amount", "1", "--yes", "--json"], refused.deps),
+    ).toBe(1)
+    const f = await fixture({ teeWallets: 0 })
+    const code = await run(["transfer", "--to", TREASURY, "--asset", "SOL", "--amount", "1", "--yes", "--json"], f.deps)
+    expect(code).toBe(0)
+    const sent = f.calls.find((c) => c.path === "/api/v1/agent/transfer")?.body as { clientTransferId: string }
+    expect(JSON.parse(f.stdout.text).clientTransferId).toBe(sent.clientTransferId)
+    expect(f.stderr.text).toContain(`Client id: ${sent.clientTransferId}`)
   })
 
   test("BE-503 (R5.10): a key denied the embedded wallet names that refusal and its fix, before any build", async () => {

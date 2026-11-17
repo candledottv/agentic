@@ -1,6 +1,8 @@
 /**
  * `candle transfer`: move one asset out of a linked wallet this machine can sign for, over the
- * transfer rail's linked-origin shape (Read:Write:Transfer spec, 2026-09-24, D6 / R19):
+ * transfer rail's linked-origin shape; or, from the embedded wallet (2026-11-13), through POST
+ * /agent/transfer, where Candle signs (`embeddedTransfer` below). The linked-origin shape follows
+ * (Read:Write:Transfer spec, 2026-09-24, D6 / R19):
  *
  *   POST /agent/transfer/build  ->  POST /agent/wallets/:id/sign (relay)  ->  POST /agent/transfer/submit
  *
@@ -22,7 +24,7 @@
  * `--json` is unchanged. A cancelled confirm is `{ success, status: "cancelled", walletId,
  * destination }` (Hood adds `chain`). A submitted transfer is the server receipt plus `transferId`,
  * `walletId`, `wallet` and `destination`. A cancel never carried a transfer id. The local preview
- * (Built, Checked locally) is stderr only. MCP `candle_transfer` is the embedded-wallet rail.
+ * (Built, Checked locally) is stderr only. The embedded-wallet rail is POST /agent/transfer (see `embeddedTransfer`).
  *
  * Phase 4b-2 (spec `2026-09-24-ember-phase-4b-hood-tee-wallets-design.md`, D9): from a Hood TEE
  * wallet, `--asset ETH|USDG` or `--token <0x...>`. The same destinations apply, with EVM addresses
@@ -30,7 +32,9 @@
  * this machine checks the leg moves exactly what was confirmed to exactly that destination, the
  * relay signs it with `eth_signTransaction`, and Candle broadcasts it and reads its receipt.
  */
+import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
+import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { checkEvmAddress, decodeErc20Transfer, formatUnits, hexToBytes, sameEvmAddress } from "../evm-lite"
 import { fields, heading, notice, terminalStyle } from "../presentation"
@@ -279,6 +283,114 @@ function writePreview(
   if (note) notice(ctx.deps, "stderr", "note", note)
 }
 
+/**
+ * The embedded wallet (2026-11-13, Andrew: an agent on the embedded wallet has the features it has on
+ * a TEE wallet). Candle signs for the embedded wallet, so this machine signs nothing: one POST /transfer,
+ * the rail MCP `candle_transfer` uses, with its rules (`transfer:write`; one of the account's own wallets
+ * or an owner-approved withdrawal address; caps on withdrawals). --to is a plain address here: the names
+ * this command resolves for a TEE wallet (linked labels, `vault`) are that wallet's. The server keeps the
+ * client id in the transfer ledger the TEE rail uses (BE-3398): a repeat of a sent transfer replays its
+ * answer, an id that may have landed is refused, and `candle transfer status <id>` reads it.
+ */
+async function embeddedTransfer(
+  ctx: CommandContext,
+  key: string,
+  t: {
+    chain: TradeChain
+    asset: string | undefined
+    token: string | undefined
+    to: string
+    isMax: boolean
+    amount: string
+    clientId: string | undefined
+    yes: boolean
+    decimals: () => Promise<number>
+  },
+): Promise<number> {
+  // chain-lint-allowed: the embedded rail checks the address shape for the two rails this command serves; not chain routing
+  const plain = t.chain === "hood" ? checkEvmAddress(t.to).ok : BASE58_ADDRESS.test(t.to)
+  if (!plain)
+    throw new TradingError(
+      "VALIDATION_FAILED",
+      // chain-lint-allowed: names the address shape of the rail the error is about, not a chain route
+      `From the embedded wallet, --to must be a ${t.chain === "hood" ? "0x" : "Solana"} address: one of the account's own wallets or an owner-approved withdrawal address. Nothing was sent.`,
+    )
+  const amountRaw = t.isMax ? "max" : rawAmount(t.amount, await t.decimals())
+  const label = t.asset ?? (t.token as string)
+  const amountText = t.isMax ? `the full spendable balance of ${label}` : `${t.amount} ${label}`
+  // The id is fixed and shown before the POST, so a caller who loses the answer can still read the transfer back.
+  const clientTransferId = t.clientId ?? `transfer-${randomUUID()}`
+  const confirmed = await confirmTransfer(
+    ctx,
+    [
+      `Transfer ${amountText} from the embedded wallet (${t.chain}) to ${t.to}`,
+      `Client id: ${clientTransferId} (if the answer is lost, read it with candle transfer status ${clientTransferId}; do not send again under a new id)`,
+    ],
+    t.yes,
+  )
+  if (!confirmed) return printCancelledResult(ctx, { success: true, status: "cancelled", wallet: "embedded", to: t.to })
+  const body: Record<string, string> = { chain: t.chain }
+  if (t.asset !== undefined) body.asset = t.asset
+  else body.mint = t.token as string
+  body.amountRaw = amountRaw
+  body.to = t.to
+  body.clientTransferId = clientTransferId
+  const result = await apiRequest("/api/v1/agent/transfer", {
+    apiUrl: ctx.apiUrl,
+    credentials: { apiKey: key },
+    auth: "key",
+    method: "POST",
+    body,
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env,
+  })
+  if (!result.ok) throw embeddedTransferFailure(result, clientTransferId)
+  if (!result.body || typeof result.body !== "object")
+    // The POST was answered, so the transfer may have been sent: say so, and name the id.
+    throw new TradingError("INVALID_RESPONSE", "Candle returned an invalid response.", {
+      exitCode: 3,
+      suggestion: `candle transfer status ${clientTransferId}`,
+      details: { clientTransferId },
+    })
+  return printTradingResult(ctx, { ...(result.body as Json), clientTransferId })
+}
+
+/**
+ * A failed embedded POST. Only a definite server refusal (a 4xx other than 408 and 429) is exit 1.
+ * Anything else (no answer, a gateway timeout, a 5xx, a rate limit, TRANSFER_FAILED) may have
+ * landed, so it is exit 3 and always names the client id.
+ */
+function embeddedTransferFailure(result: Extract<ApiResult, { ok: false }>, id: string): TradingError {
+  const error = (result.raw as { error?: { signature?: unknown; stage?: unknown } } | undefined)?.error
+  const signature = typeof error?.signature === "string" ? error.signature : undefined
+  const stage = typeof error?.stage === "string" ? error.stage : undefined
+  const code = result.code ?? "REQUEST_FAILED"
+  const details = { clientTransferId: id, ...(signature ? { signature } : {}), ...(stage ? { stage } : {}) }
+  const definite =
+    code !== "TRANSFER_FAILED" &&
+    result.status >= 400 &&
+    result.status < 500 &&
+    result.status !== 408 &&
+    result.status !== 429
+  if (definite)
+    return new TradingError(code, result.message, {
+      ...(result.uiHint ? { suggestion: result.uiHint } : {}),
+      details,
+    })
+  const named = `Read it with candle transfer status ${id}, or check candle activity or the chain, before sending again: a new client id sends again and can move the funds twice.`
+  if (code === "TRANSFER_FAILED")
+    return new TradingError(
+      code,
+      `Candle could not confirm the embedded transfer, so it may have landed on chain. ${named}${signature ? ` Signature: ${signature}.` : ""}`,
+      { exitCode: 3, suggestion: `candle transfer status ${id}`, details },
+    )
+  return new TradingError(
+    code,
+    `${result.message} The request was sent, so the embedded transfer may have landed on chain (client id ${id}). ${named}`,
+    { exitCode: 3, suggestion: `candle transfer status ${id}`, details },
+  )
+}
+
 async function confirmTransfer(ctx: CommandContext, lines: string[], yes: boolean): Promise<boolean> {
   const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
   for (const line of lines) output.write(`${safeText(line)}\n`)
@@ -358,10 +470,20 @@ export async function transfer(args: string[], ctx: CommandContext): Promise<num
     const key = await tradingKey(ctx)
     const payer = await tradingPayer(ctx, key, flags["--wallet"], "transfer:write")
     if (payer.kind === "embedded")
-      throw new TradingError(
-        "PAYER_UNSUPPORTED",
-        "This command moves a linked wallet this machine can sign for. The embedded wallet transfers through the agent transfer rail (MCP candle_transfer), not from here. Name a TEE wallet with --wallet.",
-      )
+      return await embeddedTransfer(ctx, key, {
+        chain: "solana",
+        asset,
+        token: flags["--mint"],
+        to,
+        isMax,
+        amount: flags["--amount"],
+        clientId: flags["--client-id"],
+        yes: parsed.booleans.has("--yes"),
+        decimals: async () =>
+          asset
+            ? (BASES[asset]?.decimals ?? 9)
+            : await decimalsFor(ctx, flags["--mint"] as string, lazySolanaClient(ctx, flags["--rpc-url"])),
+      })
     if (!payer.scopes.includes("transfer:bound"))
       throw new TradingError(
         "SCOPE_MISSING",
@@ -500,7 +622,7 @@ async function hoodTransfer(
   ctx: CommandContext,
   args: { flags: Record<string, string>; asset: string | undefined; to: string; isMax: boolean; yes: boolean },
 ): Promise<number> {
-  const { flags, asset, to, isMax } = args
+  const { flags, asset, to, isMax, yes } = args
   // ETH is native (null); USDG and a --token are ERC-20 contracts. --token was checked at parse.
   const checked = flags["--token"] === undefined ? undefined : checkEvmAddress(flags["--token"])
   const tokenAddress: string | null =
@@ -511,10 +633,20 @@ async function hoodTransfer(
   const key = await tradingKey(ctx)
   const payer = await tradingPayer(ctx, key, flags["--wallet"], "transfer:write", "hood")
   if (payer.kind === "embedded")
-    throw new TradingError(
-      "PAYER_UNSUPPORTED",
-      "This command moves a linked wallet this machine can sign for. The embedded wallet transfers through the agent transfer rail (MCP candle_transfer), not from here. Name a Hood TEE wallet with --wallet.",
-    )
+    return await embeddedTransfer(ctx, key, {
+      chain: "hood",
+      asset,
+      token: tokenAddress ?? undefined,
+      to,
+      isMax,
+      amount: flags["--amount"] as string,
+      clientId: flags["--client-id"],
+      yes,
+      decimals: async () =>
+        asset
+          ? (HOOD_BASES[asset]?.decimals ?? 18)
+          : await hoodDecimals({ chain: "hood", asset: tokenAddress as string }, lazyEvmRpc(ctx, flags["--rpc-url"])),
+    })
   if (!payer.scopes.includes("transfer:bound"))
     throw new TradingError(
       "SCOPE_MISSING",

@@ -778,7 +778,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.25";
+var CLI_VERSION = "0.13.26";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -79595,9 +79595,9 @@ var HELP = {
   },
   transfer: {
     group: "Trade",
-    intro: "Move funds out of a TEE wallet to your wallets or its vault",
-    summary: "Move funds out of a TEE wallet to your own wallets or its vault, through its bound key",
-    description: "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Withdraw key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted, and, where the server has TEE_WITHDRAWALS_ENABLED on, an address on the account's withdrawal allowlist (named by its label, id or address). To a linked wallet or an approved address only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and the asset must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm. candle transfer status <id> reads a transfer by its id or your --client-id: built, expired, submitted with its signature, unconfirmed (check the chain or candle activity before using a new client id), or failed (kept for 24 hours; older transfers are in candle activity). The asset decides the chain: ETH, USDG or --token is Hood, from a Hood TEE wallet, where this machine checks the one leg moves exactly what you confirmed before it is signed, and ETH max leaves the gas reserve.",
+    intro: "Move funds out of the embedded wallet or a TEE wallet",
+    summary: "Move funds out of the embedded wallet (Candle signs) or a TEE wallet to your own wallets or its vault, through its bound key",
+    description: "Moves one asset out of the embedded wallet (through Candle's transfer rail, as MCP candle_transfer: --to a plain address, one of the account's own wallets or an owner-approved withdrawal address; transfer:write; Candle signs) or out of a TEE wallet this machine can sign for. From the embedded wallet --client-id names the transfer too (the CLI picks one when it is absent and prints it before it sends): a repeat of a sent transfer replays its answer and sends nothing, a repeat of a transfer that may have landed is refused, and candle transfer status <id> reads it; a failure that is not a definite refusal (no answer, a timeout, a 5xx, TRANSFER_FAILED) exits 3 and names the id, so read it, or check candle activity or the chain, before sending again. For a TEE wallet the bound key must be a Withdraw key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted, and, where the server has TEE_WITHDRAWALS_ENABLED on, an address on the account's withdrawal allowlist (named by its label, id or address). To a linked wallet or an approved address only configured raw caps and USD limits apply (unset means unlimited, zero still binds), and the asset must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm. candle transfer status <id> reads a transfer by its id or your --client-id: built, expired, submitted with its signature, unconfirmed (check the chain or candle activity before using a new client id), or failed (kept for 24 hours; older transfers are in candle activity). The asset decides the chain: ETH, USDG or --token is Hood, from a Hood TEE wallet, where this machine checks the one leg moves exactly what you confirmed before it is signed, and ETH max leaves the gas reserve.",
     usage: [
       "candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <tee>] [--client-id <id>] [--yes] [--json]",
       "candle transfer status <transfer id|client id> [--json]"
@@ -79622,7 +79622,7 @@ var HELP = {
       },
       {
         invocation: "--client-id <id>",
-        description: "Your own id for this transfer (1 to 128 of letters, digits, . _ : -). An id already used for a built or sent transfer is refused with IDEMPOTENCY_CONFLICT naming that transfer, so a retry never sends twice; read it with candle transfer status <id>"
+        description: "Your own id for this transfer (1 to 128 of letters, digits, . _ : -). For a TEE wallet, an id already used for a built or sent transfer is refused with IDEMPOTENCY_CONFLICT naming that transfer, so a retry never sends twice; read it with candle transfer status <id>. From the embedded wallet a repeat of a sent transfer replays its answer and sends nothing, and an id that may have landed is refused"
       },
       { invocation: "--yes", description: "Skip the confirmation prompt (the destination is still printed)" }
     ],
@@ -110963,6 +110963,7 @@ More: --cursor ${escapeTerminalText(data.nextCursor)}
 
 // src/commands/transfer.ts
 init_args();
+init_client();
 init_evm_lite();
 init_presentation();
 init_profiles();
@@ -110970,6 +110971,7 @@ init_render();
 init_solana_verify();
 init_trading();
 init_swap();
+import { randomUUID as randomUUID17 } from "node:crypto";
 var USAGE17 = `Usage: candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--client-id <id>] [--rpc-url <url>] [--yes] [--json]
        candle transfer status <transfer id|client id> [--json]`;
 var CLIENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -111094,6 +111096,64 @@ ${fields(rows, style).join(`
   if (note)
     notice(ctx.deps, "stderr", "note", note);
 }
+async function embeddedTransfer(ctx, key, t) {
+  const plain = t.chain === "hood" ? checkEvmAddress(t.to).ok : BASE58_ADDRESS.test(t.to);
+  if (!plain)
+    throw new TradingError("VALIDATION_FAILED", `From the embedded wallet, --to must be a ${t.chain === "hood" ? "0x" : "Solana"} address: one of the account's own wallets or an owner-approved withdrawal address. Nothing was sent.`);
+  const amountRaw = t.isMax ? "max" : rawAmount(t.amount, await t.decimals());
+  const label = t.asset ?? t.token;
+  const amountText2 = t.isMax ? `the full spendable balance of ${label}` : `${t.amount} ${label}`;
+  const clientTransferId = t.clientId ?? `transfer-${randomUUID17()}`;
+  const confirmed = await confirmTransfer(ctx, [
+    `Transfer ${amountText2} from the embedded wallet (${t.chain}) to ${t.to}`,
+    `Client id: ${clientTransferId} (if the answer is lost, read it with candle transfer status ${clientTransferId}; do not send again under a new id)`
+  ], t.yes);
+  if (!confirmed)
+    return printCancelledResult(ctx, { success: true, status: "cancelled", wallet: "embedded", to: t.to });
+  const body = { chain: t.chain };
+  if (t.asset !== undefined)
+    body.asset = t.asset;
+  else
+    body.mint = t.token;
+  body.amountRaw = amountRaw;
+  body.to = t.to;
+  body.clientTransferId = clientTransferId;
+  const result2 = await apiRequest("/api/v1/agent/transfer", {
+    apiUrl: ctx.apiUrl,
+    credentials: { apiKey: key },
+    auth: "key",
+    method: "POST",
+    body,
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  if (!result2.ok)
+    throw embeddedTransferFailure(result2, clientTransferId);
+  if (!result2.body || typeof result2.body !== "object")
+    throw new TradingError("INVALID_RESPONSE", "Candle returned an invalid response.", {
+      exitCode: 3,
+      suggestion: `candle transfer status ${clientTransferId}`,
+      details: { clientTransferId }
+    });
+  return printTradingResult(ctx, { ...result2.body, clientTransferId });
+}
+function embeddedTransferFailure(result2, id) {
+  const error = result2.raw?.error;
+  const signature = typeof error?.signature === "string" ? error.signature : undefined;
+  const stage = typeof error?.stage === "string" ? error.stage : undefined;
+  const code = result2.code ?? "REQUEST_FAILED";
+  const details = { clientTransferId: id, ...signature ? { signature } : {}, ...stage ? { stage } : {} };
+  const definite = code !== "TRANSFER_FAILED" && result2.status >= 400 && result2.status < 500 && result2.status !== 408 && result2.status !== 429;
+  if (definite)
+    return new TradingError(code, result2.message, {
+      ...result2.uiHint ? { suggestion: result2.uiHint } : {},
+      details
+    });
+  const named = `Read it with candle transfer status ${id}, or check candle activity or the chain, before sending again: a new client id sends again and can move the funds twice.`;
+  if (code === "TRANSFER_FAILED")
+    return new TradingError(code, `Candle could not confirm the embedded transfer, so it may have landed on chain. ${named}${signature ? ` Signature: ${signature}.` : ""}`, { exitCode: 3, suggestion: `candle transfer status ${id}`, details });
+  return new TradingError(code, `${result2.message} The request was sent, so the embedded transfer may have landed on chain (client id ${id}). ${named}`, { exitCode: 3, suggestion: `candle transfer status ${id}`, details });
+}
 async function confirmTransfer(ctx, lines, yes) {
   const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
   for (const line of lines)
@@ -111154,7 +111214,17 @@ async function transfer(args, ctx) {
     const key = await tradingKey(ctx);
     const payer = await tradingPayer(ctx, key, flags2["--wallet"], "transfer:write");
     if (payer.kind === "embedded")
-      throw new TradingError("PAYER_UNSUPPORTED", "This command moves a linked wallet this machine can sign for. The embedded wallet transfers through the agent transfer rail (MCP candle_transfer), not from here. Name a TEE wallet with --wallet.");
+      return await embeddedTransfer(ctx, key, {
+        chain: "solana",
+        asset,
+        token: flags2["--mint"],
+        to,
+        isMax,
+        amount: flags2["--amount"],
+        clientId: flags2["--client-id"],
+        yes: parsed.booleans.has("--yes"),
+        decimals: async () => asset ? BASES[asset]?.decimals ?? 9 : await decimalsFor(ctx, flags2["--mint"], lazySolanaClient(ctx, flags2["--rpc-url"]))
+      });
     if (!payer.scopes.includes("transfer:bound"))
       throw new TradingError("SCOPE_MISSING", `Moving funds out of a TEE wallet needs a Withdraw key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access withdraw. Or mint one with: candle keys create --access withdraw, then bind the wallet to it with: candle tee rebind`);
     const wallet3 = payer.wallet;
@@ -111237,7 +111307,7 @@ function transferLegMoves(leg, expected) {
   return decoded !== undefined && sameEvmAddress(decoded.recipient, expected.to) && decoded.amount.toString() === expected.amountRaw;
 }
 async function hoodTransfer(ctx, args) {
-  const { flags: flags2, asset, to, isMax } = args;
+  const { flags: flags2, asset, to, isMax, yes } = args;
   const checked = flags2["--token"] === undefined ? undefined : checkEvmAddress(flags2["--token"]);
   const tokenAddress = asset !== undefined ? HOOD_BASES[asset]?.address ?? null : checked?.ok ? checked.address : null;
   const label = asset ?? tokenAddress;
@@ -111246,7 +111316,17 @@ async function hoodTransfer(ctx, args) {
   const key = await tradingKey(ctx);
   const payer = await tradingPayer(ctx, key, flags2["--wallet"], "transfer:write", "hood");
   if (payer.kind === "embedded")
-    throw new TradingError("PAYER_UNSUPPORTED", "This command moves a linked wallet this machine can sign for. The embedded wallet transfers through the agent transfer rail (MCP candle_transfer), not from here. Name a Hood TEE wallet with --wallet.");
+    return await embeddedTransfer(ctx, key, {
+      chain: "hood",
+      asset,
+      token: tokenAddress ?? undefined,
+      to,
+      isMax,
+      amount: flags2["--amount"],
+      clientId: flags2["--client-id"],
+      yes,
+      decimals: async () => asset ? HOOD_BASES[asset]?.decimals ?? 18 : await hoodDecimals({ chain: "hood", asset: tokenAddress }, lazyEvmRpc(ctx, flags2["--rpc-url"]))
+    });
   if (!payer.scopes.includes("transfer:bound"))
     throw new TradingError("SCOPE_MISSING", `Moving funds out of a TEE wallet needs a Withdraw key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access withdraw. Or mint one with: candle keys create --access withdraw, then bind the wallet to it with: candle tee rebind`);
   const wallet3 = payer.wallet;
@@ -119835,7 +119915,7 @@ init_solana_alt();
 init_solana_lite();
 init_trading();
 init_swap();
-import { randomUUID as randomUUID17 } from "node:crypto";
+import { randomUUID as randomUUID18 } from "node:crypto";
 var USAGE20 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--preview] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
@@ -120123,7 +120203,7 @@ async function walletsCloseEmpty(args, ctx) {
     return 2;
   }
   const named = parsed.values["--client-trade-id"];
-  const id = named ?? `close-${randomUUID17()}`;
+  const id = named ?? `close-${randomUUID18()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
     writeUsageFailure(ctx.deps, USAGE20, ctx.json);
     return 2;
