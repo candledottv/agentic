@@ -1008,11 +1008,18 @@ export interface AgentPositions {
     /** The older of `spotAsOfMs` and `perpsAsOfMs`. */
     asOfMs: number | null;
     spotAsOfMs: number | null;
-    /** The oldest certified Hyperliquid wallet cutoff. */
+    /**
+     * The oldest selected certified Hyperliquid cutoff among wallets the profile still owned after
+     * that cutoff. A wallet whose binding ended at or before its cutoff does not age the bundle;
+     * when no wallet qualifies, the oldest selected cutoff.
+     */
     perpsAsOfMs: number | null;
     perpsSnapshotId: string | null;
     perpsPartial: boolean;
-    /** The agent has perps with no certified snapshot yet: no combined portfolio value. */
+    /**
+     * An owned wallet has no certified observation yet, or its last certified observation is older
+     * than 3 hours: no combined portfolio value is given.
+     */
     perpsUnavailable?: true;
     /** Spot aggregate plus each open perp's margin and unrealized; idle USDC is not counted. Never filtered by `kind`. */
     portfolioValueUsd: number | null;
