@@ -735,6 +735,18 @@ describe("H8: the sequenced leg loop", () => {
     expect(f.stderr.text).toContain("the wallet is not held")
   })
 
+  test("BE-3711: a token sell whose build quotes zero is refused and signs nothing", async () => {
+    const f = await fixture({ buildQuote: { minOutRaw: "0" } })
+    expect(
+      await run(
+        ["swap", token, "ETH", "--amount", "0.000000000000000001", "--client-trade-id", "dust", "--yes", "--json"],
+        f.deps,
+      ),
+    ).toBe(1)
+    expect(lastJson(f.stdout.text).code).toBe("SELL_PAYS_ZERO")
+    expect(f.calls.filter((call) => call.path.endsWith("/sign"))).toHaveLength(0)
+  })
+
   test("a reverted leg exits 1 and lists the legs that landed", async () => {
     const f = await fixture({ outcomes: ["land", "revert"] })
     expect(await run(sellArgs(), f.deps)).toBe(1)

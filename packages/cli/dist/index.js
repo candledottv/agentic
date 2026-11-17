@@ -26372,6 +26372,8 @@ function hoodTradeLegCheck(terms) {
     if (data.length !== 68)
       return false;
     const amountIn = wordUint2(word2(data, 0));
+    if (terms.minOutRaw === 0n && selectorOf(data) === CURVE_SELL_SELECTOR)
+      return false;
     if (amountIn > terms.amountRaw || wordUint2(word2(data, 1)) < terms.minOutRaw)
       return false;
     return selector === (sameEvmAddress(terms.inputToken, HOOD_USDG_ADDRESS) ? CURVE_BUY_WITH_QUOTE_SELECTOR : CURVE_SELL_SELECTOR);
@@ -28004,6 +28006,10 @@ async function hoodSwap(ctx, args) {
       if (!parsed.success)
         throw new TradingError("SEQUENCED_RAIL_REQUIRED", "A Hood TEE wallet trades one leg at a time, and this Candle deployment did not answer with a sequenced leg. Nothing was signed.");
       sequenced = parsed.data;
+    }
+    if (!from.base && BigInt(data.minOutRaw) === 0n) {
+      const release = sequenced ? await cancelHeldOperation(ctx, key, sequenced.operationId) : undefined;
+      throw new TradingError("SELL_PAYS_ZERO", `This sell is too small to pay anything: the quote is zero, so it would take the tokens and return nothing. Sell a larger amount. Nothing was signed.${release && sequenced ? ` ${releaseNote(release, sequenced)}` : ""}`);
     }
     if (preview && sequenced && (BigInt(data.minOutRaw) < BigInt(preview.minOutRaw) || data.fee.bps !== preview.fee.bps)) {
       const release = await cancelHeldOperation(ctx, key, sequenced.operationId);

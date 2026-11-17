@@ -571,3 +571,29 @@ describe("createCurve pins the fee splitter", () => {
     ).toBe(false)
   })
 })
+
+describe("BE-3711: a curve sell is held to a positive floor", () => {
+  const wallet = "0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa"
+  const token = "0x1111111111111111111111111111111111111111"
+  const curve = "0x2222222222222222222222222222222222222222"
+  const word64 = (n: bigint) => n.toString(16).padStart(64, "0")
+  const sellData = (amountIn: bigint, minOut: bigint) => `${CURVE_SELL_SELECTOR}${word64(amountIn)}${word64(minOut)}`
+  const check = (minOutRaw: bigint) =>
+    hoodTradeLegCheck({
+      wallet,
+      venue: "curve",
+      inputToken: token,
+      outputToken: undefined,
+      amountRaw: 1000n,
+      minOutRaw,
+      curve: async () => curve,
+    })
+
+  test("a sell carrying a positive floor passes", async () => {
+    expect(await check(900n)("trade", { to: curve, data: sellData(1000n, 900n), value: "0" })).toBe(true)
+  })
+
+  test("a sell whose floor is zero is refused, even when the calldata matches it", async () => {
+    expect(await check(0n)("trade", { to: curve, data: sellData(1000n, 0n), value: "0" })).toBe(false)
+  })
+})

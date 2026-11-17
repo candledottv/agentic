@@ -1213,6 +1213,15 @@ async function hoodSwap(
         )
       sequenced = parsed.data
     }
+    // BE-3711: a sell whose build quotes nothing is consumed for nothing. Release the hold, refuse,
+    // and sign nothing; the build's minimum out is the quote's own floor, so zero means a zero quote.
+    if (!from.base && BigInt(data.minOutRaw) === 0n) {
+      const release = sequenced ? await cancelHeldOperation(ctx, key, sequenced.operationId) : undefined
+      throw new TradingError(
+        "SELL_PAYS_ZERO",
+        `This sell is too small to pay anything: the quote is zero, so it would take the tokens and return nothing. Sell a larger amount. Nothing was signed.${release && sequenced ? ` ${releaseNote(release, sequenced)}` : ""}`,
+      )
+    }
     // Defensive (4.5 step 5): the server already refused a moved quote before the lock. A build that
     // still came back worse than what was confirmed is released here and never signed.
     if (

@@ -744,6 +744,8 @@ export function hoodTradeLegCheck(terms: HoodTradeTerms): (kind: LegKind, leg: L
       )
     if (data.length !== 68) return false
     const amountIn = wordUint(word(data, 0)) as bigint
+    // BE-3711: a sell with a zero floor is consumed for nothing when it is too small to move the price.
+    if (terms.minOutRaw === 0n && selectorOf(data) === CURVE_SELL_SELECTOR) return false
     if (amountIn > terms.amountRaw || (wordUint(word(data, 1)) as bigint) < terms.minOutRaw) return false
     // USDG in is a buy on a USDG-quoted curve; any other token in is a sell of that token.
     return (
