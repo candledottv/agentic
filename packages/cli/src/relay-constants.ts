@@ -19,6 +19,27 @@ export const RELAY_HOOD_DEPOSITORY = "0x4cd00e387622c35bddb9b4c962c136462338bc31
 export const RELAY_HOOD_ERC20_ROUTER = "0x0729e2a4716d9f7dd17858d5d504426d228697f7"
 export const RELAY_HOOD_APPROVAL_PROXY = "0x5567954cd026cebfe486062cb75848e0f1c12e58"
 
+/**
+ * The ETH origin's same-chain swap on `erc20Router`:
+ * `multicall((address target, bool allowFailure, uint256 value, bytes callData)[] calls,
+ * address refundTo, address nftRecipient, bytes metadata)`, payable with `value` = the amount.
+ */
+export const RELAY_HOOD_ROUTER_MULTICALL_SELECTOR = "0xcd6e13f7"
+
+/**
+ * The USDG origin's same-chain swap on `approvalProxy`:
+ * `transferAndMulticall(address[] tokens, uint256[] amounts, (address,bool,uint256,bytes)[] calls,
+ * address refundTo, address nftRecipient, bytes metadata)`, `value` 0, after an approve to the proxy.
+ */
+export const RELAY_HOOD_TRANSFER_AND_MULTICALL_SELECTOR = "0xf9e4bab4"
+
+/**
+ * Bytes Relay appends after the ABI-encoded swap call on Hood (a 32-byte tag on every live quote,
+ * 2026-11-17). The ABI decoder ignores them, so they cannot change what the call does; any other
+ * trailer length refuses.
+ */
+export const RELAY_HOOD_SWAP_CALLDATA_TRAILER_BYTES: readonly number[] = [0, 32]
+
 /** `deposit(address depositor, bytes32 id)` with `value` = the amount: a native ETH origin. */
 export const RELAY_HOOD_DEPOSIT_NATIVE_SELECTOR = "0x49290c1c"
 
