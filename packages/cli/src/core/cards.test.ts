@@ -149,6 +149,16 @@ describe("proposing (K-1, K-2, K-3)", () => {
     expect(Date.parse(card.expiresAt) - Date.parse(card.createdAt)).toBe(60_000)
   })
 
+  test("a hide param shows as display.hidden and a plain order does not", async () => {
+    const s = await setup()
+    const hid = await s.trade({ hide: true })
+    expect(hid.display.hidden).toBe(true)
+    expect(hid.params.hide).toBe(true)
+    const plain = await s.trade({})
+    expect(plain.display.hidden).toBeUndefined()
+    expect("hidden" in plain.display).toBe(false)
+  })
+
   test("an id the proposer gives is kept as the operation id", async () => {
     const s = await setup()
     const card = await s.trade({ clientTradeId: "my-id-1" })

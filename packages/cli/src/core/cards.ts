@@ -139,6 +139,8 @@ export interface Card {
      * `params`, never in `cardHash`, and only a view may set it.
      */
     suggestedBy?: SuggestedBy
+    /** The order asked to stay out of the public stream (`params.hide === true`). Display only: `params` and `cardHash` already carry it. */
+    hidden?: true
   }
   policy: "ask"
   needsFactor: boolean
@@ -1589,7 +1591,16 @@ function displayFor(
     kind === "trade" ? (side || "trade").toUpperCase() : kind.toUpperCase(),
     symbol ? `$${symbol}` : tool,
   ].join(" ")
-  return { title, contract, chain, amount, environment, ...(keyLimitUsd ? { keyLimitUsd } : {}) }
+  const hidden = params.hide === true
+  return {
+    title,
+    contract,
+    chain,
+    amount,
+    environment,
+    ...(keyLimitUsd ? { keyLimitUsd } : {}),
+    ...(hidden ? { hidden: true as const } : {}),
+  }
 }
 
 /** The card's amount in USD micros, when its params say it: an explicit USD amount, or a stablecoin quote. */

@@ -83238,7 +83238,16 @@ function displayFor(kind, tool, params, environment, keyLimitUsd) {
     kind === "trade" ? (side || "trade").toUpperCase() : kind.toUpperCase(),
     symbol ? `$${symbol}` : tool
   ].join(" ");
-  return { title, contract, chain: chain2, amount, environment, ...keyLimitUsd ? { keyLimitUsd } : {} };
+  const hidden = params.hide === true;
+  return {
+    title,
+    contract,
+    chain: chain2,
+    amount,
+    environment,
+    ...keyLimitUsd ? { keyLimitUsd } : {},
+    ...hidden ? { hidden: true } : {}
+  };
 }
 function cardUsdMicros(card2) {
   const params = card2.params;
