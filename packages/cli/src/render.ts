@@ -51,6 +51,10 @@ export const ALL_AGENT_SCOPES = [
   // Hyperliquid perps: set up and trade perps from the key's EVM TEE wallet. Never in the default;
   // `keys create --access trade-perps` grants it with `account:read` (2026-10-17 C spec, section 7).
   "perps:write",
+  // Client Telegram notifications (BE-3179): queue a message for the owner's linked Quant chat.
+  // Named-only: never in the default, never in a preset, and never added implicitly. Only
+  // `keys create --scopes telegram:notify` (or a list naming it) mints a key that holds it.
+  "telegram:notify",
 ] as const
 export type AgentScope = (typeof ALL_AGENT_SCOPES)[number]
 
@@ -58,7 +62,11 @@ export type AgentScope = (typeof ALL_AGENT_SCOPES)[number]
  * `swap:write` moves real funds on every call, so it is deliberately excluded from the default. */
 export const DEFAULT_AGENT_SCOPES: readonly AgentScope[] = ALL_AGENT_SCOPES.filter(
   (scope) =>
-    scope !== "swap:write" && scope !== "transfer:write" && scope !== "transfer:bound" && scope !== "perps:write",
+    scope !== "swap:write" &&
+    scope !== "transfer:write" &&
+    scope !== "transfer:bound" &&
+    scope !== "perps:write" &&
+    scope !== "telegram:notify",
 )
 
 const SWAP_WRITE_NOTE = "moves funds -- this key can execute swaps on your behalf"

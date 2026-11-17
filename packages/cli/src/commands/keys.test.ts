@@ -372,6 +372,44 @@ describe("keys create", () => {
   })
 })
 
+describe("keys create telegram:notify (BE-3720)", () => {
+  async function mint(argv: string[]) {
+    let sent: { scopes?: string[] } | undefined
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": (req) => {
+        sent = JSON.parse(req.init.body as string)
+        return jsonResponse(200, {
+          success: true,
+          key: "ck_live_FIXTURE_TG_KEY",
+          keyPrefix: "ck_livetg",
+          scopes: sent?.scopes ?? [],
+          environment: "production",
+        })
+      },
+    })
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, env: { CANDLE_DEVICE_TOKEN: "fixture-device-token" }, stdout })
+    const code = await run(["keys", "create", "--no-store", ...argv], deps)
+    return { code, sent }
+  }
+
+  test("--scopes telegram:notify is accepted and sent as named", async () => {
+    const { code, sent } = await mint(["--scopes", "account:read,telegram:notify"])
+    expect(code).toBe(0)
+    expect(sent?.scopes).toEqual(["account:read", "telegram:notify"])
+  })
+
+  test("it is never added implicitly: omitted --scopes and every --access preset leave it out", async () => {
+    const omitted = await mint([])
+    expect(omitted.sent?.scopes).toBeUndefined()
+    for (const access of ["read", "write", "withdraw", "trade-perps"]) {
+      const { code, sent } = await mint(["--access", access])
+      expect(code).toBe(0)
+      expect(sent?.scopes).not.toContain("telegram:notify")
+    }
+  })
+})
+
 describe("keys create --no-store", () => {
   const key = "ck_live_FIXTURE_HANDOFF_KEY"
   const body = {

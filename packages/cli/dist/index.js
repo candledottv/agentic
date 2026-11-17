@@ -778,7 +778,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.28";
+var CLI_VERSION = "0.13.29";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -1376,9 +1376,10 @@ var init_render = __esm(() => {
     "swap:write",
     "transfer:write",
     "transfer:bound",
-    "perps:write"
+    "perps:write",
+    "telegram:notify"
   ];
-  DEFAULT_AGENT_SCOPES = ALL_AGENT_SCOPES.filter((scope) => scope !== "swap:write" && scope !== "transfer:write" && scope !== "transfer:bound" && scope !== "perps:write");
+  DEFAULT_AGENT_SCOPES = ALL_AGENT_SCOPES.filter((scope) => scope !== "swap:write" && scope !== "transfer:write" && scope !== "transfer:bound" && scope !== "perps:write" && scope !== "telegram:notify");
   NUMERIC_CELL = /^[+\-−]?(?:<|>|~)?[$]?[\d,]*\.?\d+(?:[%xKMBT]|\/h)?$/;
   MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 });
