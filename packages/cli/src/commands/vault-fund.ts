@@ -118,12 +118,12 @@ async function fundExternal(
   )
   const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions))
   displayTransferPlan(ctx, plan, feeQuote)
-  await assertTransferAffordable(solana, plan, feeQuote)
+  await assertTransferAffordable(solana, plan, feeQuote, null)
   await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: external.address })
 
   const secret = await decryptKey(vault, fromEntry.id)
   try {
-    const result = await signAndBroadcastTransfer({ ctx, solana, secret64: secret, plan })
+    const result = await signAndBroadcastTransfer({ ctx, solana, secret64: secret, plan, maxFlag: null })
     if (ctx.json) {
       writeJson(ctx.deps, {
         ok: result.finalized,
@@ -278,7 +278,7 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
     )
     const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions))
     displayTransferPlan(ctx, plan, feeQuote)
-    await assertTransferAffordable(solana, plan, feeQuote)
+    await assertTransferAffordable(solana, plan, feeQuote, null)
     // The one typed confirmation; anything but `confirm` refuses with nothing signed.
     await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: teeAddress })
 
@@ -290,6 +290,7 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
         solana,
         secret64: secret,
         plan,
+        maxFlag: null,
         beforeBroadcast: async ({ signature, blockhash }) => {
           receipt = {
             signature,

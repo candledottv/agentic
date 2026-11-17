@@ -26,6 +26,7 @@ async function fixture() {
   let broadcasts = 0
   let signingPrompts = 0
   let lamports = 100_000
+  let fromLamports = 10_000_000_000
   const signatures: string[] = []
   const { fetch, calls } = createRoutedFetch({
     "/rpc": async (req) => {
@@ -38,7 +39,7 @@ async function fixture() {
           return reply({ value: 5000 })
         case "getBalance":
           // The TEE wallet's lamports are what the sweep reads; the vault key funding it holds 10 SOL.
-          return reply({ value: params[0] === teeAddress ? lamports : 10_000_000_000 })
+          return reply({ value: params[0] === teeAddress ? lamports : fromLamports })
         case "getTokenAccountsByOwner":
           return reply({ value: [] })
         case "getMinimumBalanceForRentExemption":
@@ -163,6 +164,9 @@ async function fixture() {
     },
     expire: () => {
       valid = false
+    },
+    setFromLamports: (value: number) => {
+      fromLamports = value
     },
     persistedSignatures,
     get broadcasts() {
@@ -384,4 +388,25 @@ describe("BE-506 TEE fund destination hints", () => {
       ])
     })
   }
+})
+
+describe("BE-3680 vault fund rent-floor refusal", () => {
+  test("a fund that would leave the vault key under the rent floor never suggests emptying the key", async () => {
+    const f = await fixture()
+    // 0.1 SOL + the 5000 fee leaves 300,000 lamports, under the 650,240 floor.
+    f.setFromLamports(100_000_000 + 5000 + 300_000)
+    const code = await run(
+      ["vault", "fund", f.teeAddress, "--amount", "0.1", "--asset", "SOL", "--rpc-url", RPC, "--json"],
+      f.deps,
+    )
+    expect(code).toBe(1)
+    const body = JSON.parse(f.output.text.trim().split("\n").at(-1) as string)
+    expect(body.code).toBe("TRANSFER_INSUFFICIENT_FUNDS")
+    expect(body.suggestion).toContain("Send at most 99649760 lamports (0.09964976 SOL) to keep the floor.")
+    // vault fund takes no max: no spelling of it, and no offer to empty the key.
+    expect(body.suggestion).not.toContain("max")
+    expect(body.suggestion).not.toContain("empty")
+    expect(f.broadcasts).toBe(0)
+    expect(f.signingPrompts).toBe(0)
+  })
 })

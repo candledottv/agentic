@@ -376,6 +376,13 @@ function tokenAccountAmount(data: Uint8Array): bigint {
 }
 
 /**
+ * How the calling command spells "send everything", for the refusal suggestions below (BE-3680):
+ * `--amount max` on `candle vault transfer` (the default), and `null` on `candle vault fund`, which
+ * takes no max, so no suggestion offers to empty the key there.
+ */
+export const SEND_MAX_FLAG = "--amount max"
+
+/**
  * BE-1551 (T48 row A8): the balance read before the typed confirmation. T48 sent 0.001 SOL from a
  * key holding nothing; the CLI signed it after `confirm`, the RPC took it, the network dropped it
  * (no fee payer funds) and the command said "Submitted". So the fee payer's lamports must cover
@@ -394,6 +401,7 @@ export async function assertTransferAffordable(
   solana: SolanaClient,
   plan: TransferPlan,
   feeQuote: bigint | null,
+  maxFlag: string | null = SEND_MAX_FLAG,
 ): Promise<void> {
   const fee = feeQuote ?? FALLBACK_FEE_LAMPORTS
   const rent = plan.accountRent ?? 0n
@@ -439,14 +447,15 @@ export async function assertTransferAffordable(
     const floor = await solana.read(() => solana.rpc.getMinimumBalanceForRentExemption(0))
     if (remainder < floor) {
       const maxSol = plan.asset === "SOL" ? plan.amountRaw - (floor - remainder) : null
+      const empty = maxFlag === null ? "" : `, or empty the key with ${maxFlag}`
       throw new VaultError(
         "TRANSFER_INSUFFICIENT_FUNDS",
         `${plan.from} holds ${lamports} lamports; after this transfer (${parts.join(" + ")}) it would keep ${remainder}, below the ${floor}-lamport rent floor, and the chain refuses that. Nothing was signed or sent.`,
         {
           suggestion:
             maxSol !== null && maxSol > 0n
-              ? `Send at most ${maxSol} lamports (${formatLamports(maxSol)} SOL) to keep the floor, or empty the key with --max.`
-              : "Fund the key with SOL first so it keeps the rent floor after the fee, or empty it with --max.",
+              ? `Send at most ${maxSol} lamports (${formatLamports(maxSol)} SOL) to keep the floor${empty}.`
+              : `Fund the key with SOL first so it keeps the rent floor after the fee${empty}.`,
           details: {
             from: plan.from,
             heldLamports: lamports.toString(),
@@ -480,9 +489,9 @@ function rentAccountIndex(err: string | null): number | null {
   return match ? Number(match[1]) : null
 }
 
-function preflightSuggestion(err: string | null): string {
+function preflightSuggestion(err: string | null, maxFlag: string | null): string {
   const index = rentAccountIndex(err)
-  const payer = "the payer would keep less than the rent floor: send less, or empty the key with --max"
+  const payer = `the payer would keep less than the rent floor: send less${maxFlag === null ? "" : `, or empty the key with ${maxFlag}`}`
   const receiver = "the receiving account would hold less than the rent floor: send at least the floor"
   if (index === 0) return `Fix the cause and send again. InsufficientFundsForRent means ${payer}.`
   if (index !== null) return `Fix the cause and send again. InsufficientFundsForRent means ${receiver}.`
@@ -503,6 +512,8 @@ export async function signAndBroadcastTransfer(input: {
   secret64: Uint8Array
   plan: TransferPlan
   beforeBroadcast?: (pending: { signature: string; blockhash: string }) => Promise<void>
+  /** How the caller spells "send everything" in a refusal suggestion; null when it has none (`vault fund`). */
+  maxFlag?: string | null
 }): Promise<{ signature: string; finalized: boolean; seen: boolean }> {
   const rpc = input.solana.rpc
   const feePayer = pubkeyFromSecret(input.secret64)
@@ -539,7 +550,10 @@ export async function signAndBroadcastTransfer(input: {
         {
           suggestion:
             rejection.reason === "preflight-failed"
-              ? preflightSuggestion(rejection.diagnostics?.err ?? null)
+              ? preflightSuggestion(
+                  rejection.diagnostics?.err ?? null,
+                  input.maxFlag === undefined ? SEND_MAX_FLAG : input.maxFlag,
+                )
               : "Retry in a moment, or with another RPC (--rpc-url).",
           details: {
             signature: sigB58,

@@ -778,7 +778,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.27";
+var CLI_VERSION = "0.13.28";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -85885,7 +85885,8 @@ function tokenAccountAmount(data) {
     return 0n;
   return new DataView(data.buffer, data.byteOffset + TOKEN_ACCOUNT_AMOUNT_OFFSET, 8).getBigUint64(0, true);
 }
-async function assertTransferAffordable(solana, plan, feeQuote) {
+var SEND_MAX_FLAG = "--amount max";
+async function assertTransferAffordable(solana, plan, feeQuote, maxFlag = SEND_MAX_FLAG) {
   const fee = feeQuote ?? FALLBACK_FEE_LAMPORTS;
   const rent = plan.accountRent ?? 0n;
   const lamportsNeeded = (plan.asset === "SOL" ? plan.amountRaw : 0n) + fee + rent;
@@ -85921,8 +85922,9 @@ async function assertTransferAffordable(solana, plan, feeQuote) {
     const floor = await solana.read(() => solana.rpc.getMinimumBalanceForRentExemption(0));
     if (remainder < floor) {
       const maxSol = plan.asset === "SOL" ? plan.amountRaw - (floor - remainder) : null;
+      const empty = maxFlag === null ? "" : `, or empty the key with ${maxFlag}`;
       throw new VaultError("TRANSFER_INSUFFICIENT_FUNDS", `${plan.from} holds ${lamports} lamports; after this transfer (${parts.join(" + ")}) it would keep ${remainder}, below the ${floor}-lamport rent floor, and the chain refuses that. Nothing was signed or sent.`, {
-        suggestion: maxSol !== null && maxSol > 0n ? `Send at most ${maxSol} lamports (${formatLamports(maxSol)} SOL) to keep the floor, or empty the key with --max.` : "Fund the key with SOL first so it keeps the rent floor after the fee, or empty it with --max.",
+        suggestion: maxSol !== null && maxSol > 0n ? `Send at most ${maxSol} lamports (${formatLamports(maxSol)} SOL) to keep the floor${empty}.` : `Fund the key with SOL first so it keeps the rent floor after the fee${empty}.`,
         details: {
           from: plan.from,
           heldLamports: lamports.toString(),
@@ -85957,9 +85959,9 @@ function rentAccountIndex(err) {
   const match = err === null ? null : /"InsufficientFundsForRent"\s*:\s*\{\s*"account_index"\s*:\s*(\d+)/.exec(err);
   return match ? Number(match[1]) : null;
 }
-function preflightSuggestion(err) {
+function preflightSuggestion(err, maxFlag) {
   const index = rentAccountIndex(err);
-  const payer = "the payer would keep less than the rent floor: send less, or empty the key with --max";
+  const payer = `the payer would keep less than the rent floor: send less${maxFlag === null ? "" : `, or empty the key with ${maxFlag}`}`;
   const receiver = "the receiving account would hold less than the rent floor: send at least the floor";
   if (index === 0)
     return `Fix the cause and send again. InsufficientFundsForRent means ${payer}.`;
@@ -85990,7 +85992,7 @@ async function signAndBroadcastTransfer(input) {
     if (rejection !== null) {
       const cause = rejection.reason === "preflight-failed" ? `its simulation failed: ${rejection.diagnostics?.err ?? "unknown error"}` : "the node was behind the required slot";
       throw new VaultError("TRANSFER_REJECTED", `The RPC refused this transfer before broadcasting it (${cause}). Nothing was broadcast and no fee was charged.`, {
-        suggestion: rejection.reason === "preflight-failed" ? preflightSuggestion(rejection.diagnostics?.err ?? null) : "Retry in a moment, or with another RPC (--rpc-url).",
+        suggestion: rejection.reason === "preflight-failed" ? preflightSuggestion(rejection.diagnostics?.err ?? null, input.maxFlag === undefined ? SEND_MAX_FLAG : input.maxFlag) : "Retry in a moment, or with another RPC (--rpc-url).",
         details: {
           signature: sigB58,
           reason: rejection.reason,
@@ -115028,11 +115030,11 @@ async function fundExternal(ctx, vault, external3, input) {
   }));
   const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan2.from, plan2.instructions));
   displayTransferPlan(ctx, plan2, feeQuote);
-  await assertTransferAffordable(solana, plan2, feeQuote);
+  await assertTransferAffordable(solana, plan2, feeQuote, null);
   await confirmSend(ctx, { amount: plan2.amount, asset: plan2.asset, address: external3.address });
   const secret = await decryptKey(vault, fromEntry.id);
   try {
-    const result2 = await signAndBroadcastTransfer({ ctx, solana, secret64: secret, plan: plan2 });
+    const result2 = await signAndBroadcastTransfer({ ctx, solana, secret64: secret, plan: plan2, maxFlag: null });
     if (ctx.json) {
       writeJson(ctx.deps, {
         ok: result2.finalized,
@@ -115148,7 +115150,7 @@ async function vaultFund(args, ctx) {
     }));
     const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan2.from, plan2.instructions));
     displayTransferPlan(ctx, plan2, feeQuote);
-    await assertTransferAffordable(solana, plan2, feeQuote);
+    await assertTransferAffordable(solana, plan2, feeQuote, null);
     await confirmSend(ctx, { amount: plan2.amount, asset: plan2.asset, address: teeAddress });
     const secret = await decryptKey(vault, fromEntry.id);
     try {
@@ -115158,6 +115160,7 @@ async function vaultFund(args, ctx) {
         solana,
         secret64: secret,
         plan: plan2,
+        maxFlag: null,
         beforeBroadcast: async ({ signature, blockhash }) => {
           receipt = {
             signature,
