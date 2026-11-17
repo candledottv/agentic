@@ -280,6 +280,9 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID()}`
   const embedded = EMBEDDED_WALLET_NAMES.has(flags["--wallet"] ?? "")
   const dryRun = parsed.booleans.has("--dry-run")
+  // Agent-stream S: --hide keeps the launch out of the public stream. It rides in `flags` so every
+  // body builder sees it, and the body carries `hide: true` only then.
+  if (parsed.booleans.has("--hide")) flags["--hide"] = "true"
   // BE-2139 (surfaces item B): --check is the preflight that stops before anything is sent.
   const check = parsed.booleans.has("--check")
   if (check && dryRun) {
@@ -543,9 +546,11 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       key,
       "/api/v1/launch/self/build",
       solanaSelfBody({ flags, id, wallet, buy, imageUrl, bannerUrl, rules }),
-    ).catch((error) => {
-      throw buyRefusal(error)
-    })
+    )
+      .catch((error) => {
+        throw buyRefusal(error)
+      })
+      .then((answered) => requireHideEcho(flags, answered))
     const built = launchBuildSchema.parse(answer)
     if (!built.transaction || !/^\d+$/.test(built.maxDebitLamports ?? ""))
       throw new TradingError(
@@ -750,7 +755,26 @@ function launchFields(args: LaunchBodyArgs): Json {
     ...poolRequestFields(flags),
     // BE-2794: absent without rules, so the request hashes as it did before the field existed.
     ...(args.rules ? { launchRules: args.rules } : {}),
+    ...hideBodyField(flags),
   }
+}
+
+/** The `hide` body field, present only when --hide was passed (so no other body carries the word). */
+function hideBodyField(flags: Record<string, string>): { hide?: true } {
+  return flags["--hide"] === "true" ? { hide: true } : {}
+}
+
+/**
+ * Fail closed: an API that predates `hide` ignores it and would publish the launch. A caller that
+ * passed --hide needs the API's `hide: true` echo on the build or dry run; without it nothing is signed.
+ */
+function requireHideEcho<T>(flags: Record<string, string>, answer: T): T {
+  if (flags["--hide"] !== "true") return answer
+  if (answer !== null && typeof answer === "object" && (answer as { hide?: unknown }).hide === true) return answer
+  throw new TradingError(
+    "HIDE_NOT_CONFIRMED",
+    "--hide was passed, but the API did not confirm it (its server may predate hide), so the launch was not signed or sent. Nothing public was recorded by this CLI.",
+  )
 }
 
 /** `/launch/self/build` (and its dry run) on Solana: the dev buy rides in the launch transaction. */
@@ -912,9 +936,11 @@ async function dryRunLaunch(
   const { chain } = args
   const path = "/api/v1/launch/self/dry-run"
   const body = chain === "hood" ? hoodBody(args) : solanaSelfBody(args)
-  const answer = await request(ctx, key, path, body).catch((error) => {
-    throw buyRefusal(error)
-  })
+  const answer = await request(ctx, key, path, body)
+    .catch((error) => {
+      throw buyRefusal(error)
+    })
+    .then((answered) => requireHideEcho(args.flags, answered))
   ctx.deps.stderr.write(
     `Dry run: nothing was built, signed or recorded, and launch id ${args.id} is unused.\n${previewLines(answer, chain, feeWalletSelection(args.flags))}`,
   )
@@ -1067,9 +1093,11 @@ async function atomicLaunch(
       "This machine already started this launch id; no write was resent.",
     )
   writeFields(ctx.deps, "stderr", [["Operation", id]])
-  const answer = await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody(args)).catch((error) => {
-    throw buyRefusal(error)
-  })
+  const answer = await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody(args))
+    .catch((error) => {
+      throw buyRefusal(error)
+    })
+    .then((answered) => requireHideEcho(flags, answered))
   const built = atomicBuildSchema.parse(answer)
   const [launchLeg, buyLeg] = built.legs
   if (
@@ -1380,11 +1408,13 @@ async function embeddedLaunch(
     // BE-2519: the headless route takes the same Solana fee-wallet fields as the self build.
     ...feeWalletRequestFields(flags),
     ...(args.rules ? { launchRules: args.rules } : {}),
+    ...hideBodyField(flags),
     ...(buy
       ? { buyAmount: chain === "hood" || BigInt(buy.raw) > BigInt(Number.MAX_SAFE_INTEGER) ? buy.raw : Number(buy.raw) }
       : {}),
   }
-  const answer = await request(ctx, key, "/api/v1/launch/headless/dry-run", body)
+  // The dry run is the pre-check for the server-executed launch below: no echo, no launch.
+  const answer = requireHideEcho(flags, await request(ctx, key, "/api/v1/launch/headless/dry-run", body))
   let quote: QuoteDisplay & Json = {
     intent: `Launch ${flags["--name"]} (${flags["--symbol"]})${buy ? ` with a first buy of ${buy.display}` : ""} from the embedded wallet`,
     wallet,
@@ -1619,9 +1649,11 @@ async function hoodLaunch(
       "This machine already started this launch id; no write was resent.",
     )
   writeFields(ctx.deps, "stderr", [["Operation", id]])
-  const built = await request(ctx, key, "/api/v1/launch/self/build", hoodBody(args)).catch((error) => {
-    throw buyRefusal(error)
-  })
+  const built = await request(ctx, key, "/api/v1/launch/self/build", hoodBody(args))
+    .catch((error) => {
+      throw buyRefusal(error)
+    })
+    .then((answered) => requireHideEcho(args.flags, answered))
   // D4: a Hood TEE wallet signs one leg at a time. An answer without the sequenced envelope is a
   // deployment that predates it, and its transaction is never signed from this wallet.
   const parsed = sequencedSchema.safeParse(built)

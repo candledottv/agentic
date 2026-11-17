@@ -1687,3 +1687,52 @@ describe("candle_get_swap_receipt", () => {
     expect(registered.candle_swap?.description).toContain("do not resend the swap to learn it")
   })
 })
+
+/*
+  Agent-stream S (design 5.6): a hidden candle_launch_token is gated on a dry run's echo before
+  the live launch is sent. An API that predates hide would publish the launch before the live
+  response could be checked; the dry run publishes nothing, so a refusal there places nothing.
+*/
+describe("candle_launch_token: hide is gated on the dry-run echo", () => {
+  const BASE = { clientLaunchId: "c1", name: "T", symbol: "T", imageUrl: "https://x/y.png" }
+
+  test("a stale API is refused at the dry run: no live launch request is ever sent", async () => {
+    const sent: { url: string; body: unknown }[] = []
+    const { call } = toolsWith(["candle_launch_token"], async (url, init) => {
+      sent.push({ url: String(url), body: JSON.parse(String(init?.body)) })
+      return answer(200, JSON.stringify({ success: true, mint: "M" }))
+    })
+    const { result, text } = await call("candle_launch_token", { ...BASE, hide: true })
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(text).error).toContain("HIDE_NOT_CONFIRMED")
+    expect(sent.length).toBe(1)
+    expect(sent[0]?.url).toBe("https://api.test/api/v1/launch/headless/dry-run")
+    expect((sent[0]?.body as { hide?: boolean }).hide).toBe(true)
+  })
+
+  test("a dry run that confirms hide is followed by the live launch, which must echo again", async () => {
+    const sent: { url: string; body: unknown }[] = []
+    const { call } = toolsWith(["candle_launch_token"], async (url, init) => {
+      sent.push({ url: String(url), body: JSON.parse(String(init?.body)) })
+      return answer(200, JSON.stringify({ success: true, hide: true, mint: "M" }))
+    })
+    const { result } = await call("candle_launch_token", { ...BASE, hide: true })
+    expect(result.isError).toBeUndefined()
+    expect(sent.map((s) => s.url)).toEqual([
+      "https://api.test/api/v1/launch/headless/dry-run",
+      "https://api.test/api/v1/launch/headless",
+    ])
+  })
+
+  test("a public launch and an explicit dry run send no gate: one request each", async () => {
+    for (const extra of [{}, { dryRun: true }] as const) {
+      const sent: string[] = []
+      const { call } = toolsWith(["candle_launch_token"], async (url) => {
+        sent.push(String(url))
+        return answer(200, JSON.stringify({ success: true, hide: true, mint: "M" }))
+      })
+      await call("candle_launch_token", { ...BASE, ...extra })
+      expect(sent).toEqual([`https://api.test/api/v1/launch/headless${extra.dryRun ? "/dry-run" : ""}`])
+    }
+  })
+})

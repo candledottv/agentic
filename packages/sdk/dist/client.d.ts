@@ -1998,6 +1998,13 @@ export interface HoodSwapBuildRequest extends ConfirmedQuoteBounds {
     };
     maxSlippageBps?: number;
     clientTradeId?: string;
+    /**
+     * Keep this order out of the public activity stream (sent only when true). The API must echo
+     * `hide: true`; a response without it throws `CandleApiError` `HIDE_NOT_CONFIRMED`, because an
+     * API that predates `hide` would place the order publicly. The creator wallet and the chain
+     * stay public.
+     */
+    hide?: boolean;
 }
 /** POST /api/v1/agent/swap/preview; clientTradeId is ignored. */
 export type PreviewHoodSwapRequest = HoodSwapBuildRequest;
@@ -2043,6 +2050,13 @@ export interface BuildTradeRequest extends ConfirmedQuoteBounds {
      * The server defaults it when omitted, which is `sol` on Solana and ETH settlement on Hood.
      */
     quoteAsset?: "sol" | "usdc" | "cndl" | "eth" | "usdg";
+    /**
+     * Keep this order out of the public activity stream (sent only when true). The API must echo
+     * `hide: true`; a response without it throws `CandleApiError` `HIDE_NOT_CONFIRMED`, because an
+     * API that predates `hide` would place the order publicly. The creator wallet and the chain
+     * stay public.
+     */
+    hide?: boolean;
 }
 /**
  * The platform fee actually itemized on this trade.
@@ -2371,6 +2385,13 @@ export interface LinkedSwapRequest {
      * id `GET /api/v1/agent/swap/jobs/{clientTradeId}` reads the bridge's settlement and open state by.
      */
     clientTradeId?: string;
+    /**
+     * Keep this order out of the public activity stream (sent only when true). The API must echo
+     * `hide: true`; a response without it throws `CandleApiError` `HIDE_NOT_CONFIRMED`, because an
+     * API that predates `hide` would place the order publicly. The creator wallet and the chain
+     * stay public.
+     */
+    hide?: boolean;
 }
 /** `swapFromLinked()` result. `hashes` is the Solana deposit; poll `statusChecks` for the fill. */
 export interface LinkedSwapResult {
@@ -2936,6 +2957,13 @@ export interface SwapRequest {
     maxSlippageBps?: number;
     /** Durable idempotency key. Same id + same body, including effective slippage, replays; a different body is refused. */
     clientSwapId?: string;
+    /**
+     * Keep this order out of the public activity stream (sent only when true). The API must echo
+     * `hide: true`; a response without it throws `CandleApiError` `HIDE_NOT_CONFIRMED`, because an
+     * API that predates `hide` would place the order publicly. The creator wallet and the chain
+     * stay public.
+     */
+    hide?: boolean;
 }
 /** swap()'s unwrapped `payload`. */
 export interface SwapResult {
@@ -3349,6 +3377,13 @@ export interface TradeRequest {
      * Pass your own for anything that moves funds and store it before the call: see `trade()`.
      */
     clientTradeId?: string;
+    /**
+     * Keep this order out of the public activity stream (sent only when true). The API must echo
+     * `hide: true`; a response without it throws `CandleApiError` `HIDE_NOT_CONFIRMED`, because an
+     * API that predates `hide` would place the order publicly. The creator wallet and the chain
+     * stay public.
+     */
+    hide?: boolean;
 }
 /** selfLaunch()'s one-call request: BuildSelfLaunchRequest plus the linked wallet's Privy wallet id. */
 export type SelfLaunchRequest = BuildSelfLaunchRequest & {
@@ -4704,7 +4739,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.22";
+export declare const SDK_VERSION = "0.6.23";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

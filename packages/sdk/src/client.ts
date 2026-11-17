@@ -66,6 +66,7 @@ import {
   fetchNonce,
   waitForReceipt,
 } from "./evm-tx"
+import { assertHideEchoed, assertHideSupportedByDryRun, hideField, hideRequested } from "./hide-echo"
 import {
   HYPERLIQUID_CLOID_RE,
   HYPERLIQUID_EXCHANGE_URLS,
@@ -2162,6 +2163,13 @@ export interface HoodSwapBuildRequest extends ConfirmedQuoteBounds {
   payer: { type: "linked"; linkedWalletId: string }
   maxSlippageBps?: number
   clientTradeId?: string
+  /**
+   * Keep this order out of the public activity stream (sent only when true). The API must echo
+   * `hide: true`; a response without it throws `CandleApiError` `HIDE_NOT_CONFIRMED`, because an
+   * API that predates `hide` would place the order publicly. The creator wallet and the chain
+   * stay public.
+   */
+  hide?: boolean
 }
 
 /** POST /api/v1/agent/swap/preview; clientTradeId is ignored. */
@@ -2209,6 +2217,13 @@ export interface BuildTradeRequest extends ConfirmedQuoteBounds {
    * The server defaults it when omitted, which is `sol` on Solana and ETH settlement on Hood.
    */
   quoteAsset?: "sol" | "usdc" | "cndl" | "eth" | "usdg"
+  /**
+   * Keep this order out of the public activity stream (sent only when true). The API must echo
+   * `hide: true`; a response without it throws `CandleApiError` `HIDE_NOT_CONFIRMED`, because an
+   * API that predates `hide` would place the order publicly. The creator wallet and the chain
+   * stay public.
+   */
+  hide?: boolean
 }
 
 /**
@@ -2527,6 +2542,13 @@ export interface LinkedSwapRequest {
    * id `GET /api/v1/agent/swap/jobs/{clientTradeId}` reads the bridge's settlement and open state by.
    */
   clientTradeId?: string
+  /**
+   * Keep this order out of the public activity stream (sent only when true). The API must echo
+   * `hide: true`; a response without it throws `CandleApiError` `HIDE_NOT_CONFIRMED`, because an
+   * API that predates `hide` would place the order publicly. The creator wallet and the chain
+   * stay public.
+   */
+  hide?: boolean
 }
 
 /** `swapFromLinked()` result. `hashes` is the Solana deposit; poll `statusChecks` for the fill. */
@@ -3177,6 +3199,13 @@ export interface SwapRequest {
   maxSlippageBps?: number
   /** Durable idempotency key. Same id + same body, including effective slippage, replays; a different body is refused. */
   clientSwapId?: string
+  /**
+   * Keep this order out of the public activity stream (sent only when true). The API must echo
+   * `hide: true`; a response without it throws `CandleApiError` `HIDE_NOT_CONFIRMED`, because an
+   * API that predates `hide` would place the order publicly. The creator wallet and the chain
+   * stay public.
+   */
+  hide?: boolean
 }
 
 /** swap()'s unwrapped `payload`. */
@@ -3622,6 +3651,13 @@ export interface TradeRequest {
    * Pass your own for anything that moves funds and store it before the call: see `trade()`.
    */
   clientTradeId?: string
+  /**
+   * Keep this order out of the public activity stream (sent only when true). The API must echo
+   * `hide: true`; a response without it throws `CandleApiError` `HIDE_NOT_CONFIRMED`, because an
+   * API that predates `hide` would place the order publicly. The creator wallet and the chain
+   * stay public.
+   */
+  hide?: boolean
 }
 
 /** selfLaunch()'s one-call request: BuildSelfLaunchRequest plus the linked wallet's Privy wallet id. */
@@ -4617,7 +4653,10 @@ export class CandleClient {
     const { body, wallet } = await this.prepareLaunch(req)
     return wallet
       ? this.dryRunSelfLaunch({ ...body, linkedWalletId: wallet.linkedWalletId })
-      : this.requestJson<DryRunResult>("POST", "/api/v1/launch/headless/dry-run", body)
+      : this.requestJson<DryRunResult>("POST", "/api/v1/launch/headless/dry-run", body).then((dry) => {
+          assertHideEchoed(hideRequested(body.hide), dry, "dryRunLaunch()")
+          return dry
+        })
   }
 
   /** Resolve only wallets explicitly named by this caller; server gates remain authoritative. */
@@ -4702,11 +4741,19 @@ export class CandleClient {
     const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId()
     const body = { ...prepared.body, clientLaunchId }
     return this.runOperation({ clientLaunchId }, "server-executed", async (op) => {
+      // A hidden embedded launch is gated on the dry run's echo first (design 5.6): an API that
+      // predates hide would publish the launch before the response could be checked.
+      if (prepared.body.hide === true)
+        assertHideSupportedByDryRun(
+          await this.requestJson<DryRunResult>("POST", "/api/v1/launch/headless/dry-run", body, op),
+          "launch()",
+        )
       let lastError: unknown
       for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
         if (attempt > 0) await sleep(retryDelayMs(attempt - 1))
         try {
           const result = await this.requestJson<LaunchResult>("POST", "/api/v1/launch/headless", body, op)
+          assertHideEchoed(hideRequested(body.hide), result, "launch()")
           return { ...result, clientLaunchId }
         } catch (error) {
           if (!isRetryableLaunchFailure(error)) throw error
@@ -4748,7 +4795,16 @@ export class CandleClient {
     const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId()
     const body = { ...launchBody(req), clientLaunchId, async: true }
     return this.runOperation({ clientLaunchId }, "server-executed", async (op) => {
+      // Same stale-server gate as launch(): the dry run must echo hide before the live accept.
+      if (body.hide === true) {
+        const { async: _async, ...gateBody } = body
+        assertHideSupportedByDryRun(
+          await this.requestJson<DryRunResult>("POST", "/api/v1/launch/headless/dry-run", gateBody, op),
+          "launchAsync()",
+        )
+      }
       const accepted = await this.requestJson<AcceptedJob>("POST", "/api/v1/launch/headless", body, op)
+      assertHideEchoed(hideRequested(body.hide), accepted, "launchAsync()")
       return { ...accepted, clientLaunchId: accepted.clientLaunchId ?? clientLaunchId }
     })
   }
@@ -4969,7 +5025,13 @@ export class CandleClient {
    */
   async swap(req: SwapRequest): Promise<SwapResult> {
     this.requireKey("swap()")
-    const body = await this.requestJson<{ success: true; payload: SwapResult }>("POST", "/api/v1/agent/swap", req)
+    const { hide, ...rest } = req
+    const asked = hideRequested(hide)
+    const body = await this.requestJson<{ success: true; payload: SwapResult }>("POST", "/api/v1/agent/swap", {
+      ...rest,
+      ...hideField(hide),
+    })
+    assertHideEchoed(asked, body, "swap()")
     return body.payload
   }
 
@@ -5145,7 +5207,14 @@ export class CandleClient {
    */
   async dryRunSelfLaunch(req: BuildSelfLaunchRequest): Promise<SelfLaunchDryRunResult> {
     this.requireKey("dryRunSelfLaunch()")
-    return this.requestJson<SelfLaunchDryRunResult>("POST", "/api/v1/launch/self/dry-run", req)
+    const { hide, ...rest } = req
+    const asked = hideRequested(hide)
+    const dry = await this.requestJson<SelfLaunchDryRunResult>("POST", "/api/v1/launch/self/dry-run", {
+      ...rest,
+      ...hideField(hide),
+    })
+    assertHideEchoed(asked, dry, "dryRunSelfLaunch()")
+    return dry
   }
 
   /**
@@ -5173,7 +5242,18 @@ export class CandleClient {
     op?: OperationContext,
   ): Promise<BuildSelfLaunchResult> {
     this.requireKey("buildSelfLaunch()")
-    const built = await this.requestJson<BuildSelfLaunchResult>("POST", "/api/v1/launch/self/build", req, op)
+    const { hide, ...rest } = req
+    const asked = hideRequested(hide)
+    const built = await this.requestJson<BuildSelfLaunchResult>(
+      "POST",
+      "/api/v1/launch/self/build",
+      {
+        ...rest,
+        ...hideField(hide),
+      },
+      op,
+    )
+    assertHideEchoed(asked, built, "buildSelfLaunch()")
     return { ...built, clientLaunchId: built.clientLaunchId ?? req.clientLaunchId } as BuildSelfLaunchResult
   }
 
@@ -5245,7 +5325,16 @@ export class CandleClient {
   /** buildTrade()'s request; trade() passes its `op` so its exits can expose the id. */
   private async postTradeBuild(req: BuildTradeRequest, op?: OperationContext): Promise<BuildTradeResult> {
     this.requireKey("buildTrade()")
-    return this.requestJson<BuildTradeResult>("POST", "/api/v1/trade/agent/build", req, op)
+    const { hide, ...rest } = req
+    const asked = hideRequested(hide)
+    const built = await this.requestJson<BuildTradeResult>(
+      "POST",
+      "/api/v1/trade/agent/build",
+      { ...rest, ...hideField(hide) },
+      op,
+    )
+    assertHideEchoed(asked, built, "buildTrade()")
+    return built
   }
 
   /**
@@ -5446,6 +5535,7 @@ export class CandleClient {
    */
   async swapFromLinked(req: LinkedSwapRequest): Promise<LinkedSwapResult> {
     this.requireKey("swapFromLinked()")
+    const askedHide = hideRequested(req.hide)
     const build = await this.requestJson<{
       success: true
       payload: { swapId: string; transactionsBase64: string[] }
@@ -5457,7 +5547,10 @@ export class CandleClient {
       payer: { type: "linked", linkedWalletId: req.payer.linkedWalletId },
       ...(req.toWalletId !== undefined ? { toWalletId: req.toWalletId } : {}),
       ...(req.clientTradeId !== undefined ? { clientTradeId: req.clientTradeId } : {}),
+      ...hideField(req.hide),
     })
+    // Before anything is signed: an API that did not take `hide` would publish this swap.
+    assertHideEchoed(askedHide, build, "swapFromLinked()")
 
     const signed: string[] = []
     for (const unsignedTransactionBase64 of build.payload.transactionsBase64) {
@@ -5554,6 +5647,7 @@ export class CandleClient {
       payer: req.from === "main" ? { type: "main" } : { type: "linked", linkedWalletId: req.from.linkedWalletId },
       ...(req.maxSlippageBps !== undefined ? { maxSlippageBps: req.maxSlippageBps } : {}),
       ...(req.quoteAsset !== undefined ? { quoteAsset: req.quoteAsset } : {}),
+      ...hideField(req.hide),
     }
     // A linked payer signs and broadcasts on the caller's side: a same-id call can broadcast
     // again (BE-1126), so its wrapped errors never say a plain "retry with this id".
@@ -6000,7 +6094,14 @@ export class CandleClient {
    */
   async dryRunAtomicLaunch(req: BuildAtomicLaunchRequest): Promise<AtomicDryRunResult> {
     this.requireKey("dryRunAtomicLaunch()")
-    return this.requestJson<AtomicDryRunResult>("POST", "/api/v1/launch/atomic/dry-run", req)
+    const { hide, ...rest } = req
+    const asked = hideRequested(hide)
+    const dry = await this.requestJson<AtomicDryRunResult>("POST", "/api/v1/launch/atomic/dry-run", {
+      ...rest,
+      ...hideField(hide),
+    })
+    assertHideEchoed(asked, dry, "dryRunAtomicLaunch()")
+    return dry
   }
 
   /**
@@ -6013,7 +6114,18 @@ export class CandleClient {
     clientLaunchId: string,
     op: OperationContext,
   ): Promise<BuildAtomicLaunchResult> {
-    const built = await this.requestJson<BuildAtomicLaunchResult>("POST", "/api/v1/launch/atomic/build", body, op)
+    const { hide, ...rest } = body
+    const asked = hideRequested(hide)
+    const built = await this.requestJson<BuildAtomicLaunchResult>(
+      "POST",
+      "/api/v1/launch/atomic/build",
+      {
+        ...rest,
+        ...hideField(hide),
+      },
+      op,
+    )
+    assertHideEchoed(asked, built, "buildAtomicLaunch()")
     return { ...built, clientLaunchId }
   }
 
@@ -7637,7 +7749,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.22"
+export const SDK_VERSION = "0.6.23"
 
 let sdkUpdateWarned = false
 

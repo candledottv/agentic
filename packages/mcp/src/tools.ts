@@ -57,6 +57,14 @@ import { keyedRedirectGuard, type RequestConfig, resolveConfig } from "./client"
 import { CLUSTER_READ_DESCRIPTION, readTokenClusters, tokenClustersShape } from "./cluster-read"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
 import {
+  hideEchoedText,
+  hideField,
+  hideSchema,
+  hideUnsupportedByDryRunMessage,
+  isHideFlag,
+  missingHideEcho,
+} from "./hide"
+import {
   checkedFields,
   configuredImageDir,
   imageRefusalBody,
@@ -428,7 +436,7 @@ function jsonHeaders(apiKey?: string): Record<string, string> {
  * error costs a round trip and says which field to drop.
  */
 export function swapBody(args: Record<string, unknown>): Record<string, unknown> {
-  const { amount, amountRaw, ...rest } = args as { amount?: string; amountRaw?: string }
+  const { amount, amountRaw, hide, ...rest } = args as { amount?: string; amountRaw?: string; hide?: unknown }
   const hasAmount = typeof amount === "string" && amount.length > 0
   const hasRaw = typeof amountRaw === "string" && amountRaw.length > 0
   if (hasAmount && hasRaw) {
@@ -437,13 +445,13 @@ export function swapBody(args: Record<string, unknown>): Record<string, unknown>
   if (!hasAmount && !hasRaw) {
     throw new Error('Pass an amount, e.g. amount: "0.5".')
   }
-  if (hasRaw) return { ...rest, amountRaw }
+  if (hasRaw) return { ...rest, ...hideField(hide), amountRaw }
   const from = String((rest as { from?: unknown }).from ?? "").toLowerCase()
   const decimals = QUOTE_DECIMALS[from]
   if (decimals === undefined) {
     throw new Error(`Unknown decimals for base asset "${from}". Pass amountRaw instead.`)
   }
-  return { ...rest, amountRaw: decimalToRaw(amount as string, decimals) }
+  return { ...rest, ...hideField(hide), amountRaw: decimalToRaw(amount as string, decimals) }
 }
 
 export function buildRequest(name: RestToolName, args: Record<string, unknown>, cfg: RequestConfig): BuiltRequest {
@@ -453,7 +461,8 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
   switch (name) {
     case "candle_launch_token": {
       const apiKey = requireApiKey(cfg)
-      const { dryRun, ...body } = args as { dryRun?: boolean }
+      const { dryRun, hide, ...body } = args as { dryRun?: boolean; hide?: unknown }
+      Object.assign(body, hideField(hide))
       const path = dryRun ? "/api/v1/launch/headless/dry-run" : "/api/v1/launch/headless"
       return {
         url: `${base}${path}`,
@@ -1154,6 +1163,13 @@ async function swap(args: Record<string, unknown>, cfg: RequestConfig, doFetch: 
     return { content: [{ type: "text" as const, text: failed.text }], isError: true }
   }
   const answered = body as Record<string, unknown>
+  if (ok && isHideFlag(args.hide) && answered.hide !== true) {
+    const unconfirmed = missingHideEcho(true, JSON.stringify(answered), "candle_swap") as string
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify({ clientSwapId, error: unconfirmed, api: answered }) }],
+      isError: true,
+    }
+  }
   const next = ok ? null : recoveryNext(answered, clientSwapId, "swap")
   return {
     content: [
@@ -1531,6 +1547,7 @@ const swapShape = {
         "sent with the swap and returned in the result as `clientSwapId`: keep it, so a retry after " +
         "a timeout returns that stored result.",
     ),
+  hide: hideSchema,
 }
 
 const tradeShape = {
@@ -1616,6 +1633,7 @@ const tradeShape = {
           "combined with `paper`.",
       ),
   ),
+  hide: hideSchema,
 }
 
 const tradeExecuteShape = {
@@ -2049,7 +2067,40 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         return { content: [{ type: "text", text: imageRefusalBody(image.refused) }], isError: true }
       }
       if ("uploadFailed" in image) return { content: [{ type: "text", text: image.uploadFailed }], isError: true }
-      const relayed = await callAndRelay("candle_launch_token", image.args, getConfig(), doFetch)
+      // A hidden launch is gated on a dry run's echo first (design 5.6): an API that predates
+      // hide would publish the launch before the live response could be checked. The dry run
+      // publishes nothing, so a refusal here means nothing was launched.
+      if (isHideFlag((image.args as { hide?: unknown }).hide) && (image.args as { dryRun?: unknown }).dryRun !== true) {
+        const probe = await callAndRelay("candle_launch_token", { ...image.args, dryRun: true }, getConfig(), doFetch)
+        if (probe.isError) return probe
+        if (!hideEchoedText(probe.content[0]?.text ?? ""))
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ error: hideUnsupportedByDryRunMessage("candle_launch_token") }),
+              },
+            ],
+            isError: true,
+          }
+      }
+      const launched = await callAndRelay("candle_launch_token", image.args, getConfig(), doFetch)
+      // A launch that asked for hide and came back without the API's echo is an error, not a success.
+      const unconfirmed = launched.isError
+        ? undefined
+        : missingHideEcho(
+            isHideFlag((image.args as { hide?: unknown }).hide),
+            launched.content[0]?.text ?? "",
+            "candle_launch_token",
+          )
+      const relayed = unconfirmed
+        ? {
+            content: [
+              { type: "text" as const, text: JSON.stringify({ error: unconfirmed, api: launched.content[0]?.text }) },
+            ],
+            isError: true,
+          }
+        : launched
       if (image.checked) {
         // A dry run checked the file and published nothing; say so beside the API's verbatim body.
         const note = JSON.stringify(checkedFields(image))

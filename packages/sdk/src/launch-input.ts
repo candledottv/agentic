@@ -1,5 +1,6 @@
 import type { Chain, LaunchRequest } from "./client"
 import { CandleApiError } from "./errors"
+import { hideRequested } from "./hide-echo"
 import { LAUNCH_DEFINITION } from "./launch-definition"
 import { fixedLaunchQuote, LaunchCheckError } from "./launch-preflight"
 
@@ -65,7 +66,10 @@ export function validateLaunchInput(req: LaunchRequest): void {
 
 /** Strip SDK controls and translate the whole-unit first buy without floating point rounding. */
 export function launchBody(req: LaunchRequest, chain?: Chain): Omit<LaunchRequest, "wallet" | "buy" | "quote"> {
-  const { wallet: _wallet, buy, quote: _quote, ...body } = req
+  const { wallet: _wallet, buy, quote: _quote, hide, ...rest } = req
+  const body: typeof rest & { hide?: true } = rest
+  // Sent only when true; an unreadable value throws rather than placing a public launch.
+  if (hideRequested(hide)) body.hide = true
   try {
     const quote = fixedLaunchQuote({ ...req, chain: chain ?? req.chain })
     if (quote !== undefined) body.quoteAsset = quote as LaunchRequest["quoteAsset"]

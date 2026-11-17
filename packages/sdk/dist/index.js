@@ -532,6 +532,51 @@ async function waitForReceipt(rpc, txHash, opts = {}) {
   }
 }
 
+// src/hide-echo.ts
+var HIDE_NOT_CONFIRMED = "HIDE_NOT_CONFIRMED";
+var TRUE = new Set([true, "true", 1, "1"]);
+var FALSE = new Set([undefined, null, false, "false", 0, "0"]);
+function hideRequested(value) {
+  if (TRUE.has(value))
+    return true;
+  if (FALSE.has(value))
+    return false;
+  throw new CandleApiError({
+    status: 400,
+    code: "VALIDATION_FAILED",
+    field: "hide",
+    message: 'hide must be a boolean (true, "true" or 1)',
+    retryable: false
+  });
+}
+function hideField(value) {
+  return hideRequested(value) ? { hide: true } : {};
+}
+function assertHideSupportedByDryRun(response, what) {
+  if (response && typeof response === "object" && response.hide === true)
+    return;
+  throw new CandleApiError({
+    status: 502,
+    code: HIDE_NOT_CONFIRMED,
+    message: `${what} asked for hide, but the API's dry run did not confirm it. Its server may predate hide; nothing was launched.`,
+    retryable: false,
+    field: "hide"
+  });
+}
+function assertHideEchoed(requested, response, what) {
+  if (!requested)
+    return;
+  if (response && typeof response === "object" && response.hide === true)
+    return;
+  throw new CandleApiError({
+    status: 502,
+    code: HIDE_NOT_CONFIRMED,
+    message: `${what} asked for hide, but the API did not confirm it. Its server may predate hide, so the order may have been placed publicly. Check the order before sending another.`,
+    retryable: false,
+    field: "hide"
+  });
+}
+
 // src/hyperliquid.ts
 import { keccak_256 } from "@noble/hashes/sha3";
 var HYPERLIQUID_ALLOWED_ACTION_TYPES = [
@@ -4428,6 +4473,23 @@ var LAUNCH_DEFINITION = {
           key: "dryRun"
         }
       }
+    },
+    {
+      key: "hide",
+      type: "boolean",
+      help: "Keep this launch and its dev buy out of the public activity stream. Candle drops its name, agent mark and stream entries for the launch, but the creator wallet is public on chain and can be traced to its owner. Not the same as visibility hidden, which hides the token. Sent only when set; the API confirms it, and a response without that confirmation is refused.",
+      default: false,
+      surfaces: {
+        cli: {
+          flag: "--hide"
+        },
+        mcp: {
+          key: "hide"
+        },
+        sdk: {
+          key: "hide"
+        }
+      }
     }
   ]
 };
@@ -4578,7 +4640,10 @@ function validateLaunchInput(req) {
     launchBody(req);
 }
 function launchBody(req, chain) {
-  const { wallet: _wallet, buy, quote: _quote, ...body } = req;
+  const { wallet: _wallet, buy, quote: _quote, hide, ...rest } = req;
+  const body = rest;
+  if (hideRequested(hide))
+    body.hide = true;
   try {
     const quote2 = fixedLaunchQuote({ ...req, chain: chain ?? req.chain });
     if (quote2 !== undefined)
@@ -5702,7 +5767,10 @@ class CandleClient {
   async dryRunLaunch(req) {
     this.requireKey("dryRunLaunch()");
     const { body, wallet } = await this.prepareLaunch(req);
-    return wallet ? this.dryRunSelfLaunch({ ...body, linkedWalletId: wallet.linkedWalletId }) : this.requestJson("POST", "/api/v1/launch/headless/dry-run", body);
+    return wallet ? this.dryRunSelfLaunch({ ...body, linkedWalletId: wallet.linkedWalletId }) : this.requestJson("POST", "/api/v1/launch/headless/dry-run", body).then((dry) => {
+      assertHideEchoed(hideRequested(body.hide), dry, "dryRunLaunch()");
+      return dry;
+    });
   }
   async prepareLaunch(req) {
     validateLaunchInput(req);
@@ -5753,12 +5821,15 @@ class CandleClient {
     const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId();
     const body = { ...prepared.body, clientLaunchId };
     return this.runOperation({ clientLaunchId }, "server-executed", async (op) => {
+      if (prepared.body.hide === true)
+        assertHideSupportedByDryRun(await this.requestJson("POST", "/api/v1/launch/headless/dry-run", body, op), "launch()");
       let lastError;
       for (let attempt = 0;attempt <= this.maxRetries; attempt++) {
         if (attempt > 0)
           await sleep2(retryDelayMs(attempt - 1));
         try {
           const result = await this.requestJson("POST", "/api/v1/launch/headless", body, op);
+          assertHideEchoed(hideRequested(body.hide), result, "launch()");
           return { ...result, clientLaunchId };
         } catch (error) {
           if (!isRetryableLaunchFailure(error))
@@ -5788,7 +5859,12 @@ class CandleClient {
     const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId();
     const body = { ...launchBody(req), clientLaunchId, async: true };
     return this.runOperation({ clientLaunchId }, "server-executed", async (op) => {
+      if (body.hide === true) {
+        const { async: _async, ...gateBody } = body;
+        assertHideSupportedByDryRun(await this.requestJson("POST", "/api/v1/launch/headless/dry-run", gateBody, op), "launchAsync()");
+      }
       const accepted = await this.requestJson("POST", "/api/v1/launch/headless", body, op);
+      assertHideEchoed(hideRequested(body.hide), accepted, "launchAsync()");
       return { ...accepted, clientLaunchId: accepted.clientLaunchId ?? clientLaunchId };
     });
   }
@@ -5871,7 +5947,13 @@ class CandleClient {
   }
   async swap(req) {
     this.requireKey("swap()");
-    const body = await this.requestJson("POST", "/api/v1/agent/swap", req);
+    const { hide, ...rest } = req;
+    const asked = hideRequested(hide);
+    const body = await this.requestJson("POST", "/api/v1/agent/swap", {
+      ...rest,
+      ...hideField(hide)
+    });
+    assertHideEchoed(asked, body, "swap()");
     return body.payload;
   }
   async previewCloseEmptyAccounts(req = {}) {
@@ -5950,14 +6032,27 @@ class CandleClient {
   }
   async dryRunSelfLaunch(req) {
     this.requireKey("dryRunSelfLaunch()");
-    return this.requestJson("POST", "/api/v1/launch/self/dry-run", req);
+    const { hide, ...rest } = req;
+    const asked = hideRequested(hide);
+    const dry = await this.requestJson("POST", "/api/v1/launch/self/dry-run", {
+      ...rest,
+      ...hideField(hide)
+    });
+    assertHideEchoed(asked, dry, "dryRunSelfLaunch()");
+    return dry;
   }
   async buildSelfLaunch(req) {
     return this.postSelfLaunchBuild(req);
   }
   async postSelfLaunchBuild(req, op) {
     this.requireKey("buildSelfLaunch()");
-    const built = await this.requestJson("POST", "/api/v1/launch/self/build", req, op);
+    const { hide, ...rest } = req;
+    const asked = hideRequested(hide);
+    const built = await this.requestJson("POST", "/api/v1/launch/self/build", {
+      ...rest,
+      ...hideField(hide)
+    }, op);
+    assertHideEchoed(asked, built, "buildSelfLaunch()");
     return { ...built, clientLaunchId: built.clientLaunchId ?? req.clientLaunchId };
   }
   async confirmSelfLaunch(req) {
@@ -5970,7 +6065,11 @@ class CandleClient {
   }
   async postTradeBuild(req, op) {
     this.requireKey("buildTrade()");
-    return this.requestJson("POST", "/api/v1/trade/agent/build", req, op);
+    const { hide, ...rest } = req;
+    const asked = hideRequested(hide);
+    const built = await this.requestJson("POST", "/api/v1/trade/agent/build", { ...rest, ...hideField(hide) }, op);
+    assertHideEchoed(asked, built, "buildTrade()");
+    return built;
   }
   async getHoodTeeOperation(operationId) {
     this.requireKey("getHoodTeeOperation()");
@@ -6037,6 +6136,7 @@ class CandleClient {
   }
   async swapFromLinked(req) {
     this.requireKey("swapFromLinked()");
+    const askedHide = hideRequested(req.hide);
     const build = await this.requestJson("POST", "/api/v1/agent/swap/build", {
       from: req.from,
       to: req.to,
@@ -6044,8 +6144,10 @@ class CandleClient {
       ...req.maxSlippageBps !== undefined ? { maxSlippageBps: req.maxSlippageBps } : {},
       payer: { type: "linked", linkedWalletId: req.payer.linkedWalletId },
       ...req.toWalletId !== undefined ? { toWalletId: req.toWalletId } : {},
-      ...req.clientTradeId !== undefined ? { clientTradeId: req.clientTradeId } : {}
+      ...req.clientTradeId !== undefined ? { clientTradeId: req.clientTradeId } : {},
+      ...hideField(req.hide)
     });
+    assertHideEchoed(askedHide, build, "swapFromLinked()");
     const signed = [];
     for (const unsignedTransactionBase64 of build.payload.transactionsBase64) {
       const result = await this.signLinkedTransaction({
@@ -6072,7 +6174,8 @@ class CandleClient {
       amountRaw: req.amountRaw,
       payer: req.from === "main" ? { type: "main" } : { type: "linked", linkedWalletId: req.from.linkedWalletId },
       ...req.maxSlippageBps !== undefined ? { maxSlippageBps: req.maxSlippageBps } : {},
-      ...req.quoteAsset !== undefined ? { quoteAsset: req.quoteAsset } : {}
+      ...req.quoteAsset !== undefined ? { quoteAsset: req.quoteAsset } : {},
+      ...hideField(req.hide)
     };
     const flow = req.from === "main" ? "server-executed" : "caller-broadcast";
     return this.runOperation({ clientTradeId }, flow, async (op) => {
@@ -6329,10 +6432,23 @@ class CandleClient {
   }
   async dryRunAtomicLaunch(req) {
     this.requireKey("dryRunAtomicLaunch()");
-    return this.requestJson("POST", "/api/v1/launch/atomic/dry-run", req);
+    const { hide, ...rest } = req;
+    const asked = hideRequested(hide);
+    const dry = await this.requestJson("POST", "/api/v1/launch/atomic/dry-run", {
+      ...rest,
+      ...hideField(hide)
+    });
+    assertHideEchoed(asked, dry, "dryRunAtomicLaunch()");
+    return dry;
   }
   async postAtomicBuild(body, clientLaunchId, op) {
-    const built = await this.requestJson("POST", "/api/v1/launch/atomic/build", body, op);
+    const { hide, ...rest } = body;
+    const asked = hideRequested(hide);
+    const built = await this.requestJson("POST", "/api/v1/launch/atomic/build", {
+      ...rest,
+      ...hideField(hide)
+    }, op);
+    assertHideEchoed(asked, built, "buildAtomicLaunch()");
     return { ...built, clientLaunchId };
   }
   async submitAtomicLaunch(req) {
@@ -7379,7 +7495,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.22";
+var SDK_VERSION = "0.6.23";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

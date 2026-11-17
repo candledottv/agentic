@@ -13,6 +13,7 @@ const keysMatch: Equal<keyof LaunchRequest, ExpectedKeys> = true
 const requestKeys = {
   wallet: true,
   clientLaunchId: true,
+  hide: true,
   name: true,
   symbol: true,
   imageUrl: true,

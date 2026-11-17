@@ -831,6 +831,22 @@ export declare const LAUNCH_DEFINITION: {
                 readonly key: "dryRun";
             };
         };
+    }, {
+        readonly key: "hide";
+        readonly type: "boolean";
+        readonly help: "Keep this launch and its dev buy out of the public activity stream. Candle drops its name, agent mark and stream entries for the launch, but the creator wallet is public on chain and can be traced to its owner. Not the same as visibility hidden, which hides the token. Sent only when set; the API confirms it, and a response without that confirmation is refused.";
+        readonly default: false;
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--hide";
+            };
+            readonly mcp: {
+                readonly key: "hide";
+            };
+            readonly sdk: {
+                readonly key: "hide";
+            };
+        };
     }];
 };
 export interface GeneratedLaunchFields {
@@ -881,5 +897,6 @@ export interface GeneratedLaunchFields {
         devBuyMaxRaw?: string;
     };
     dryRun?: boolean;
+    hide?: boolean;
 }
 //# sourceMappingURL=launch-definition.d.ts.map

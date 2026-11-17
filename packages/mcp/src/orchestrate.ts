@@ -27,6 +27,7 @@ import { randomUUID } from "node:crypto"
 import { isEvmChain, requireChain } from "./chains"
 import type { RequestConfig } from "./client"
 import { decimalToRaw, defaultQuoteId, percentOfBalance, QUOTE_DECIMALS } from "./convert"
+import { hideEchoed, hideField, hideNotConfirmedMessage, hideUnsupportedByDryRunMessage, isHideFlag } from "./hide"
 import { checkedFields, type ImageFs, imageRefusalBody, resolveLaunchImage, uploadedFields } from "./image"
 import { socialsRefusal } from "./launch-schema"
 import { requestAddressChain } from "./request-chain"
@@ -273,6 +274,8 @@ export interface TradeArgs {
   paper?: unknown
   /** Build and quote only; the trade fires on candle_trade_execute with the same clientTradeId. */
   deferExecution?: unknown
+  /** Keep this order out of the public activity stream; the API's echo is required. */
+  hide?: unknown
 }
 
 export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch: FetchLike): Promise<ToolText> {
@@ -297,6 +300,10 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
   // omitted `paper: true` after a paper buy, then MCP checked the wallet and 404'd the market).
   let paper = isPaperFlag(args.paper)
   const deferExecution = isPaperFlag(args.deferExecution)
+  const hide = isHideFlag(args.hide)
+  if (hide && paper) {
+    return errText("hide cannot be combined with paper; a paper trade is never in the public stream", { clientTradeId })
+  }
   if (deferExecution && paper) {
     return errText("deferExecution cannot be combined with paper; a paper trade records a quote and never executes", {
       clientTradeId,
@@ -474,10 +481,15 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
       // moved.
       ...(paper ? { paper: true } : {}),
       ...(deferExecution ? { deferExecution: true } : {}),
+      ...hideField(args.hide),
     },
     doFetch,
   )
   if ("thrown" in posted) return transportError("clientTradeId", clientTradeId, posted.thrown)
+  if (hide && posted.ok && !hideEchoed(posted.body)) {
+    // An API that predates `hide` ignored it. The build above may have executed, so say so.
+    return errText(hideNotConfirmedMessage("candle_trade"), { clientTradeId, api: posted.body })
+  }
   // One JSON document: clientTradeId and resolved at the top level (so an agent reading even
   // truncated output sees the retry id first), the API body verbatim under `api`, identical
   // shape on success and error paths.
@@ -513,6 +525,8 @@ export interface LaunchAndSeedArgs {
   visibility?: string
   devBuy?: string
   dryRun?: boolean
+  /** Keep the launch and its seed out of the public activity stream; the API's echo is required. */
+  hide?: unknown
   /**
    * Accepted only to be STRIPPED. This tool's seed input is `devBuy`, in decimal quote units;
    * forwarding a caller-supplied raw `buyAmount` would seed in units the tool never converted or
@@ -536,7 +550,8 @@ export async function executeLaunchAndSeed(
   const socialsProblem = socialsRefusal(args.socials)
   if (socialsProblem) return { text: imageRefusalBody(socialsProblem, { clientLaunchId }), isError: true }
   // buyAmount is destructured off and never forwarded: see LaunchAndSeedArgs.buyAmount.
-  const { devBuy, dryRun, buyAmount: _rawBuyAmount, ...imageFields } = args
+  const { devBuy, dryRun, hide: hideArg, buyAmount: _rawBuyAmount, ...imageFields } = args
+  const hide = isHideFlag(hideArg)
 
   let buyAmount: string | undefined
   if (devBuy !== undefined) {
@@ -582,13 +597,41 @@ export async function executeLaunchAndSeed(
   }
   if (atomic)
     return launchAndSeedAtomic(
-      { ...image.args, clientLaunchId },
+      { ...image.args, ...hideField(hide), clientLaunchId },
       buyAmount as string,
-      { clientLaunchId, uploaded, dryRun: dryRun === true, transportFailure },
+      { clientLaunchId, uploaded, dryRun: dryRun === true, transportFailure, hide },
       cfg,
       doFetch,
     )
 
+  // A hidden headless launch is gated on a dry run's echo first (design 5.6): an API that
+  // predates hide would publish the launch before the live response could be checked. The dry
+  // run publishes nothing, so a refusal here means nothing was launched.
+  if (hide && !dryRun) {
+    const probe = await postJson(
+      `${base(cfg)}/api/v1/launch/headless/dry-run`,
+      apiKey,
+      {
+        ...image.args,
+        clientLaunchId,
+        ...(buyAmount !== undefined ? { buyAmount } : {}),
+        ...hideField(hide),
+      },
+      doFetch,
+    )
+    if ("thrown" in probe) return transportFailure(probe.thrown)
+    if (!probe.ok) return { text: JSON.stringify({ clientLaunchId, ...uploaded, api: probe.body }), isError: true }
+    if (!hideEchoed(probe.body))
+      return {
+        text: JSON.stringify({
+          clientLaunchId,
+          ...uploaded,
+          error: hideUnsupportedByDryRunMessage("candle_launch_and_seed"),
+          api: probe.body,
+        }),
+        isError: true,
+      }
+  }
   const path = dryRun ? "/api/v1/launch/headless/dry-run" : "/api/v1/launch/headless"
   const posted = await postJson(
     `${base(cfg)}${path}`,
@@ -597,12 +640,24 @@ export async function executeLaunchAndSeed(
       ...image.args,
       clientLaunchId,
       ...(buyAmount !== undefined ? { buyAmount } : {}),
+      ...hideField(hide),
     },
     doFetch,
   )
   if ("thrown" in posted) return transportFailure(posted.thrown)
   if (!posted.ok) {
     return { text: JSON.stringify({ clientLaunchId, ...uploaded, api: posted.body }), isError: true }
+  }
+  if (hide && !hideEchoed(posted.body)) {
+    return {
+      text: JSON.stringify({
+        clientLaunchId,
+        ...uploaded,
+        error: hideNotConfirmedMessage("candle_launch_and_seed"),
+        api: posted.body,
+      }),
+      isError: true,
+    }
   }
   if (dryRun) {
     return { text: JSON.stringify({ clientLaunchId, dryRun: true, ...uploaded, api: posted.body }) }
@@ -724,6 +779,7 @@ async function launchAndSeedAtomic(
     clientLaunchId: string
     uploaded: Record<string, unknown>
     dryRun: boolean
+    hide: boolean
     transportFailure: (thrown: unknown) => ToolText
   },
   cfg: RequestConfig,
@@ -744,6 +800,9 @@ async function launchAndSeedAtomic(
   )
   if ("thrown" in built) return ctx.transportFailure(built.thrown)
   if (!built.ok) return failed(built.body)
+  // Before anything is submitted: a build without the echo is never signed, so nothing goes public.
+  if (ctx.hide && !hideEchoed(built.body))
+    return failed(built.body, { error: hideNotConfirmedMessage("candle_launch_and_seed") })
   if (ctx.dryRun) return { text: JSON.stringify({ clientLaunchId, dryRun: true, ...uploaded, api: built.body }) }
 
   const bundle = built.body as { bundleId?: unknown; legs?: Array<{ signer?: unknown }> }

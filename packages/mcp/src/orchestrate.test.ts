@@ -1832,3 +1832,124 @@ test("external market 200 uses the selected quote asset scale for a buy", async 
   expect(result.isError).toBeUndefined()
   expect(JSON.parse(String(calls[1]?.init?.body)).amountRaw).toBe("1000000")
 })
+
+describe("executeTrade and executeLaunchAndSeed: hide (agent-stream S)", () => {
+  const MINT = "M1nt1111111111111111111111111111"
+  const tradeRoutes = (build: unknown) => ({
+    [`https://api.test/api/v1/markets/solana/${MINT}`]: SOL_MARKET,
+    "https://api.test/api/v1/trade/agent/build": { body: build },
+  })
+
+  test("hide: true reaches /build and a live trade carries no such key", async () => {
+    for (const [hide, expected] of [
+      [true, true],
+      ["true", true],
+      [undefined, false],
+      [false, false],
+    ] as const) {
+      const { calls, fetch } = fakeFetch(tradeRoutes({ ...EXECUTED, hide: true }))
+      await executeTrade({ mint: MINT, side: "buy", amount: "0.5", clientTradeId: "h-1", hide }, CFG, fetch)
+      const raw = String(calls[1]?.init?.body)
+      expect(raw.includes("hide")).toBe(expected)
+    }
+  })
+
+  test("a hidden trade whose response lacks the echo is an error", async () => {
+    const { fetch } = fakeFetch(tradeRoutes(EXECUTED))
+    const result = await executeTrade(
+      { mint: MINT, side: "buy", amount: "0.5", clientTradeId: "h-2", hide: true },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("HIDE_NOT_CONFIRMED")
+  })
+
+  test("hide with paper is refused before anything is sent", async () => {
+    const { calls, fetch } = fakeFetch({})
+    const result = await executeTrade(
+      { mint: MINT, side: "buy", amount: "0.5", clientTradeId: "h-3", hide: true, paper: true },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBe(true)
+    expect(calls.length).toBe(0)
+  })
+
+  test("launch and seed on Hood: hide is forwarded and its echo required", async () => {
+    const args = {
+      name: "N",
+      symbol: "S",
+      imageUrl: "https://x.test/i.png",
+      chain: "hood",
+      clientLaunchId: "l-1",
+      hide: true,
+    }
+    const ok = fakeFetch({
+      "https://api.test/api/v1/launch/headless/dry-run": { body: { success: true, hide: true, dryRun: true } },
+      "https://api.test/api/v1/launch/headless": { body: { success: true, hide: true, chain: "hood", mint: "0xabc" } },
+      "https://api.test/api/v1/markets": { body: { success: true, market: {} } },
+    })
+    await executeLaunchAndSeed(args, CFG, ok.fetch)
+    expect(JSON.parse(String(ok.calls[1]?.init?.body)).hide).toBe(true)
+
+    const stale = fakeFetch({
+      "https://api.test/api/v1/launch/headless": { body: { success: true, chain: "hood", mint: "0xabc" } },
+    })
+    const result = await executeLaunchAndSeed(args, CFG, stale.fetch)
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("HIDE_NOT_CONFIRMED")
+  })
+
+  test("a hidden launch on a stale API is refused at the dry run: no live launch request", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/launch/headless": { body: LAUNCHED },
+    })
+    const result = await executeLaunchAndSeed(
+      { clientLaunchId: "l-stale", name: "T", symbol: "T", imageUrl: "https://x/y.png", hide: true },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBe(true)
+    const parsed = JSON.parse(result.text)
+    expect(parsed.error).toContain("HIDE_NOT_CONFIRMED")
+    expect(parsed.error).toContain("no launch was sent")
+    // The prefix route matched the dry run; the live POST must never have been sent.
+    expect(calls.length).toBe(1)
+    expect(calls[0]?.url).toBe("https://api.test/api/v1/launch/headless/dry-run")
+  })
+
+  test("a hidden launch the dry run confirms goes dry-run first, then live", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/launch/headless/dry-run": { body: { success: true, hide: true, dryRun: true } },
+      "https://api.test/api/v1/launch/headless": { body: { ...LAUNCHED, hide: true } },
+      "https://api.test/api/v1/markets": { body: { success: true, market: {} } },
+    })
+    const result = await executeLaunchAndSeed(
+      { clientLaunchId: "l-gated", name: "T", symbol: "T", imageUrl: "https://x/y.png", hide: true },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBeUndefined()
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.test/api/v1/launch/headless/dry-run",
+      "https://api.test/api/v1/launch/headless",
+      "https://api.test/api/v1/markets/solana/NewMint1111111111111111111111111",
+    ])
+    expect(JSON.parse(String(calls[0]?.init?.body)).hide).toBe(true)
+  })
+
+  test("a hidden dry run needs no gate: it is its own gate", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/launch/headless/dry-run": { body: { success: true, dryRun: true } },
+    })
+    const result = await executeLaunchAndSeed(
+      { clientLaunchId: "l-dry", name: "T", symbol: "T", imageUrl: "https://x/y.png", dryRun: true, hide: true },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("HIDE_NOT_CONFIRMED")
+    expect(calls.length).toBe(1)
+  })
+})

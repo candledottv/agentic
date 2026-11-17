@@ -5963,7 +5963,7 @@ var init_token_clusters = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.33";
+var SERVER_VERSION = "0.10.34";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -6069,6 +6069,46 @@ var init_convert = __esm(() => {
     usdg: 6
   };
   DECIMAL_RE = /^\d+(\.\d+)?$/;
+});
+
+// ../mcp/src/hide.ts
+function isHideFlag(value) {
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+function hideField(value) {
+  return isHideFlag(value) ? { hide: true } : {};
+}
+function hideEchoed(body) {
+  return typeof body === "object" && body !== null && body.hide === true;
+}
+function hideEchoedText(text) {
+  try {
+    return hideEchoed(JSON.parse(text));
+  } catch {
+    return false;
+  }
+}
+function hideNotConfirmedMessage(what) {
+  return `${HIDE_NOT_CONFIRMED}: ${what} asked for hide, but the API did not confirm it. Its server may predate hide, ` + "so the order may have been placed publicly. Read the order back before sending another.";
+}
+function hideUnsupportedByDryRunMessage(what) {
+  return `${HIDE_NOT_CONFIRMED}: ${what} asked for hide, but the API's dry run did not confirm it. ` + "Its server has not enabled hide yet. The dry run published nothing and no launch was sent; " + "retry without hide, or after the API enables it.";
+}
+function missingHideEcho(asked, text, what) {
+  if (!asked)
+    return;
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = undefined;
+  }
+  return hideEchoed(body) ? undefined : hideNotConfirmedMessage(what);
+}
+var HIDE_NOT_CONFIRMED = "HIDE_NOT_CONFIRMED", hideSchema;
+var init_hide = __esm(() => {
+  init_zod();
+  hideSchema = exports_external.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, exports_external.boolean().optional().describe("Keep this order out of the public activity stream. Sent only when true. The API confirms it; " + "a result without that confirmation is an error, because an API that does not know `hide` " + "would place the order publicly. Hidden orders still count in this key's own record. " + "A refusal means the API has not enabled hide yet: nothing was placed."));
 });
 
 // ../mcp/src/image.ts
@@ -7558,6 +7598,23 @@ var init_launch_definition = __esm(() => {
             key: "dryRun"
           }
         }
+      },
+      {
+        key: "hide",
+        type: "boolean",
+        help: "Keep this launch and its dev buy out of the public activity stream. Candle drops its name, agent mark and stream entries for the launch, but the creator wallet is public on chain and can be traced to its owner. Not the same as visibility hidden, which hides the token. Sent only when set; the API confirms it, and a response without that confirmation is refused.",
+        default: false,
+        surfaces: {
+          cli: {
+            flag: "--hide"
+          },
+          mcp: {
+            key: "hide"
+          },
+          sdk: {
+            key: "hide"
+          }
+        }
       }
     ]
   };
@@ -8075,6 +8132,10 @@ async function executeTrade(args, cfg, doFetch) {
   let resolved = {};
   let paper = isPaperFlag(args.paper);
   const deferExecution = isPaperFlag(args.deferExecution);
+  const hide = isHideFlag(args.hide);
+  if (hide && paper) {
+    return errText("hide cannot be combined with paper; a paper trade is never in the public stream", { clientTradeId });
+  }
   if (deferExecution && paper) {
     return errText("deferExecution cannot be combined with paper; a paper trade records a quote and never executes", {
       clientTradeId
@@ -8201,10 +8262,14 @@ async function executeTrade(args, cfg, doFetch) {
     ...args.quoteAsset !== undefined ? { quoteAsset: args.quoteAsset } : {},
     ...args.maxSlippageBps !== undefined ? { maxSlippageBps: args.maxSlippageBps } : {},
     ...paper ? { paper: true } : {},
-    ...deferExecution ? { deferExecution: true } : {}
+    ...deferExecution ? { deferExecution: true } : {},
+    ...hideField(args.hide)
   }, doFetch);
   if ("thrown" in posted)
     return transportError("clientTradeId", clientTradeId, posted.thrown);
+  if (hide && posted.ok && !hideEchoed(posted.body)) {
+    return errText(hideNotConfirmedMessage("candle_trade"), { clientTradeId, api: posted.body });
+  }
   const wrapped = JSON.stringify({ clientTradeId, resolved, api: posted.body });
   return posted.ok ? { text: wrapped } : { text: wrapped, isError: true };
 }
@@ -8214,7 +8279,8 @@ async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs, opts 
   const socialsProblem = socialsRefusal(args.socials);
   if (socialsProblem)
     return { text: imageRefusalBody(socialsProblem, { clientLaunchId }), isError: true };
-  const { devBuy, dryRun, buyAmount: _rawBuyAmount, ...imageFields } = args;
+  const { devBuy, dryRun, hide: hideArg, buyAmount: _rawBuyAmount, ...imageFields } = args;
+  const hide = isHideFlag(hideArg);
   let buyAmount;
   if (devBuy !== undefined) {
     const q = quoteIdDecimals(args.quoteAsset, args.chain, { clientLaunchId });
@@ -8249,17 +8315,51 @@ async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs, opts 
     return Object.keys(uploaded).length === 0 ? failed : { ...failed, text: JSON.stringify({ ...JSON.parse(failed.text), ...uploaded }) };
   };
   if (atomic)
-    return launchAndSeedAtomic({ ...image.args, clientLaunchId }, buyAmount, { clientLaunchId, uploaded, dryRun: dryRun === true, transportFailure }, cfg, doFetch);
+    return launchAndSeedAtomic({ ...image.args, ...hideField(hide), clientLaunchId }, buyAmount, { clientLaunchId, uploaded, dryRun: dryRun === true, transportFailure, hide }, cfg, doFetch);
+  if (hide && !dryRun) {
+    const probe = await postJson(`${base(cfg)}/api/v1/launch/headless/dry-run`, apiKey, {
+      ...image.args,
+      clientLaunchId,
+      ...buyAmount !== undefined ? { buyAmount } : {},
+      ...hideField(hide)
+    }, doFetch);
+    if ("thrown" in probe)
+      return transportFailure(probe.thrown);
+    if (!probe.ok)
+      return { text: JSON.stringify({ clientLaunchId, ...uploaded, api: probe.body }), isError: true };
+    if (!hideEchoed(probe.body))
+      return {
+        text: JSON.stringify({
+          clientLaunchId,
+          ...uploaded,
+          error: hideUnsupportedByDryRunMessage("candle_launch_and_seed"),
+          api: probe.body
+        }),
+        isError: true
+      };
+  }
   const path = dryRun ? "/api/v1/launch/headless/dry-run" : "/api/v1/launch/headless";
   const posted = await postJson(`${base(cfg)}${path}`, apiKey, {
     ...image.args,
     clientLaunchId,
-    ...buyAmount !== undefined ? { buyAmount } : {}
+    ...buyAmount !== undefined ? { buyAmount } : {},
+    ...hideField(hide)
   }, doFetch);
   if ("thrown" in posted)
     return transportFailure(posted.thrown);
   if (!posted.ok) {
     return { text: JSON.stringify({ clientLaunchId, ...uploaded, api: posted.body }), isError: true };
+  }
+  if (hide && !hideEchoed(posted.body)) {
+    return {
+      text: JSON.stringify({
+        clientLaunchId,
+        ...uploaded,
+        error: hideNotConfirmedMessage("candle_launch_and_seed"),
+        api: posted.body
+      }),
+      isError: true
+    };
   }
   if (dryRun) {
     return { text: JSON.stringify({ clientLaunchId, dryRun: true, ...uploaded, api: posted.body }) };
@@ -8338,6 +8438,8 @@ async function launchAndSeedAtomic(launchBody, buyAmount, ctx, cfg, doFetch) {
     return ctx.transportFailure(built.thrown);
   if (!built.ok)
     return failed(built.body);
+  if (ctx.hide && !hideEchoed(built.body))
+    return failed(built.body, { error: hideNotConfirmedMessage("candle_launch_and_seed") });
   if (ctx.dryRun)
     return { text: JSON.stringify({ clientLaunchId, dryRun: true, ...uploaded, api: built.body }) };
   const bundle = built.body;
@@ -8520,6 +8622,7 @@ var SOLANA_SEED_CEILINGS, MAIN_PAYER, SWEEP_BASE_ASSETS, TEE_SPEND_SCOPES, STOP_
 var init_orchestrate = __esm(() => {
   init_chains();
   init_convert();
+  init_hide();
   init_image();
   init_launch_schema();
   init_request_chain();
@@ -13314,7 +13417,7 @@ function jsonHeaders(apiKey) {
   return headers2;
 }
 function swapBody(args) {
-  const { amount, amountRaw, ...rest } = args;
+  const { amount, amountRaw, hide, ...rest } = args;
   const hasAmount = typeof amount === "string" && amount.length > 0;
   const hasRaw = typeof amountRaw === "string" && amountRaw.length > 0;
   if (hasAmount && hasRaw) {
@@ -13324,13 +13427,13 @@ function swapBody(args) {
     throw new Error('Pass an amount, e.g. amount: "0.5".');
   }
   if (hasRaw)
-    return { ...rest, amountRaw };
+    return { ...rest, ...hideField(hide), amountRaw };
   const from = String(rest.from ?? "").toLowerCase();
   const decimals = QUOTE_DECIMALS[from];
   if (decimals === undefined) {
     throw new Error(`Unknown decimals for base asset "${from}". Pass amountRaw instead.`);
   }
-  return { ...rest, amountRaw: decimalToRaw(amount, decimals) };
+  return { ...rest, ...hideField(hide), amountRaw: decimalToRaw(amount, decimals) };
 }
 function buildRequest(name, args, cfg) {
   const base2 = cfg.apiUrl.replace(/\/$/, "");
@@ -13339,7 +13442,8 @@ function buildRequest(name, args, cfg) {
   switch (name) {
     case "candle_launch_token": {
       const apiKey = requireApiKey2(cfg);
-      const { dryRun, ...body } = args;
+      const { dryRun, hide, ...body } = args;
+      Object.assign(body, hideField(hide));
       const path = dryRun ? "/api/v1/launch/headless/dry-run" : "/api/v1/launch/headless";
       return {
         url: `${base2}${path}`,
@@ -13853,6 +13957,13 @@ async function swap(args, cfg, doFetch) {
     return { content: [{ type: "text", text: failed.text }], isError: true };
   }
   const answered = body;
+  if (ok && isHideFlag(args.hide) && answered.hide !== true) {
+    const unconfirmed = missingHideEcho(true, JSON.stringify(answered), "candle_swap");
+    return {
+      content: [{ type: "text", text: JSON.stringify({ clientSwapId, error: unconfirmed, api: answered }) }],
+      isError: true
+    };
+  }
   const next = ok ? null : recoveryNext(answered, clientSwapId, "swap");
   return {
     content: [
@@ -14020,7 +14131,29 @@ function registerToolSubset(server, options) {
     }
     if ("uploadFailed" in image)
       return { content: [{ type: "text", text: image.uploadFailed }], isError: true };
-    const relayed = await callAndRelay("candle_launch_token", image.args, getConfig(), doFetch);
+    if (isHideFlag(image.args.hide) && image.args.dryRun !== true) {
+      const probe = await callAndRelay("candle_launch_token", { ...image.args, dryRun: true }, getConfig(), doFetch);
+      if (probe.isError)
+        return probe;
+      if (!hideEchoedText(probe.content[0]?.text ?? ""))
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: hideUnsupportedByDryRunMessage("candle_launch_token") })
+            }
+          ],
+          isError: true
+        };
+    }
+    const launched = await callAndRelay("candle_launch_token", image.args, getConfig(), doFetch);
+    const unconfirmed = launched.isError ? undefined : missingHideEcho(isHideFlag(image.args.hide), launched.content[0]?.text ?? "", "candle_launch_token");
+    const relayed = unconfirmed ? {
+      content: [
+        { type: "text", text: JSON.stringify({ error: unconfirmed, api: launched.content[0]?.text }) }
+      ],
+      isError: true
+    } : launched;
     if (image.checked) {
       const note = JSON.stringify(checkedFields(image));
       return { ...relayed, content: [...relayed.content, { type: "text", text: note }] };
@@ -14629,6 +14762,7 @@ var init_tools = __esm(() => {
   init_client2();
   init_cluster_read();
   init_convert();
+  init_hide();
   init_image();
   init_lab_tools();
   init_launch_check();
@@ -14940,7 +15074,8 @@ var init_tools = __esm(() => {
     amount: exports_external.string().optional().describe('Decimal amount of `from` to spend, e.g. "0.5". Preferred. Pass exactly one of amount or amountRaw.'),
     amountRaw: exports_external.string().optional().describe("Raw base units of `from`, as a positive integer string. Kept for callers that already " + "compute raw units; new callers should use `amount`."),
     maxSlippageBps: exports_external.number().int().min(0).max(5000).optional().describe("Slippage bound in bps, 0-5000 (50%). Server defaults to 100 (1%)"),
-    clientSwapId: exports_external.string().optional().describe("Durable idempotency key. Same id + same from/to/amountRaw/effective slippage (omitted means " + "100 bps) replays the stored result, including an indeterminate SWAP_FAILED with the " + "signature in the message. A different body is rejected. Omit it and one is generated, " + "sent with the swap and returned in the result as `clientSwapId`: keep it, so a retry after " + "a timeout returns that stored result.")
+    clientSwapId: exports_external.string().optional().describe("Durable idempotency key. Same id + same from/to/amountRaw/effective slippage (omitted means " + "100 bps) replays the stored result, including an indeterminate SWAP_FAILED with the " + "signature in the message. A different body is rejected. Omit it and one is generated, " + "sent with the swap and returned in the result as `clientSwapId`: keep it, so a retry after " + "a timeout returns that stored result."),
+    hide: hideSchema
   };
   tradeShape = {
     mint: exports_external.string().describe("Token mint (solana) or contract address (hood)"),
@@ -14951,7 +15086,8 @@ var init_tools = __esm(() => {
     maxSlippageBps: exports_external.number().int().min(0).max(5000).optional().describe("Slippage bound in bps, 0-5000 (50%). Server defaults to 100 (1%)"),
     clientTradeId: exports_external.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade."),
     paper: exports_external.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, exports_external.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost. " + "A sell of a mint this key already paper-bought also closes that paper book when the " + "live wallet is empty, even if this flag is omitted.")),
-    deferExecution: exports_external.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, exports_external.boolean().optional().describe("Quote first, spend later. The trade is built and the result carries the quote with " + 'status "built"; NOTHING is signed or spent until candle_trade_execute is called with the same ' + "clientTradeId. The build holds for 30 minutes; executing after that is QUOTE_EXPIRED and you " + "build again for a fresh quote. Rebuilding with the same clientTradeId re-quotes it, until it has " + "been sent to candle_trade_execute. There is no cancel: let an unwanted build expire. Cannot be " + "combined with `paper`."))
+    deferExecution: exports_external.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, exports_external.boolean().optional().describe("Quote first, spend later. The trade is built and the result carries the quote with " + 'status "built"; NOTHING is signed or spent until candle_trade_execute is called with the same ' + "clientTradeId. The build holds for 30 minutes; executing after that is QUOTE_EXPIRED and you " + "build again for a fresh quote. Rebuilding with the same clientTradeId re-quotes it, until it has " + "been sent to candle_trade_execute. There is no cancel: let an unwanted build expire. Cannot be " + "combined with `paper`.")),
+    hide: hideSchema
   };
   tradeExecuteShape = {
     clientTradeId: exports_external.string().min(1).describe("The clientTradeId of a candle_trade built with deferExecution: true. Nothing else is accepted.")
@@ -78852,6 +78988,23 @@ var LAUNCH_DEFINITION2 = {
           key: "dryRun"
         }
       }
+    },
+    {
+      key: "hide",
+      type: "boolean",
+      help: "Keep this launch and its dev buy out of the public activity stream. Candle drops its name, agent mark and stream entries for the launch, but the creator wallet is public on chain and can be traced to its owner. Not the same as visibility hidden, which hides the token. Sent only when set; the API confirms it, and a response without that confirmation is refused.",
+      default: false,
+      surfaces: {
+        cli: {
+          flag: "--hide"
+        },
+        mcp: {
+          key: "hide"
+        },
+        sdk: {
+          key: "hide"
+        }
+      }
     }
   ]
 };
@@ -96285,6 +96438,8 @@ async function launch(args, ctx) {
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID9()}`;
   const embedded = EMBEDDED_WALLET_NAMES.has(flags["--wallet"] ?? "");
   const dryRun = parsed.booleans.has("--dry-run");
+  if (parsed.booleans.has("--hide"))
+    flags["--hide"] = "true";
   const check2 = parsed.booleans.has("--check");
   if (check2 && dryRun) {
     writeUsageFailure(ctx.deps, `--check and --dry-run are two different stops; pass one. ${USAGE11}`, ctx.json);
@@ -96482,7 +96637,7 @@ async function launch(args, ctx) {
     writeFields(ctx.deps, "stderr", [["Operation", id]]);
     const answer2 = await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody({ flags, id, wallet: wallet3, buy, imageUrl, bannerUrl, rules })).catch((error) => {
       throw buyRefusal(error);
-    });
+    }).then((answered) => requireHideEcho(flags, answered));
     const built = launchBuildSchema.parse(answer2);
     if (!built.transaction || !/^\d+$/.test(built.maxDebitLamports ?? ""))
       throw new TradingError("INVALID_RESPONSE", "Candle did not return a launch transaction and maximum debit; nothing was signed.");
@@ -96615,8 +96770,19 @@ function launchFields(args) {
     ...launchCurveFields(flags),
     ...launchMetadataFields(flags),
     ...poolRequestFields(flags),
-    ...args.rules ? { launchRules: args.rules } : {}
+    ...args.rules ? { launchRules: args.rules } : {},
+    ...hideBodyField(flags)
   };
+}
+function hideBodyField(flags) {
+  return flags["--hide"] === "true" ? { hide: true } : {};
+}
+function requireHideEcho(flags, answer2) {
+  if (flags["--hide"] !== "true")
+    return answer2;
+  if (answer2 !== null && typeof answer2 === "object" && answer2.hide === true)
+    return answer2;
+  throw new TradingError("HIDE_NOT_CONFIRMED", "--hide was passed, but the API did not confirm it (its server may predate hide), so the launch was not signed or sent. Nothing public was recorded by this CLI.");
 }
 function solanaSelfBody(args) {
   const quoteAsset = args.flags["--quote-asset"];
@@ -96721,7 +96887,7 @@ async function dryRunLaunch(ctx, key, args) {
   const body = chain2 === "hood" ? hoodBody(args) : solanaSelfBody(args);
   const answer2 = await request(ctx, key, path, body).catch((error) => {
     throw buyRefusal(error);
-  });
+  }).then((answered) => requireHideEcho(args.flags, answered));
   ctx.deps.stderr.write(`Dry run: nothing was built, signed or recorded, and launch id ${args.id} is unused.
 ${previewLines(answer2, chain2, feeWalletSelection(args.flags))}`);
   return printTradingResult(ctx, { ...answer2, clientTradeId: args.id, kind: "launch", ...args.used });
@@ -96800,7 +96966,7 @@ async function atomicLaunch(ctx, key, args) {
   writeFields(ctx.deps, "stderr", [["Operation", id]]);
   const answer2 = await request(ctx, key, "/api/v1/launch/self/build", solanaSelfBody(args)).catch((error) => {
     throw buyRefusal(error);
-  });
+  }).then((answered) => requireHideEcho(flags, answered));
   const built = atomicBuildSchema.parse(answer2);
   const [launchLeg, buyLeg] = built.legs;
   if (built.legs.length !== 2 || launchLeg?.role !== "launch" || buyLeg?.role !== "buy" || built.legs.some((leg, index) => leg.index !== index || leg.signer !== "client" || !leg.unsignedTxBase64))
@@ -96987,9 +97153,10 @@ async function embeddedLaunch(ctx, key, args) {
     ...poolRequestFields(flags),
     ...feeWalletRequestFields(flags),
     ...args.rules ? { launchRules: args.rules } : {},
+    ...hideBodyField(flags),
     ...buy ? { buyAmount: chain2 === "hood" || BigInt(buy.raw) > BigInt(Number.MAX_SAFE_INTEGER) ? buy.raw : Number(buy.raw) } : {}
   };
-  const answer2 = await request(ctx, key, "/api/v1/launch/headless/dry-run", body);
+  const answer2 = requireHideEcho(flags, await request(ctx, key, "/api/v1/launch/headless/dry-run", body));
   let quote = {
     intent: `Launch ${flags["--name"]} (${flags["--symbol"]})${buy ? ` with a first buy of ${buy.display}` : ""} from the embedded wallet`,
     wallet: wallet3,
@@ -97125,7 +97292,7 @@ async function hoodLaunch(ctx, key, args) {
   writeFields(ctx.deps, "stderr", [["Operation", id]]);
   const built = await request(ctx, key, "/api/v1/launch/self/build", hoodBody(args)).catch((error) => {
     throw buyRefusal(error);
-  });
+  }).then((answered) => requireHideEcho(args.flags, answered));
   const parsed = sequencedSchema.safeParse(built);
   if (!parsed.success)
     throw new TradingError("SEQUENCED_RAIL_REQUIRED", "A Hood TEE wallet launches one leg at a time, and this Candle deployment did not answer with a sequenced leg. Nothing was signed.");
