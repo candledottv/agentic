@@ -15,6 +15,7 @@ import {
   compileLegacyMessage,
   createAssociatedTokenAccountIdempotent,
   decodePubkey,
+  definiteSendRejection,
   encodePubkey,
   type Instruction,
   isRateLimited,
@@ -382,6 +383,12 @@ function tokenAccountAmount(data: Uint8Array): bigint {
  * hold the amount (a token move), or the transfer refuses here with nothing signed. A missing fee
  * quote is costed at one signature's base fee. Reads go through the caller's client, so a rate
  * limit is the usual `RPC_RATE_LIMITED` before any signature.
+ *
+ * 2026-11-16 (vault transfer drops): the fee payer must also be left either empty or at least at
+ * the rent floor of a plain system account. A send that leaves 0 < remainder < floor is refused by
+ * the chain (`InsufficientFundsForRent` on the payer), so it is refused here, with the largest
+ * amount that would pass, before anything is signed. Computing "balance minus floor" without the
+ * fee produced eight such sends in one operator session, each reported as "Submitted".
  */
 export async function assertTransferAffordable(
   solana: SolanaClient,
@@ -411,12 +418,12 @@ export async function assertTransferAffordable(
       )
     }
   }
+  const parts = [
+    ...(plan.asset === "SOL" ? [`${plan.amountRaw} to send`] : []),
+    `${fee} fee${feeQuote === null ? " (estimated)" : ""}`,
+    ...(rent > 0n ? [`${rent} token account rent`] : []),
+  ]
   if (lamports < lamportsNeeded) {
-    const parts = [
-      ...(plan.asset === "SOL" ? [`${plan.amountRaw} to send`] : []),
-      `${fee} fee${feeQuote === null ? " (estimated)" : ""}`,
-      ...(rent > 0n ? [`${rent} token account rent`] : []),
-    ]
     throw new VaultError(
       "TRANSFER_INSUFFICIENT_FUNDS",
       `${plan.from} holds ${lamports} lamports and this transfer needs ${lamportsNeeded} (${parts.join(" + ")}). Nothing was signed or sent.`,
@@ -427,6 +434,37 @@ export async function assertTransferAffordable(
       },
     )
   }
+  const remainder = lamports - lamportsNeeded
+  if (remainder > 0n) {
+    const floor = await solana.read(() => solana.rpc.getMinimumBalanceForRentExemption(0))
+    if (remainder < floor) {
+      const maxSol = plan.asset === "SOL" ? plan.amountRaw - (floor - remainder) : null
+      throw new VaultError(
+        "TRANSFER_INSUFFICIENT_FUNDS",
+        `${plan.from} holds ${lamports} lamports; after this transfer (${parts.join(" + ")}) it would keep ${remainder}, below the ${floor}-lamport rent floor, and the chain refuses that. Nothing was signed or sent.`,
+        {
+          suggestion:
+            maxSol !== null && maxSol > 0n
+              ? `Send at most ${maxSol} lamports (${formatLamports(maxSol)} SOL) to keep the floor, or empty the key with --max.`
+              : "Fund the key with SOL first so it keeps the rent floor after the fee, or empty it with --max.",
+          details: {
+            from: plan.from,
+            heldLamports: lamports.toString(),
+            neededLamports: lamportsNeeded.toString(),
+            remainderLamports: remainder.toString(),
+            rentFloorLamports: floor.toString(),
+            ...(maxSol !== null && maxSol > 0n ? { maxSendLamports: maxSol.toString() } : {}),
+          },
+        },
+      )
+    }
+  }
+}
+
+function formatLamports(lamports: bigint): string {
+  const whole = lamports / 1_000_000_000n
+  const frac = (lamports % 1_000_000_000n).toString().padStart(9, "0").replace(/0+$/, "")
+  return frac === "" ? whole.toString() : `${whole}.${frac}`
 }
 
 export function displayTransferPlan(ctx: CommandContext, plan: TransferPlan, feeQuote: bigint | null): void {
@@ -436,10 +474,27 @@ export function displayTransferPlan(ctx: CommandContext, plan: TransferPlan, fee
   else ctx.deps.stdout.write(`  fee quote  (unavailable)\n`)
 }
 
+/** Account index of an `InsufficientFundsForRent` simulation error (`err` is the JSON string), else null. */
+function rentAccountIndex(err: string | null): number | null {
+  const match = err === null ? null : /"InsufficientFundsForRent"\s*:\s*\{\s*"account_index"\s*:\s*(\d+)/.exec(err)
+  return match ? Number(match[1]) : null
+}
+
+function preflightSuggestion(err: string | null): string {
+  const index = rentAccountIndex(err)
+  const payer = "the payer would keep less than the rent floor: send less, or empty the key with --max"
+  const receiver = "the receiving account would hold less than the rent floor: send at least the floor"
+  if (index === 0) return `Fix the cause and send again. InsufficientFundsForRent means ${payer}.`
+  if (index !== null) return `Fix the cause and send again. InsufficientFundsForRent means ${receiver}.`
+  return `Fix the cause and send again. If this is InsufficientFundsForRent, either ${payer}, or ${receiver}.`
+}
+
 /**
  * Signs and sends. The blockhash read is before the signature: a rate limit there is D3's
- * `RPC_RATE_LIMITED`, exit 1. The send and the status reads after it are the existing uncertain
- * outcome (`finalized: false`, exit 3 at the caller) whatever threw; when what threw was a rate
+ * `RPC_RATE_LIMITED`, exit 1. A definite preflight refusal of the send (a `-32002` simulation
+ * failure, or a node behind the context floor) throws `TRANSFER_REJECTED`, exit 1: nothing was
+ * broadcast. Everything else, the send's other failures and the status reads after it, stays the
+ * uncertain outcome (`finalized: false`, exit 3 at the caller); when what threw was a rate
  * limit, D4's line and the fix are added on stderr, and nothing is ever re-sent.
  */
 export async function signAndBroadcastTransfer(input: {
@@ -468,7 +523,34 @@ export async function signAndBroadcastTransfer(input: {
   try {
     await rpc.sendTransaction(toBase64(wire))
   } catch (error) {
-    // A failed response cannot prove the transaction was not accepted. Keep its pending receipt.
+    // 2026-11-16: a preflight refusal (`-32002` with a simulation error) or a node behind the
+    // context floor (`-32016`) is definite: the RPC did not forward the bytes, so nothing was
+    // broadcast and no fee was charged. It was reported as "Submitted" before, which read as a
+    // silent network drop. Any pending receipt is reconciled on a rerun, as for a chain failure.
+    const rejection = definiteSendRejection(error)
+    if (rejection !== null) {
+      const cause =
+        rejection.reason === "preflight-failed"
+          ? `its simulation failed: ${rejection.diagnostics?.err ?? "unknown error"}`
+          : "the node was behind the required slot"
+      throw new VaultError(
+        "TRANSFER_REJECTED",
+        `The RPC refused this transfer before broadcasting it (${cause}). Nothing was broadcast and no fee was charged.`,
+        {
+          suggestion:
+            rejection.reason === "preflight-failed"
+              ? preflightSuggestion(rejection.diagnostics?.err ?? null)
+              : "Retry in a moment, or with another RPC (--rpc-url).",
+          details: {
+            signature: sigB58,
+            reason: rejection.reason,
+            rpcCode: String(rejection.rpcCode),
+            ...(rejection.diagnostics?.err ? { simulationErr: rejection.diagnostics.err } : {}),
+          },
+        },
+      )
+    }
+    // Any other failed response cannot prove the transaction was not accepted. Keep its pending receipt.
     if (isRateLimited(error)) notePostSignatureRateLimit(input.ctx, sigB58)
     return { signature: sigB58, finalized: false, seen: true }
   }

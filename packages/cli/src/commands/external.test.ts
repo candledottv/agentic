@@ -268,6 +268,7 @@ function fundRpc() {
     getLatestBlockhash: () => ({ value: { blockhash: BLOCKHASH } }),
     getFeeForMessage: () => ({ value: 5000 }),
     getBalance: () => ({ value: 10_000_000_000 }),
+    getMinimumBalanceForRentExemption: () => 650_240,
     sendTransaction: (params) => {
       const tx = Transaction.from(Buffer.from(String((params as string[])[0]), "base64"))
       expect(tx.verifySignatures()).toBe(true)
@@ -350,6 +351,7 @@ function sweepRpc(opts: { lamports?: number } = {}) {
   const rpc = rpcFake({
     getTokenAccountsByOwner: () => ({ value: [] }),
     getBalance: () => ({ value: opts.lamports ?? 1_000_000 }),
+    getMinimumBalanceForRentExemption: () => 650_240,
     getLatestBlockhash: () => ({ value: { blockhash: BLOCKHASH } }),
     getFeeForMessage: () => ({ value: 5000 }),
     sendTransaction: (params) => {
@@ -458,6 +460,7 @@ describe("BE-355 T11: a rate-limited send during external sweep", () => {
     const rpc = rpcFake({
       getTokenAccountsByOwner: () => ({ value: [] }),
       getBalance: () => ({ value: 1_000_000 }),
+      getMinimumBalanceForRentExemption: () => 650_240,
       getLatestBlockhash: () => ({ value: { blockhash: BLOCKHASH } }),
       getFeeForMessage: () => ({ value: 5000 }),
       sendTransaction: () => new Response("rate limited", { status: 429 }),

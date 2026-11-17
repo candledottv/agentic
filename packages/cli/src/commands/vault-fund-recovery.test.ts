@@ -41,6 +41,8 @@ async function fixture() {
           return reply({ value: params[0] === teeAddress ? lamports : 10_000_000_000 })
         case "getTokenAccountsByOwner":
           return reply({ value: [] })
+        case "getMinimumBalanceForRentExemption":
+          return reply(650_240)
         case "getSignatureStatuses":
           expect(signatures.length ? params[0][0] : true).toBe(signatures.at(-1) ?? true)
           if (fault === "status") throw new Error("flaky RPC with secret endpoint detail")

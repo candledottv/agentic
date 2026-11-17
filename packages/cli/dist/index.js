@@ -21989,6 +21989,7 @@ var init_errors2 = __esm(() => {
     "EVM_TRANSFER_REVERTED",
     "TRANSFER_CHAIN_MISMATCH",
     "TRANSFER_INSUFFICIENT_FUNDS",
+    "TRANSFER_REJECTED",
     "SOLANA_COMMAND_EVM_KEY",
     "RPC_RATE_LIMITED",
     "EVM_RECORD_ENTRY_TOO_LONG",
@@ -85865,17 +85866,40 @@ async function assertTransferAffordable(solana, plan, feeQuote) {
       });
     }
   }
+  const parts = [
+    ...plan.asset === "SOL" ? [`${plan.amountRaw} to send`] : [],
+    `${fee} fee${feeQuote === null ? " (estimated)" : ""}`,
+    ...rent > 0n ? [`${rent} token account rent`] : []
+  ];
   if (lamports < lamportsNeeded) {
-    const parts = [
-      ...plan.asset === "SOL" ? [`${plan.amountRaw} to send`] : [],
-      `${fee} fee${feeQuote === null ? " (estimated)" : ""}`,
-      ...rent > 0n ? [`${rent} token account rent`] : []
-    ];
     throw new VaultError("TRANSFER_INSUFFICIENT_FUNDS", `${plan.from} holds ${lamports} lamports and this transfer needs ${lamportsNeeded} (${parts.join(" + ")}). Nothing was signed or sent.`, {
       suggestion: "Fund the key with SOL first, or send a smaller --amount. candle vault list --balances shows each key's SOL.",
       details: { from: plan.from, heldLamports: lamports.toString(), neededLamports: lamportsNeeded.toString() }
     });
   }
+  const remainder = lamports - lamportsNeeded;
+  if (remainder > 0n) {
+    const floor = await solana.read(() => solana.rpc.getMinimumBalanceForRentExemption(0));
+    if (remainder < floor) {
+      const maxSol = plan.asset === "SOL" ? plan.amountRaw - (floor - remainder) : null;
+      throw new VaultError("TRANSFER_INSUFFICIENT_FUNDS", `${plan.from} holds ${lamports} lamports; after this transfer (${parts.join(" + ")}) it would keep ${remainder}, below the ${floor}-lamport rent floor, and the chain refuses that. Nothing was signed or sent.`, {
+        suggestion: maxSol !== null && maxSol > 0n ? `Send at most ${maxSol} lamports (${formatLamports(maxSol)} SOL) to keep the floor, or empty the key with --max.` : "Fund the key with SOL first so it keeps the rent floor after the fee, or empty it with --max.",
+        details: {
+          from: plan.from,
+          heldLamports: lamports.toString(),
+          neededLamports: lamportsNeeded.toString(),
+          remainderLamports: remainder.toString(),
+          rentFloorLamports: floor.toString(),
+          ...maxSol !== null && maxSol > 0n ? { maxSendLamports: maxSol.toString() } : {}
+        }
+      });
+    }
+  }
+}
+function formatLamports(lamports) {
+  const whole = lamports / 1000000000n;
+  const frac = (lamports % 1000000000n).toString().padStart(9, "0").replace(/0+$/, "");
+  return frac === "" ? whole.toString() : `${whole}.${frac}`;
 }
 function displayTransferPlan(ctx, plan, feeQuote) {
   ctx.deps.stdout.write(`Decoded transfer (local signing only):
@@ -85889,6 +85913,20 @@ function displayTransferPlan(ctx, plan, feeQuote) {
   else
     ctx.deps.stdout.write(`  fee quote  (unavailable)
 `);
+}
+function rentAccountIndex(err) {
+  const match = err === null ? null : /"InsufficientFundsForRent"\s*:\s*\{\s*"account_index"\s*:\s*(\d+)/.exec(err);
+  return match ? Number(match[1]) : null;
+}
+function preflightSuggestion(err) {
+  const index = rentAccountIndex(err);
+  const payer = "the payer would keep less than the rent floor: send less, or empty the key with --max";
+  const receiver = "the receiving account would hold less than the rent floor: send at least the floor";
+  if (index === 0)
+    return `Fix the cause and send again. InsufficientFundsForRent means ${payer}.`;
+  if (index !== null)
+    return `Fix the cause and send again. InsufficientFundsForRent means ${receiver}.`;
+  return `Fix the cause and send again. If this is InsufficientFundsForRent, either ${payer}, or ${receiver}.`;
 }
 async function signAndBroadcastTransfer(input) {
   const rpc = input.solana.rpc;
@@ -85909,6 +85947,19 @@ async function signAndBroadcastTransfer(input) {
   try {
     await rpc.sendTransaction(toBase64(wire));
   } catch (error) {
+    const rejection = definiteSendRejection(error);
+    if (rejection !== null) {
+      const cause = rejection.reason === "preflight-failed" ? `its simulation failed: ${rejection.diagnostics?.err ?? "unknown error"}` : "the node was behind the required slot";
+      throw new VaultError("TRANSFER_REJECTED", `The RPC refused this transfer before broadcasting it (${cause}). Nothing was broadcast and no fee was charged.`, {
+        suggestion: rejection.reason === "preflight-failed" ? preflightSuggestion(rejection.diagnostics?.err ?? null) : "Retry in a moment, or with another RPC (--rpc-url).",
+        details: {
+          signature: sigB58,
+          reason: rejection.reason,
+          rpcCode: String(rejection.rpcCode),
+          ...rejection.diagnostics?.err ? { simulationErr: rejection.diagnostics.err } : {}
+        }
+      });
+    }
     if (isRateLimited(error))
       notePostSignatureRateLimit(input.ctx, sigB58);
     return { signature: sigB58, finalized: false, seen: true };

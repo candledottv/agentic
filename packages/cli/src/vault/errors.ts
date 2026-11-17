@@ -150,6 +150,10 @@ export const VAULT_ERROR_CODES = [
   // Read before the typed confirmation; exit 1, nothing signed. Thrown from
   // `vault/vault-transfer-sign.ts` (`assertTransferAffordable`).
   "TRANSFER_INSUFFICIENT_FUNDS",
+  // 2026-11-16: the RPC refused a signed Solana `vault transfer` or `vault fund` at preflight (or a
+  // node behind the context floor): definite, nothing broadcast, exit 1. Thrown from
+  // `vault/vault-transfer-sign.ts` (`signAndBroadcastTransfer`) via `definiteSendRejection`.
+  "TRANSFER_REJECTED",
   "SOLANA_COMMAND_EVM_KEY",
   // BE-355 (spec 2026-09-24-cli-default-solana-rpc-design.md, D3): the Solana RPC rate-limited a
   // read, the one retry was rate-limited too, and nothing has been signed. Exit 1, thrown from

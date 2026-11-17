@@ -426,6 +426,7 @@ describe("BE-1551 (T48 A8): assertTransferAffordable", () => {
   function clientWith(lamports: bigint, tokenAmount: bigint | null) {
     const rpc = {
       getBalance: async () => lamports,
+      getMinimumBalanceForRentExemption: async () => 650_240n,
       getAccountInfo: async () => {
         if (tokenAmount === null) return null
         const data = new Uint8Array(165)
@@ -470,5 +471,147 @@ describe("BE-1551 (T48 A8): assertTransferAffordable", () => {
     const plan = tokenPlan({ asset: "SOL", amountRaw: 1_000n, sourceTokenAccount: undefined })
     const refused = await assertTransferAffordable(clientWith(5_999n, null), plan, null).catch((e) => e)
     expect(refused.message).toContain("needs 6000 (1000 to send + 5000 fee (estimated))")
+  })
+})
+
+describe("2026-11-16 vault transfer drops: the payer keeps the rent floor or nothing", () => {
+  // The operator's real numbers (cn-11, 11-16): 13,968,040 lamports, floor 650,240, fee 5,000.
+  // "balance minus floor" rounded up to 0.013318 SOL leaves 645,040: the chain refuses it.
+  function solClient(lamports: bigint) {
+    const rpc = {
+      getBalance: async () => lamports,
+      getMinimumBalanceForRentExemption: async (size: number) => {
+        expect(size).toBe(0)
+        return 650_240n
+      },
+      getAccountInfo: async () => null,
+    }
+    return { rpc, read: <T>(fn: () => Promise<T>) => fn() } as unknown as Parameters<typeof assertTransferAffordable>[0]
+  }
+  const solPlan = (amountRaw: bigint): TransferPlan => ({
+    asset: "SOL",
+    amount: "x",
+    amountRaw,
+    decimals: 9,
+    from,
+    to,
+    instructions: [],
+    displayLines: [],
+  })
+
+  test("a SOL send that would leave 0 < remainder < floor is refused with the largest amount that passes", async () => {
+    const refused = await assertTransferAffordable(solClient(13_968_040n), solPlan(13_318_000n), 5000n).catch((e) => e)
+    expect(refused.code).toBe("TRANSFER_INSUFFICIENT_FUNDS")
+    expect(refused.message).toContain("it would keep 645040, below the 650240-lamport rent floor")
+    expect(refused.message).toContain("Nothing was signed or sent.")
+    expect(refused.suggestion).toContain("Send at most 13312800 lamports (0.0133128 SOL)")
+    expect(refused.details.maxSendLamports).toBe("13312800")
+  })
+
+  test("200 lamports short is still refused; exactly the floor and an emptied payer pass", async () => {
+    const short = await assertTransferAffordable(solClient(13_968_040n), solPlan(13_313_000n), 5000n).catch((e) => e)
+    expect(short.code).toBe("TRANSFER_INSUFFICIENT_FUNDS")
+    expect(short.message).toContain("it would keep 650040")
+    await assertTransferAffordable(solClient(13_968_040n), solPlan(13_312_800n), 5000n)
+    await assertTransferAffordable(solClient(13_968_040n), solPlan(13_963_040n), 5000n)
+  })
+
+  test("a token move whose fee would leave the payer under the floor is refused too", async () => {
+    const plan: TransferPlan = { ...solPlan(1_000_000n), asset: "USDC", decimals: 6, mint: USDC_MINT }
+    const refused = await assertTransferAffordable(solClient(655_000n), plan, 5000n).catch((e) => e)
+    expect(refused.code).toBe("TRANSFER_INSUFFICIENT_FUNDS")
+    expect(refused.message).toContain("it would keep 650000")
+    expect(refused.suggestion).toContain("Fund the key with SOL first")
+  })
+})
+
+describe("2026-11-16 vault transfer drops: a preflight refusal is not 'Submitted'", () => {
+  async function sendWith(sendAnswer: (id: number) => Response) {
+    let sends = 0
+    let statusReads = 0
+    const { fetch } = createRoutedFetch({
+      "/rpc": (req) => {
+        const { method, id } = JSON.parse(String(req.init.body)) as { method: string; id: number }
+        if (method === "getLatestBlockhash")
+          return jsonResponse(200, { id, result: { value: { blockhash: BLOCKHASH } } })
+        if (method === "sendTransaction") {
+          sends++
+          return sendAnswer(id)
+        }
+        if (method === "getSignatureStatuses") {
+          statusReads++
+          return jsonResponse(200, { id, result: { value: [null] } })
+        }
+        throw new Error(`unexpected ${method}`)
+      },
+    })
+    const plan = await planTransfer({ from, to, amount: "0.013318", asset: "SOL", rpc: rpcOver(fetch) })
+    const ctx: CommandContext = { deps: createTestDeps({ fetch }), json: false, apiUrl: "", verifyAccount: false }
+    const outcome = await signAndBroadcastTransfer({
+      ctx,
+      solana: solanaClientFor(ctx, flagEndpoint(rpcUrl)),
+      secret64: fromKey.secretKey,
+      plan,
+    }).catch((e) => e)
+    return { outcome, sends, statusReads }
+  }
+
+  test("-32002 with InsufficientFundsForRent throws TRANSFER_REJECTED, sends once, reads no status", async () => {
+    const { outcome, sends, statusReads } = await sendWith((id) =>
+      jsonResponse(200, {
+        id,
+        error: {
+          code: -32002,
+          message:
+            "Transaction simulation failed: Transaction results in an account (0) with insufficient funds for rent",
+          data: { err: { InsufficientFundsForRent: { account_index: 0 } }, logs: [] },
+        },
+      }),
+    )
+    expect(outcome.code).toBe("TRANSFER_REJECTED")
+    expect(outcome.message).toContain("Nothing was broadcast and no fee was charged.")
+    expect(outcome.message).toContain("InsufficientFundsForRent")
+    expect(outcome.details.reason).toBe("preflight-failed")
+    expect(sends).toBe(1)
+    expect(statusReads).toBe(0)
+  })
+
+  test("-32002 with InsufficientFundsForRent on the destination (index 1) does not say to send less", async () => {
+    const { outcome } = await sendWith((id) =>
+      jsonResponse(200, {
+        id,
+        error: {
+          code: -32002,
+          message: "Transaction simulation failed",
+          data: { err: { InsufficientFundsForRent: { account_index: 1 } }, logs: [] },
+        },
+      }),
+    )
+    expect(outcome.code).toBe("TRANSFER_REJECTED")
+    expect(outcome.suggestion).not.toContain("send less")
+    expect(outcome.suggestion).toContain("receiving account")
+    expect(outcome.suggestion).toContain("send at least the floor")
+  })
+
+  test("a -32002 whose response id does not match stays uncertain (BE-658), never a refusal", async () => {
+    const { outcome } = await sendWith((id) =>
+      jsonResponse(200, {
+        id: id + 1000,
+        error: {
+          code: -32002,
+          message: "Transaction simulation failed",
+          data: { err: { InsufficientFundsForRent: { account_index: 0 } }, logs: [] },
+        },
+      }),
+    )
+    expect(outcome.code).toBeUndefined()
+    expect(outcome.seen).toBe(true)
+  })
+
+  test("an uncertain send failure (HTTP 503) keeps the old uncertain outcome, never a refusal", async () => {
+    const { outcome } = await sendWith(() => new Response("unavailable", { status: 503 }))
+    expect(outcome.code).toBeUndefined()
+    expect(outcome.finalized).toBe(false)
+    expect(outcome.seen).toBe(true)
   })
 })
