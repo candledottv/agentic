@@ -179,7 +179,7 @@ before installed-package support can be claimed.
 | Tool | Description | REST call | Auth |
 | --- | --- | --- | --- |
 | `candle_launch_token` | Launch a token on Candle | `POST /api/v1/launch/headless` (or `/dry-run` when `dryRun: true`); with `imagePath`, `POST /api/v1/uploads/agent-image` first | `CANDLE_AGENT_API_KEY` |
-| `candle_get_market` | Get market state | `GET /api/v1/markets/:chain/:mint` | none |
+| `candle_get_market` | Get market state. From 0.10.33 it carries `quoteState` when the quote watcher covers the quote token: `paused`, `split` (with `multiplier` and any pending one), `launchBlocked` and `refusal`; omitted when the watcher does not cover it | `GET /api/v1/markets/:chain/:mint` | none |
 | `candle_get_price_history` | One Solana token's OHLC bars in USD per token, oldest first (interval 1m-1d, limit 1-500, `to` unix seconds); `source` and `volumeUnit` say whose bars. Hood is refused with its REST route | `GET /api/v1/markets/solana/:mint/candles` | none |
 | `candle_quote` | Price a buy or sell before making it; moves nothing. Returns `amountOut` in base units, `venue`, `quoteAsset`, `quoteDecimals`, `quotedAt`; `route` appears only on some answers. `amountRaw` is in base units. Limit 600 a minute per key | `POST /api/v1/trade/agent/quote` | `CANDLE_AGENT_API_KEY` with `swap:write` (a read-only key cannot quote) |
 | `candle_get_feed` | Get a token feed (`finalstretch`: at most the 200 most complete; `where` on `progress` narrows it) | `GET /api/v1/markets/feed?bucket=...` | none |
