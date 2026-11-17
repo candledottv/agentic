@@ -45,6 +45,17 @@ function humanLines(status: Json): string[] {
     const progress = typeof block.progressBps === "number" ? ` ${String(block.progressBps)} bps` : ""
     if (typeof block.status === "string") lines.push(`migration: ${safeText(block.status)}${progress}`)
   }
+  if (typeof status.quoteMint === "string") lines.push(`quoteAsset: ${safeText(status.quoteMint)}`)
+  const quote = status.quoteState
+  if (quote !== null && typeof quote === "object" && !Array.isArray(quote)) {
+    const block = quote as Json
+    lines.push(`quote paused: ${block.paused === true ? "yes" : "no"}`)
+    const pending =
+      typeof block.pendingMultiplier === "string" ? `, scheduled ${safeText(block.pendingMultiplier)}` : ""
+    const multiplier = typeof block.multiplier === "string" ? ` (multiplier ${safeText(block.multiplier)})` : ""
+    lines.push(`quote split: ${block.split === true ? "yes" : "no"}${multiplier}${pending}`)
+    if (typeof block.refusal === "string") lines.push(`quote launches: blocked, ${safeText(block.refusal)}`)
+  }
   if (typeof status.signature === "string") lines.push(`signature: ${safeText(status.signature)}`)
   return lines
 }

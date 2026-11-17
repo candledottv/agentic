@@ -490,11 +490,24 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     // before the upload, so an endpoint that fails validation refuses the launch with nothing published.
     const solana =
       chain === "solana" && !atomic && !dryRun ? await tradingSolanaClient(ctx, flags["--rpc-url"]) : undefined
-    const uploaded = await uploadLaunchImages(ctx, key, { flags, id, image, banner, retry })
+    const uploaded = await uploadLaunchImages(ctx, key, { flags, id, image, banner, retry, dryRun })
     if (typeof uploaded === "number") return uploaded
     const { imageUrl, bannerUrl, used } = uploaded
     // BE-1806: the dry run sends the body the launch would build, to the route's dry run, and stops.
-    if (dryRun) return await dryRunLaunch(ctx, key, { flags, id, wallet, chain, buy, imageUrl, bannerUrl, rules, used })
+    if (dryRun)
+      return await dryRunLaunch(ctx, key, {
+        flags,
+        id,
+        wallet,
+        chain,
+        buy,
+        imageUrl,
+        bannerUrl,
+        imageChecked: uploaded.imageChecked,
+        bannerChecked: uploaded.bannerChecked,
+        rules,
+        used,
+      })
     if (atomic)
       return await atomicLaunch(ctx, key, {
         flags,
@@ -594,6 +607,9 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
 interface LaunchImages {
   imageUrl: string
   bannerUrl?: string
+  /** BE-2668: a dry run checked the file and did not upload it; the body carries the flag, not a URL. */
+  imageChecked?: boolean
+  bannerChecked?: boolean
   used: Json
 }
 
@@ -612,9 +628,46 @@ async function uploadLaunchImages(
     image?: LocalImage
     banner?: LocalImage
     retry?: { imageUrl?: string; bannerUrl?: string }
+    dryRun?: boolean
   },
 ): Promise<LaunchImages | number> {
   const { flags, id, image, banner, retry } = args
+  if (args.dryRun && (image || banner)) {
+    // BE-2668: a dry run checks a local file and never uploads it. The route runs the upload's own
+    // checks and hosts nothing, and the launch dry run takes imageChecked in place of the URL.
+    const checked: Partial<Record<"imageChecked" | "bannerChecked", true>> = {}
+    try {
+      for (const [file, kind] of [
+        [image, "image"],
+        [banner, "banner"],
+      ] as const) {
+        if (!file) continue
+        notice(
+          ctx.deps,
+          "stderr",
+          "note",
+          `Checking ${safeText(file.path)} (${file.contentType}, ${file.bytes.length} bytes). A dry run does not upload it.`,
+        )
+        await uploadImage(ctx, key, file, kind, true)
+        checked[kind === "image" ? "imageChecked" : "bannerChecked"] = true
+      }
+    } catch (error) {
+      return tradingFailure(ctx, error)
+    }
+    const bannerUrl = banner ? undefined : flags["--banner"]?.startsWith("https://") ? flags["--banner"] : undefined
+    return {
+      imageUrl: image ? "" : (flags["--image-url"] ?? ""),
+      ...(bannerUrl ? { bannerUrl } : {}),
+      ...checked,
+      used: {
+        ...(image
+          ? { imageChecked: true, imageNote: "The file was checked and not uploaded: a dry run publishes nothing." }
+          : {}),
+        ...(banner ? { bannerChecked: true } : {}),
+        ...(bannerUrl ? { bannerUrl: safeText(bannerUrl) } : {}),
+      },
+    }
+  }
   let imageUrl = flags["--image-url"] ?? ""
   // A same-id retry builds with the image the bundle was built with, without uploading again.
   if (image && retry?.imageUrl) imageUrl = retry.imageUrl
@@ -658,6 +711,8 @@ interface LaunchBodyArgs {
   buy?: LaunchBuy
   imageUrl: string
   bannerUrl?: string
+  imageChecked?: boolean
+  bannerChecked?: boolean
   /** BE-2794: the request's `launchRules`, read and checked before any request; Solana only. */
   rules?: LaunchRulesBody
 }
@@ -685,8 +740,8 @@ function launchFields(args: LaunchBodyArgs): Json {
     clientLaunchId: args.id,
     name: flags["--name"],
     symbol: flags["--symbol"],
-    imageUrl: args.imageUrl,
-    ...(args.bannerUrl ? { bannerUrl: args.bannerUrl } : {}),
+    ...(args.imageChecked ? { imageChecked: true } : { imageUrl: args.imageUrl }),
+    ...(args.bannerChecked ? { bannerChecked: true } : args.bannerUrl ? { bannerUrl: args.bannerUrl } : {}),
     ...(flags["--description"] ? { description: flags["--description"] } : {}),
     ...(flags["--mode"] ? { mode: flags["--mode"] } : {}),
     ...launchCurveFields(flags),
@@ -1313,8 +1368,8 @@ async function embeddedLaunch(
     chain,
     name: flags["--name"],
     symbol: flags["--symbol"],
-    imageUrl,
-    ...(bannerUrl ? { bannerUrl } : {}),
+    ...(uploaded.imageChecked ? { imageChecked: true } : { imageUrl }),
+    ...(uploaded.bannerChecked ? { bannerChecked: true } : bannerUrl ? { bannerUrl } : {}),
     ...(flags["--description"] ? { description: flags["--description"] } : {}),
     ...(flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {}),
     ...(flags["--dex-version"] ? { dexVersion: flags["--dex-version"] } : {}),

@@ -778,7 +778,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.26";
+var CLI_VERSION = "0.13.27";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -5963,7 +5963,7 @@ var init_token_clusters = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.32";
+var SERVER_VERSION = "0.10.33";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -6200,10 +6200,11 @@ async function readImageInDir(imageDir, imagePath, fs = nodeFs, field = "imagePa
     throw new ImageRefusal("IMAGE_TYPE_UNSUPPORTED", `The file at ${field} is not a PNG, JPEG, GIF or WebP image. The type is read from the file's first bytes, not its name. ${NOTHING_UPLOADED}`);
   return { bytes, contentType };
 }
-async function uploadLocalImage(image, kind, cfg, apiKey, doFetch) {
+async function uploadLocalImage(image, kind, cfg, apiKey, doFetch, dryRun = false) {
+  const query = [...kind === "banner" ? ["kind=banner"] : [], ...dryRun ? ["dryRun=true"] : []].join("&");
   let res;
   try {
-    res = await doFetch(`${cfg.apiUrl.replace(/\/$/, "")}/api/v1/uploads/agent-image${kind === "banner" ? "?kind=banner" : ""}`, {
+    res = await doFetch(`${cfg.apiUrl.replace(/\/$/, "")}/api/v1/uploads/agent-image${query ? `?${query}` : ""}`, {
       method: "POST",
       headers: { "Content-Type": image.contentType, "x-api-key": apiKey },
       body: image.bytes
@@ -6212,7 +6213,7 @@ async function uploadLocalImage(image, kind, cfg, apiKey, doFetch) {
     return {
       refused: {
         code: "MCP_TRANSPORT",
-        message: `The ${kind} upload failed in transit (${error instanceof Error ? error.message : String(error)}). ` + "No launch was attempted. The upload may or may not have reached Candle; if it did, the file is public."
+        message: `The ${kind} upload failed in transit (${error instanceof Error ? error.message : String(error)}). ` + (dryRun ? "No launch was attempted, and nothing was published: a dry run does not host the file." : "No launch was attempted. The upload may or may not have reached Candle; if it did, the file is public.")
       }
     };
   }
@@ -6220,6 +6221,8 @@ async function uploadLocalImage(image, kind, cfg, apiKey, doFetch) {
   const text = await res.text();
   if (!res.ok)
     return { uploadFailed: text };
+  if (dryRun)
+    return { checked: true };
   let uploaded;
   try {
     uploaded = JSON.parse(text)?.imageUrl;
@@ -6235,8 +6238,9 @@ async function uploadLocalImage(image, kind, cfg, apiKey, doFetch) {
     };
   return { url: uploaded };
 }
-async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
+async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs, opts = {}) {
   const { imagePath, bannerPath, ...rest } = args;
+  const dryRun = opts.dryRun === true;
   const hasPath = typeof imagePath === "string" && imagePath.length > 0;
   const hasUrl = typeof rest.imageUrl === "string" && rest.imageUrl.length > 0;
   const hasBannerPath = typeof bannerPath === "string" && bannerPath.length > 0;
@@ -6283,6 +6287,22 @@ async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
     banner = result2;
   }
   const launchArgs = { ...rest };
+  if (dryRun) {
+    const checked = {};
+    for (const [file, kind] of [
+      [image, "image"],
+      [banner, "banner"]
+    ]) {
+      if (!file)
+        continue;
+      const result2 = await uploadLocalImage(file, kind, cfg, cfg.apiKey, doFetch, true);
+      if (!("checked" in result2))
+        return result2;
+      checked[kind] = true;
+      launchArgs[kind === "image" ? "imageChecked" : "bannerChecked"] = true;
+    }
+    return { args: launchArgs, checked };
+  }
   let uploaded;
   let uploadedBanner;
   if (image) {
@@ -6308,13 +6328,23 @@ async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
 function imageRefusalBody(refused, extra) {
   return JSON.stringify({ ...extra, success: false, error: { code: refused.code, message: refused.message } });
 }
+function checkedFields(image) {
+  const { checked } = image;
+  if (!checked)
+    return {};
+  return {
+    ...checked.image ? { imageChecked: true } : {},
+    ...checked.banner ? { bannerChecked: true } : {},
+    imageNote: CHECKED_IMAGE_NOTE
+  };
+}
 function uploadedFields(image) {
   return {
     ...image.uploaded !== undefined ? { imageUrl: image.uploaded, imageNote: UPLOADED_IMAGE_NOTE } : {},
     ...image.uploadedBanner !== undefined ? { bannerUrl: image.uploadedBanner, bannerNote: UPLOADED_BANNER_NOTE } : {}
   };
 }
-var MAX_IMAGE_BYTES, OUTSIDE_IMAGE_DIR = "Image files must be inside the configured CANDLE_IMAGE_DIR.", NOTHING_UPLOADED = "Nothing was uploaded.", READ_CHUNK_BYTES, ImageRefusal, nodeFs, UPLOADED_IMAGE_NOTE = "imagePath was uploaded to imageUrl, which is public and permanent. To retry, or to launch after a dry run, pass this imageUrl instead of imagePath, so the file is not uploaded again.", UPLOADED_BANNER_NOTE = "bannerPath was uploaded to bannerUrl, which is public and permanent. To retry, or to launch after a dry run, pass this bannerUrl instead of bannerPath, so the file is not uploaded again.";
+var MAX_IMAGE_BYTES, OUTSIDE_IMAGE_DIR = "Image files must be inside the configured CANDLE_IMAGE_DIR.", NOTHING_UPLOADED = "Nothing was uploaded.", READ_CHUNK_BYTES, ImageRefusal, nodeFs, CHECKED_IMAGE_NOTE = "The file was checked and not uploaded: a dry run publishes nothing. A real launch uploads it, or pass an imageUrl you uploaded yourself.", UPLOADED_IMAGE_NOTE = "imagePath was uploaded to imageUrl, which is public and permanent. To retry, or to launch after a dry run, pass this imageUrl instead of imagePath, so the file is not uploaded again.", UPLOADED_BANNER_NOTE = "bannerPath was uploaded to bannerUrl, which is public and permanent. To retry, or to launch after a dry run, pass this bannerUrl instead of bannerPath, so the file is not uploaded again.";
 var init_image = __esm(() => {
   init_update_notice();
   MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -8201,7 +8231,7 @@ async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs, opts 
     if (refused)
       return refused;
   }
-  const image = await resolveLaunchImage(imageFields, imageDir, cfg, doFetch, imageFs);
+  const image = await resolveLaunchImage(imageFields, imageDir, cfg, doFetch, imageFs, { dryRun: dryRun === true });
   if ("refused" in image)
     return { text: imageRefusalBody(image.refused, { clientLaunchId }), isError: true };
   if ("uploadFailed" in image) {
@@ -8213,7 +8243,7 @@ async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs, opts 
     }
     return { text: JSON.stringify({ clientLaunchId, api }), isError: true };
   }
-  const uploaded = uploadedFields(image);
+  const uploaded = { ...uploadedFields(image), ...checkedFields(image) };
   const transportFailure = (thrown) => {
     const failed = transportError("clientLaunchId", clientLaunchId, thrown);
     return Object.keys(uploaded).length === 0 ? failed : { ...failed, text: JSON.stringify({ ...JSON.parse(failed.text), ...uploaded }) };
@@ -13982,13 +14012,19 @@ function registerToolSubset(server, options) {
     if (socialsProblem) {
       return { content: [{ type: "text", text: imageRefusalBody(socialsProblem) }], isError: true };
     }
-    const image = await resolveLaunchImage(args, imageDir, getConfig(), doFetch);
+    const image = await resolveLaunchImage(args, imageDir, getConfig(), doFetch, undefined, {
+      dryRun: args.dryRun === true
+    });
     if ("refused" in image) {
       return { content: [{ type: "text", text: imageRefusalBody(image.refused) }], isError: true };
     }
     if ("uploadFailed" in image)
       return { content: [{ type: "text", text: image.uploadFailed }], isError: true };
     const relayed = await callAndRelay("candle_launch_token", image.args, getConfig(), doFetch);
+    if (image.checked) {
+      const note = JSON.stringify(checkedFields(image));
+      return { ...relayed, content: [...relayed.content, { type: "text", text: note }] };
+    }
     if (image.uploaded === undefined && image.uploadedBanner === undefined)
       return relayed;
     const uploaded = JSON.stringify({
@@ -13999,7 +14035,7 @@ function registerToolSubset(server, options) {
   });
   register("candle_get_market", {
     title: "Get market state",
-    description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. quoteAsset names the pool pair; quoteAssets lists accepted settlement ids, with quoteAssets[0] the default (not a liquidity promise). " + EXTERNAL_MARKET_DISCLOSURE + " " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
+    description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. quoteAsset names the pool pair; quoteAssets lists accepted settlement ids, with quoteAssets[0] the default (not a liquidity promise). " + "quoteState, when the quote watcher covers the quote token, says whether it is paused (paused) or in a split hold (split) and whether new launches against it are blocked (launchBlocked, refusal). " + EXTERNAL_MARKET_DISCLOSURE + " " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
     inputSchema: getMarketShape
   }, async (args) => callAndRelay("candle_get_market", args, getConfig(), doFetch));
   register("candle_quote", {
@@ -14924,13 +14960,13 @@ var init_tools = __esm(() => {
   tokenBannerUrl = launchSchemaField(launchTokenShape, "bannerUrl");
   localImageShape = {
     imageUrl: tokenImageUrl.optional().describe(`${tokenImageUrl.description}. Pass this or imagePath, never both`),
-    imagePath: exports_external.string().optional().describe("An absolute image path inside CANDLE_IMAGE_DIR. The file is uploaded and becomes public and permanent, " + "including on a dry run. PNG, JPEG, GIF or WebP, at most 10MB, read from the file's first bytes. " + "Uploading spends no funds and does not count against the launch cap; only the upload limit applies. " + "Pass this or imageUrl, never both. The result carries the imageUrl used: pass that on a retry, or " + "after a dry run, instead of uploading the file again. This is the square token image: Candle crops " + "it to a square, so a wide banner belongs in bannerPath, not here"),
+    imagePath: exports_external.string().optional().describe("An absolute image path inside CANDLE_IMAGE_DIR. A launch uploads the file and it becomes public and permanent; " + "a dry run only checks it and uploads nothing. PNG, JPEG, GIF or WebP, at most 10MB, read from the file's first bytes. " + "Uploading spends no funds and does not count against the launch cap; only the upload limit applies. " + "Pass this or imageUrl, never both. A launch's result carries the imageUrl used: pass that on a retry " + "instead of uploading the file again. This is the square token image: Candle crops " + "it to a square, so a wide banner belongs in bannerPath, not here"),
     bannerUrl: tokenBannerUrl.describe(`${tokenBannerUrl.description}. Pass this or bannerPath, never both`),
-    bannerPath: exports_external.string().optional().describe("An absolute path, inside CANDLE_IMAGE_DIR, to WIDE banner artwork for the token page strip (wider than " + "1.5:1, e.g. 2171x724 or 1200x630). The file is uploaded uncropped and becomes public and permanent, " + "including on a dry run; PNG, JPEG, GIF or WebP, at most 10MB. A square image is refused with " + "BANNER_WRONG_SHAPE: send the wide original, not a cropped copy. Pass this or bannerUrl, never both. " + "The result carries the bannerUrl used: pass that on a retry instead of uploading the file again")
+    bannerPath: exports_external.string().optional().describe("An absolute path, inside CANDLE_IMAGE_DIR, to WIDE banner artwork for the token page strip (wider than " + "1.5:1, e.g. 2171x724 or 1200x630). A launch uploads the file uncropped and it becomes public and permanent; " + "a dry run only checks it and uploads nothing; PNG, JPEG, GIF or WebP, at most 10MB. A square image is refused with " + "BANNER_WRONG_SHAPE: send the wide original, not a cropped copy. Pass this or bannerUrl, never both. " + "The result carries the bannerUrl used: pass that on a retry instead of uploading the file again")
   };
   localLaunchTokenShape = { ...launchTokenShape, ...localImageShape };
   localLaunchAndSeedShape = { ...launchAndSeedShape, ...localImageShape };
-  IMAGE_PATH_DISCLOSURE = " With imagePath or bannerPath, the file is uploaded first and becomes public and permanent, on a dry run too; " + "nothing about a dry run keeps that file private. imagePath is the square token image (Candle crops it); " + "a wide banner goes in bannerPath, which is not cropped.";
+  IMAGE_PATH_DISCLOSURE = " With imagePath or bannerPath, a launch uploads the file first and it becomes public and permanent. " + "A dry run does not: it checks the file (type, size, shape) and uploads nothing. imagePath is the square token image (Candle crops it); " + "a wide banner goes in bannerPath, which is not cropped.";
   transferShape = {
     chain: chainSchema("Which chain the transfer executes on"),
     asset: exports_external.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).optional().describe("A base asset key. Pass exactly one of asset or mint."),
@@ -77056,8 +77092,9 @@ function uploadNotice(image) {
   return `Uploading ${safeText(image.path)} (${image.contentType}, ${image.bytes.length} bytes). The file becomes public and permanent: Candle pins it, and the URL cannot be withdrawn.
 `;
 }
-async function uploadImage(ctx, key, image, kind = "image") {
-  const result2 = await apiRequest(`/api/v1/uploads/agent-image${kind === "banner" ? "?kind=banner" : ""}`, {
+async function uploadImage(ctx, key, image, kind = "image", dryRun = false) {
+  const query2 = [...kind === "banner" ? ["kind=banner"] : [], ...dryRun ? ["dryRun=true"] : []].join("&");
+  const result2 = await apiRequest(`/api/v1/uploads/agent-image${query2 ? `?${query2}` : ""}`, {
     apiUrl: ctx.apiUrl,
     credentials: { apiKey: key },
     auth: "key",
@@ -77068,6 +77105,8 @@ async function uploadImage(ctx, key, image, kind = "image") {
   });
   if (!result2.ok)
     throw new TradingError(result2.code ?? "REQUEST_FAILED", result2.message);
+  if (dryRun)
+    return "";
   const imageUrl = result2.body?.imageUrl;
   if (typeof imageUrl !== "string" || !imageUrl.startsWith("https://"))
     throw new TradingError("INVALID_RESPONSE", "Candle did not return an https URL for the uploaded image.");
@@ -79638,7 +79677,7 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
-    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, launch:write, a bound key and verified authority; a server with TEE_LAUNCH_BY_SCOPE_ENABLED off also asks for the owner's allowLaunch (deprecated), and with it on a TEE first buy also needs swap:write. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the wallet that launches the token where the server has LAUNCH_FEE_WALLET_FROM_LAUNCHER on (an embedded launch already earns to its embedded wallet), otherwise to the account wallet, and the preview, the confirm and --check all say which; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. On Solana, where the server has CURVE_LAUNCH_RULES_ENABLED on, launch rules are fixed at launch and enforced by the curve program: --open-in delays the open (until then only the launching wallet may buy, up to --dev-buy-max, which defaults to the buy), --max-buy-per-wallet with --cap-window caps what each wallet spends on the curve after the open, and --allowlist <file> with --allowlist-window lets only the listed wallets buy; durations are seconds or 90m, 6h, 2d and amounts are whole quote units, each is checked here before any request, and the preview prints a Launch rules block. Nobody can change the rules after the launch. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works. status reads one launch by its mint or clientLaunchId: build, signed, confirmed, trading, bonded, then migrated, with the market's lifecycle and migration fields. --wait follows it until the token is trading, the launch has failed, or ten minutes pass. An embedded Solana launch that Candle could not confirm in time is read on chain over the Solana RPC before anything is reported: finalized without an error prints status landed (exit 0), finalized with an error is LAUNCH_FAILED (exit 1), and anything else is LAUNCH_UNCONFIRMED (exit 3); never launch it again under a new id.",
+    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, launch:write, a bound key and verified authority; a server with TEE_LAUNCH_BY_SCOPE_ENABLED off also asks for the owner's allowLaunch (deprecated), and with it on a TEE first buy also needs swap:write. TEE buys need TEE_LAUNCH_BUYS_ENABLED on the server; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined; --dry-run checks the files and uploads nothing. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the wallet that launches the token where the server has LAUNCH_FEE_WALLET_FROM_LAUNCHER on (an embedded launch already earns to its embedded wallet), otherwise to the account wallet, and the preview, the confirm and --check all say which; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. On Solana, where the server has CURVE_LAUNCH_RULES_ENABLED on, launch rules are fixed at launch and enforced by the curve program: --open-in delays the open (until then only the launching wallet may buy, up to --dev-buy-max, which defaults to the buy), --max-buy-per-wallet with --cap-window caps what each wallet spends on the curve after the open, and --allowlist <file> with --allowlist-window lets only the listed wallets buy; durations are seconds or 90m, 6h, 2d and amounts are whole quote units, each is checked here before any request, and the preview prints a Launch rules block. Nobody can change the rules after the launch. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works. status reads one launch by its mint or clientLaunchId: build, signed, confirmed, trading, bonded, then migrated, with the market's lifecycle and migration fields. --wait follows it until the token is trading, the launch has failed, or ten minutes pass. An embedded Solana launch that Candle could not confirm in time is read on chain over the Solana RPC before anything is reported: finalized without an error prints status landed (exit 0), finalized with an error is LAUNCH_FAILED (exit 1), and anything else is LAUNCH_UNCONFIRMED (exit 3); never launch it again under a new id.",
     usage: [LAUNCH_USAGE, "candle launch status <mint-or-client-launch-id> [--wait]"],
     rows: [
       {
@@ -79654,7 +79693,7 @@ var HELP = {
       },
       {
         invocation: "--image <path>",
-        description: "Upload a local PNG, JPEG, GIF or WebP (at most 10MB) instead of --image-url; public and permanent before confirmation."
+        description: "Upload a local PNG, JPEG, GIF or WebP (at most 10MB) instead of --image-url; public and permanent before confirmation. With --dry-run it is only checked, never uploaded."
       },
       {
         invocation: "--check",
@@ -93112,7 +93151,14 @@ var REASON_WORDS = {
   fee_wallet_designated: "the fees go to this launch's designated fee wallet, which claims them itself",
   claimable_by_key: "claimable by this key",
   claimable_via_web_session: "the fees go to this account's web wallet; a signed-in session claims them",
-  insufficient_gas: "the recipient wallet cannot cover the network fee"
+  insufficient_gas: "the recipient wallet cannot cover the network fee",
+  gas_estimate_unavailable: "the network fee could not be estimated; retry"
+};
+var HOOD_OUTCOME_WORDS = {
+  complete: "complete",
+  partial: "partial: some calls landed and some did not, run the claim again for the rest",
+  indeterminate: "unknown: a call was sent and its result is not known yet, check before running it again",
+  not_started: "nothing was sent"
 };
 function reasonText(reason, missing) {
   return typeof reason === "string" ? REASON_WORDS[reason] ?? safeText(reason) : missing;
@@ -93194,7 +93240,9 @@ async function feesClaim(args, ctx) {
       const signedClaims = [];
       for (const signing of body.signing) {
         const row2 = rows.find((row3) => row3.id === signing.walletId && row3.address === signing.wallet);
-        if (!row2 || row2.chain !== "solana")
+        if (row2 && row2.chain !== "solana")
+          throw new TradingError("TEE_WALLET_REQUIRED", "This CLI signs Solana fee claims only; a Hood claim is sent by the account's embedded wallet");
+        if (!row2)
           throw new TradingError("TEE_WALLET_REQUIRED", "The claim's wallet is not bound to this key");
         const wallet3 = await completeTradingWallet(ctx, row2, appId, "account:read", "solana", {
           apiKey: key,
@@ -93258,6 +93306,11 @@ ${fields(rows, style).join(`
             ctx.deps.stdout.write(`${bold(safeText(row2.txHash), style)}
 `);
         }
+      }
+      if (typeof body.outcome === "string") {
+        ctx.deps.stdout.write(`${fields([["Outcome", HOOD_OUTCOME_WORDS[body.outcome] ?? safeText(body.outcome)]], style).join(`
+`)}
+`);
       }
     }
     if (dryRun)
@@ -96380,12 +96433,24 @@ async function launch(args, ctx) {
     if (atomic)
       firstBuyCeiling(ctx, flags, buy);
     const solana = chain2 === "solana" && !atomic && !dryRun ? await tradingSolanaClient(ctx, flags["--rpc-url"]) : undefined;
-    const uploaded = await uploadLaunchImages(ctx, key, { flags, id, image, banner, retry });
+    const uploaded = await uploadLaunchImages(ctx, key, { flags, id, image, banner, retry, dryRun });
     if (typeof uploaded === "number")
       return uploaded;
     const { imageUrl, bannerUrl, used } = uploaded;
     if (dryRun)
-      return await dryRunLaunch(ctx, key, { flags, id, wallet: wallet3, chain: chain2, buy, imageUrl, bannerUrl, rules, used });
+      return await dryRunLaunch(ctx, key, {
+        flags,
+        id,
+        wallet: wallet3,
+        chain: chain2,
+        buy,
+        imageUrl,
+        bannerUrl,
+        imageChecked: uploaded.imageChecked,
+        bannerChecked: uploaded.bannerChecked,
+        rules,
+        used
+      });
     if (atomic)
       return await atomicLaunch(ctx, key, {
         flags,
@@ -96465,6 +96530,34 @@ async function launch(args, ctx) {
 }
 async function uploadLaunchImages(ctx, key, args) {
   const { flags, id, image, banner, retry } = args;
+  if (args.dryRun && (image || banner)) {
+    const checked = {};
+    try {
+      for (const [file, kind] of [
+        [image, "image"],
+        [banner, "banner"]
+      ]) {
+        if (!file)
+          continue;
+        notice(ctx.deps, "stderr", "note", `Checking ${safeText(file.path)} (${file.contentType}, ${file.bytes.length} bytes). A dry run does not upload it.`);
+        await uploadImage(ctx, key, file, kind, true);
+        checked[kind === "image" ? "imageChecked" : "bannerChecked"] = true;
+      }
+    } catch (error) {
+      return tradingFailure(ctx, error);
+    }
+    const bannerUrl2 = banner ? undefined : flags["--banner"]?.startsWith("https://") ? flags["--banner"] : undefined;
+    return {
+      imageUrl: image ? "" : flags["--image-url"] ?? "",
+      ...bannerUrl2 ? { bannerUrl: bannerUrl2 } : {},
+      ...checked,
+      used: {
+        ...image ? { imageChecked: true, imageNote: "The file was checked and not uploaded: a dry run publishes nothing." } : {},
+        ...banner ? { bannerChecked: true } : {},
+        ...bannerUrl2 ? { bannerUrl: safeText(bannerUrl2) } : {}
+      }
+    };
+  }
   let imageUrl = flags["--image-url"] ?? "";
   if (image && retry?.imageUrl)
     imageUrl = retry.imageUrl;
@@ -96513,8 +96606,8 @@ function launchFields(args) {
     clientLaunchId: args.id,
     name: flags["--name"],
     symbol: flags["--symbol"],
-    imageUrl: args.imageUrl,
-    ...args.bannerUrl ? { bannerUrl: args.bannerUrl } : {},
+    ...args.imageChecked ? { imageChecked: true } : { imageUrl: args.imageUrl },
+    ...args.bannerChecked ? { bannerChecked: true } : args.bannerUrl ? { bannerUrl: args.bannerUrl } : {},
     ...flags["--description"] ? { description: flags["--description"] } : {},
     ...flags["--mode"] ? { mode: flags["--mode"] } : {},
     ...launchCurveFields(flags),
@@ -96881,8 +96974,8 @@ async function embeddedLaunch(ctx, key, args) {
     chain: chain2,
     name: flags["--name"],
     symbol: flags["--symbol"],
-    imageUrl,
-    ...bannerUrl ? { bannerUrl } : {},
+    ...uploaded.imageChecked ? { imageChecked: true } : { imageUrl },
+    ...uploaded.bannerChecked ? { bannerChecked: true } : bannerUrl ? { bannerUrl } : {},
     ...flags["--description"] ? { description: flags["--description"] } : {},
     ...flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {},
     ...flags["--dex-version"] ? { dexVersion: flags["--dex-version"] } : {},
@@ -97219,6 +97312,18 @@ function humanLines(status) {
     const progress = typeof block2.progressBps === "number" ? ` ${String(block2.progressBps)} bps` : "";
     if (typeof block2.status === "string")
       lines.push(`migration: ${safeText(block2.status)}${progress}`);
+  }
+  if (typeof status.quoteMint === "string")
+    lines.push(`quoteAsset: ${safeText(status.quoteMint)}`);
+  const quote = status.quoteState;
+  if (quote !== null && typeof quote === "object" && !Array.isArray(quote)) {
+    const block2 = quote;
+    lines.push(`quote paused: ${block2.paused === true ? "yes" : "no"}`);
+    const pending = typeof block2.pendingMultiplier === "string" ? `, scheduled ${safeText(block2.pendingMultiplier)}` : "";
+    const multiplier = typeof block2.multiplier === "string" ? ` (multiplier ${safeText(block2.multiplier)})` : "";
+    lines.push(`quote split: ${block2.split === true ? "yes" : "no"}${multiplier}${pending}`);
+    if (typeof block2.refusal === "string")
+      lines.push(`quote launches: blocked, ${safeText(block2.refusal)}`);
   }
   if (typeof status.signature === "string")
     lines.push(`signature: ${safeText(status.signature)}`);

@@ -288,14 +288,15 @@ URL that comes back; the launch routes never see a path. Pass exactly one of `im
   real path of `CANDLE_IMAGE_DIR`; a link that leads outside is refused, and every path outside
   gets the same sentence (`IMAGE_OUTSIDE_DIR`) whether or not anything is there. Keep only images
   you mean to publish in it.
-- **An upload is public and permanent, on a dry run too.** `dryRun: true` uploads as well, because
-  the dry run fetches the image it validates. The URL cannot be withdrawn, and a square image
+- **An upload is public and permanent, but a dry run does not upload.** `dryRun: true` checks the
+  file through the upload route's check-only mode (`?dryRun=true`) and sends the dry run with
+  `imageChecked` in place of a URL; nothing is hosted and no `imageUrl` comes back. The URL cannot be withdrawn, and a square image
   keeps its original bytes, metadata such as EXIF and GPS data included.
 - **Checked before any request.** The type comes from the file's first bytes
   (`IMAGE_TYPE_UNSUPPORTED`), over 10MB is `IMAGE_TOO_LARGE`, a missing or non-regular file is
   `IMAGE_UNREADABLE`, and a `CANDLE_IMAGE_DIR` that is not an existing directory (or is the
   filesystem root) refuses every `imagePath` with `IMAGE_DIR_INVALID`.
-- **The result carries the `imageUrl` used.** Pass that on a retry, or after a dry run, instead of
+- **The result carries the `imageUrl` used.** Pass that on a retry instead of
   uploading the file again.
 - The upload needs `launch:write`, spends no funds and does not count against the daily launch
   cap; the plan's uploads-per-minute limit applies. `bannerUrl` is always a URL.

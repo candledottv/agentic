@@ -123,8 +123,11 @@ export async function uploadImage(
   key: string,
   image: LocalImage,
   kind: "image" | "banner" = "image",
+  /** BE-2668: the route runs its own checks on the file and hosts nothing; no URL comes back. */
+  dryRun = false,
 ): Promise<string> {
-  const result = await apiRequest(`/api/v1/uploads/agent-image${kind === "banner" ? "?kind=banner" : ""}`, {
+  const query = [...(kind === "banner" ? ["kind=banner"] : []), ...(dryRun ? ["dryRun=true"] : [])].join("&")
+  const result = await apiRequest(`/api/v1/uploads/agent-image${query ? `?${query}` : ""}`, {
     apiUrl: ctx.apiUrl,
     credentials: { apiKey: key },
     auth: "key",
@@ -134,6 +137,7 @@ export async function uploadImage(
     env: ctx.deps.env,
   })
   if (!result.ok) throw new TradingError(result.code ?? "REQUEST_FAILED", result.message)
+  if (dryRun) return ""
   const imageUrl = (result.body as { imageUrl?: unknown } | null | undefined)?.imageUrl
   if (typeof imageUrl !== "string" || !imageUrl.startsWith("https://"))
     throw new TradingError("INVALID_RESPONSE", "Candle did not return an https URL for the uploaded image.")

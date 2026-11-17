@@ -91,6 +91,51 @@ describe("candle fees (FE-438)", () => {
 describe("candle fees claim (FE-438)", () => {
   const PATH = "/api/v1/agent/fees/MintA/claim"
 
+  test("a Hood claim the server sent shows its hash and whether it finished (BE-3631)", async () => {
+    const f = fixture({
+      [PATH]: () =>
+        Response.json({
+          success: true,
+          mint: "MintA",
+          chain: "hood",
+          dryRun: false,
+          recipient: "0xW",
+          claimable: true,
+          claimed: [{ ...SOL, txHash: "0xabc" }],
+          remaining: [],
+          outcome: "partial",
+          calls: [],
+        }),
+    })
+    expect(await run(["fees", "claim", "MintA"], f.deps)).toBe(0)
+    expect(f.stdout.text).toContain("0xabc")
+    expect(f.stdout.text).toContain("Outcome")
+    expect(f.stdout.text).toContain("partial")
+  })
+
+  test("a Hood signing request is refused plainly, not as an unbound wallet (BE-3631)", async () => {
+    const f = fixture({
+      [PATH]: () =>
+        Response.json({
+          success: true,
+          mint: "MintA",
+          chain: "hood",
+          claimed: [],
+          signing: [{ walletId: "w1", wallet: "0xW", leg: "streamer", body: {} }],
+          remaining: [],
+        }),
+      "/api/v1/agent/wallets/trading": () =>
+        Response.json({
+          scopes: ["launch:write"],
+          privyAppId: "app",
+          isDone: true,
+          page: [{ id: "w1", address: "0xW", chain: "evm", active: true, allowLaunch: false, privyWalletId: "p" }],
+        }),
+    })
+    expect(await run(["fees", "claim", "MintA"], f.deps)).not.toBe(0)
+    expect(f.stderr.text).toContain("Solana fee claims only")
+  })
+
   test("--dry-run posts dryRun true and says nothing was sent", async () => {
     const f = fixture({
       [PATH]: () =>

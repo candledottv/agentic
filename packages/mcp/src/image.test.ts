@@ -100,6 +100,9 @@ function recordingFetch(routes: Record<string, Route>) {
 const UPLOAD = "https://api.test/api/v1/uploads/agent-image"
 const LAUNCH = "https://api.test/api/v1/launch/headless"
 const DRY_RUN = "https://api.test/api/v1/launch/headless/dry-run"
+// BE-2668: the upload route's check-only mode, which hosts nothing.
+const UPLOAD_CHECK = `${UPLOAD}?dryRun=true`
+const BANNER_CHECK = `${UPLOAD}?kind=banner&dryRun=true`
 const LAUNCHED = { success: true, chain: "solana", mint: "NewMint111", signature: "Sig111" }
 // BE-1849: a Solana seed is an atomic launch, built then submitted, with both legs signed by Candle.
 const ATOMIC_BUILD = "https://api.test/api/v1/launch/atomic/build"
@@ -108,6 +111,8 @@ const BUNDLE_LANDED = { status: "landed", bundleId: "b-1", mint: "NewMint111", s
 const SEED = { payer: { type: "main" }, amountRaw: "250000000" }
 const ROUTES = {
   [UPLOAD]: { body: { success: true, imageUrl: HOSTED } },
+  [UPLOAD_CHECK]: { body: { success: true, dryRun: true, checked: true, kind: "image" } },
+  [BANNER_CHECK]: { body: { success: true, dryRun: true, checked: true, kind: "banner" } },
   [LAUNCH]: { body: LAUNCHED },
   [ATOMIC_BUILD]: {
     body: {
@@ -184,10 +189,10 @@ describe("CANDLE_IMAGE_DIR selects the launch schema", () => {
       expect(shape.imageUrl?.isOptional()).toBe(true)
       expect(shape.imagePath?.isOptional()).toBe(true)
       expect(shape.imagePath?.description).toContain(
-        "An absolute image path inside CANDLE_IMAGE_DIR. The file is uploaded and becomes public and permanent, including on a dry run.",
+        "An absolute image path inside CANDLE_IMAGE_DIR. A launch uploads the file and it becomes public and permanent; a dry run only checks it and uploads nothing.",
       )
       expect(shape.imagePath?.description).toContain("does not count against the launch cap")
-      expect(tool.config.description).toContain("public and permanent, on a dry run too")
+      expect(tool.config.description).toContain("A dry run does not")
       expect(`${tool.config.description} ${shape.imagePath?.description}`).not.toMatch(/stays? private|kept private/i)
     }
     // The seeded tool keeps its own fields and still does not advertise the raw buyAmount.
@@ -520,7 +525,7 @@ describe("candle_launch_token with imagePath", () => {
     }
   })
 
-  test("a dry run uploads too, and validates the URL that came back", async () => {
+  test("a dry run checks the file and uploads nothing (BE-2668)", async () => {
     const fetch = recordingFetch(ROUTES)
     const result = await launchTools(env(), fetch).token.handler({
       ...TOKEN,
@@ -528,9 +533,46 @@ describe("candle_launch_token with imagePath", () => {
       dryRun: true,
     })
     expect(result.isError).toBeUndefined()
-    expect(fetch.calls.map((call) => call.url)).toEqual([UPLOAD, DRY_RUN])
-    expect(JSON.parse(String(fetch.calls[1]?.init?.body))).toEqual({ ...TOKEN, imageUrl: HOSTED })
-    expect(JSON.parse(result.content[1]?.text ?? "{}").imageUrl).toBe(HOSTED)
+    expect(fetch.calls.map((call) => call.url)).toEqual([UPLOAD_CHECK, DRY_RUN])
+    expect(fetch.calls.map((call) => call.url)).not.toContain(UPLOAD)
+    expect(fetch.calls[0]?.init?.body as unknown as Uint8Array).toEqual(PNG)
+    const sent = JSON.parse(String(fetch.calls[1]?.init?.body))
+    expect(sent).toEqual({ ...TOKEN, imageChecked: true })
+    expect(sent).not.toHaveProperty("imageUrl")
+    const note = JSON.parse(result.content[1]?.text ?? "{}")
+    expect(note.imageChecked).toBe(true)
+    expect(note.imageUrl).toBeUndefined()
+    expect(note.imageNote).toContain("not uploaded")
+  })
+
+  test("a dry run's local refusals and the API's refusal of the file both stop it before the launch dry run", async () => {
+    const refused = { success: false, error: { code: "UPLOAD_INVALID", message: "Image must be less than 10MB" } }
+    const fetch = recordingFetch({ ...ROUTES, [UPLOAD_CHECK]: { status: 400, body: refused } })
+    const result = await launchTools(env(), fetch).token.handler({
+      ...TOKEN,
+      imagePath: join(dir, "logo.png"),
+      dryRun: true,
+    })
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(result.content[0]?.text ?? "{}")).toEqual(refused)
+    expect(fetch.calls.map((call) => call.url)).toEqual([UPLOAD_CHECK])
+  })
+
+  test("a dry run with both files checks each, image as the token image and banner as a banner", async () => {
+    const fetch = recordingFetch(ROUTES)
+    const result = await launchTools(env(), fetch).token.handler({
+      ...TOKEN,
+      imagePath: join(dir, "logo.png"),
+      bannerPath: join(dir, "logo.png"),
+      dryRun: true,
+    })
+    expect(result.isError).toBeUndefined()
+    expect(fetch.calls.map((call) => call.url)).toEqual([UPLOAD_CHECK, BANNER_CHECK, DRY_RUN])
+    expect(JSON.parse(String(fetch.calls[2]?.init?.body))).toEqual({
+      ...TOKEN,
+      imageChecked: true,
+      bannerChecked: true,
+    })
   })
 
   test("imageUrl alone still launches with no upload, and no second block", async () => {
@@ -678,18 +720,19 @@ describe("candle_launch_and_seed with imagePath", () => {
     expect(parsed.imageNote).toContain("public and permanent")
   })
 
-  test("a dry run uploads too, and the result says the file is public", async () => {
+  test("a dry run checks the file and uploads nothing, and the result says so", async () => {
     const fetch = recordingFetch(ROUTES)
     const result = await launchTools(env(), fetch).seed.handler({
       ...TOKEN,
       imagePath: join(dir, "logo.png"),
       dryRun: true,
     })
-    expect(fetch.calls.map((call) => call.url)).toEqual([UPLOAD, DRY_RUN])
-    expect(JSON.parse(String(fetch.calls[1]?.init?.body))).toEqual({ ...TOKEN, imageUrl: HOSTED })
+    expect(fetch.calls.map((call) => call.url)).toEqual([UPLOAD_CHECK, DRY_RUN])
+    expect(JSON.parse(String(fetch.calls[1]?.init?.body))).toEqual({ ...TOKEN, imageChecked: true })
     const parsed = JSON.parse(result.content[0]?.text ?? "{}")
-    expect(parsed).toMatchObject({ clientLaunchId: "L-1", dryRun: true, imageUrl: HOSTED })
-    expect(parsed.imageNote).toContain("public and permanent")
+    expect(parsed).toMatchObject({ clientLaunchId: "L-1", dryRun: true, imageChecked: true })
+    expect(parsed.imageUrl).toBeUndefined()
+    expect(parsed.imageNote).toContain("not uploaded")
   })
 
   test("a bad devBuy is refused before the upload: a refusal must not cost a publication", async () => {

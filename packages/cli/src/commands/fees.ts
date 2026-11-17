@@ -67,6 +67,14 @@ const REASON_WORDS: Record<string, string> = {
   claimable_by_key: "claimable by this key",
   claimable_via_web_session: "the fees go to this account's web wallet; a signed-in session claims them",
   insufficient_gas: "the recipient wallet cannot cover the network fee",
+  gas_estimate_unavailable: "the network fee could not be estimated; retry",
+}
+
+const HOOD_OUTCOME_WORDS: Record<string, string> = {
+  complete: "complete",
+  partial: "partial: some calls landed and some did not, run the claim again for the rest",
+  indeterminate: "unknown: a call was sent and its result is not known yet, check before running it again",
+  not_started: "nothing was sent",
 }
 
 function reasonText(reason: unknown, missing: string): string {
@@ -151,8 +159,12 @@ export async function feesClaim(args: string[], ctx: CommandContext): Promise<nu
       const signedClaims: Json[] = []
       for (const signing of body.signing as Json[]) {
         const row = rows.find((row) => row.id === signing.walletId && row.address === signing.wallet)
-        if (!row || row.chain !== "solana")
-          throw new TradingError("TEE_WALLET_REQUIRED", "The claim's wallet is not bound to this key")
+        if (row && row.chain !== "solana")
+          throw new TradingError(
+            "TEE_WALLET_REQUIRED",
+            "This CLI signs Solana fee claims only; a Hood claim is sent by the account's embedded wallet",
+          )
+        if (!row) throw new TradingError("TEE_WALLET_REQUIRED", "The claim's wallet is not bound to this key")
         // Claiming earnings does not require the owner's allowLaunch setting. The listing above
         // enforces launch:write; this resolver supplies the wallet's existing local signer only.
         const wallet = await completeTradingWallet(ctx, row, appId, "account:read", "solana", {
@@ -207,6 +219,12 @@ export async function feesClaim(args: string[], ctx: CommandContext): Promise<nu
         for (const row of claimed) {
           if (row.txHash) ctx.deps.stdout.write(`${bold(safeText(row.txHash), style)}\n`)
         }
+      }
+      // Hood: `success` says the request was answered; `outcome` says whether the claim finished.
+      if (typeof body.outcome === "string") {
+        ctx.deps.stdout.write(
+          `${fields([["Outcome", HOOD_OUTCOME_WORDS[body.outcome] ?? safeText(body.outcome)]], style).join("\n")}\n`,
+        )
       }
     }
     if (dryRun) notice(ctx.deps, "stdout", "note", "Nothing was sent.")

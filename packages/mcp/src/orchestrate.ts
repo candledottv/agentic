@@ -27,7 +27,7 @@ import { randomUUID } from "node:crypto"
 import { isEvmChain, requireChain } from "./chains"
 import type { RequestConfig } from "./client"
 import { decimalToRaw, defaultQuoteId, percentOfBalance, QUOTE_DECIMALS } from "./convert"
-import { type ImageFs, imageRefusalBody, resolveLaunchImage, uploadedFields } from "./image"
+import { checkedFields, type ImageFs, imageRefusalBody, resolveLaunchImage, uploadedFields } from "./image"
 import { socialsRefusal } from "./launch-schema"
 import { requestAddressChain } from "./request-chain"
 import { noteVersionHeaders, updateAvailable } from "./update-notice"
@@ -560,7 +560,7 @@ export async function executeLaunchAndSeed(
 
   // After every refusal this tool can decide for itself, and before the launch: an upload is a
   // publication that cannot be taken back, so a bad devBuy must not cost one.
-  const image = await resolveLaunchImage(imageFields, imageDir, cfg, doFetch, imageFs)
+  const image = await resolveLaunchImage(imageFields, imageDir, cfg, doFetch, imageFs, { dryRun: dryRun === true })
   if ("refused" in image) return { text: imageRefusalBody(image.refused, { clientLaunchId }), isError: true }
   if ("uploadFailed" in image) {
     let api: unknown
@@ -572,7 +572,7 @@ export async function executeLaunchAndSeed(
     return { text: JSON.stringify({ clientLaunchId, api }), isError: true }
   }
   // Once a file was uploaded, every result says where, the failures included: it is public either way.
-  const uploaded = uploadedFields(image)
+  const uploaded = { ...uploadedFields(image), ...checkedFields(image) }
 
   const transportFailure = (thrown: unknown): ToolText => {
     const failed = transportError("clientLaunchId", clientLaunchId, thrown)

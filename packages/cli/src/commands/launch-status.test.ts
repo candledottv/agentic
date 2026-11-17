@@ -53,6 +53,31 @@ describe("candle launch status", () => {
     expect(f.stdout.text).not.toContain("progressBps")
   })
 
+  test("prints the quote asset and whether the quote is paused or split", async () => {
+    const f = fixture([
+      body({
+        state: "trading",
+        chain: "hood",
+        mint: MINT,
+        quoteMint: "0x00000000000000000000000000000000000000aa",
+        quoteState: {
+          status: "paused",
+          paused: true,
+          split: true,
+          launchBlocked: true,
+          refusal: "QUOTE_PAUSED",
+          multiplier: "2",
+          pendingMultiplier: "4",
+        },
+      }),
+    ])
+    expect(await run(["launch", "status", "cl-1"], f.deps)).toBe(0)
+    expect(f.stdout.text).toContain("quoteAsset: 0x00000000000000000000000000000000000000aa")
+    expect(f.stdout.text).toContain("quote paused: yes")
+    expect(f.stdout.text).toContain("quote split: yes (multiplier 2), scheduled 4")
+    expect(f.stdout.text).toContain("quote launches: blocked, QUOTE_PAUSED")
+  })
+
   test("--json is the server body", async () => {
     const status = { state: "build", clientLaunchId: "cl-1", chain: "solana" }
     const f = fixture([body(status)])

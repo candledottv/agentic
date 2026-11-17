@@ -109,8 +109,8 @@ launch. Full rules: https://docs.candle.tv/developers/headless-launch#custom-cur
 
 `imageUrl` is always an https URL on the wire. When the image is a file, it is uploaded first and
 the launch is made with the URL Candle returns. An upload is public and permanent, with any
-metadata the file carries, and a dry run uploads too: upload only an image that is meant to be
-public. The file must be a PNG, JPEG, GIF or WebP of at most 10MB.
+metadata the file carries. A dry run does not upload: it checks the file and publishes nothing,
+so dry-run first. Launch only with an image that is meant to be public. The file must be a PNG, JPEG, GIF or WebP of at most 10MB.
 
 - **Local MCP server with `CANDLE_IMAGE_DIR` set:** pass `imagePath`, an absolute path to a file
   inside that directory, in place of `imageUrl` on `candle_launch_and_seed` or

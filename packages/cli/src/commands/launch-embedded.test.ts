@@ -303,6 +303,50 @@ describe("embedded launch through headless, with an optional first buy", () => {
     }
   })
 
+  test("BE-2668: --dry-run with --image checks the file and uploads nothing", async () => {
+    const f = await fixture()
+    const image = join(f.dir, "logo.png")
+    const banner = join(f.dir, "wide.png")
+    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13])
+    await writeFile(image, png)
+    await writeFile(banner, png)
+    const args = launchArgs.map((arg, i) =>
+      arg === "--image-url" ? "--image" : launchArgs[i - 1] === "--image-url" ? image : arg,
+    )
+    expect(await run([...args, "--banner", banner, "--dry-run"], f.deps)).toBe(0)
+    const checks = f.calls.filter((call) => call.path === "/api/v1/uploads/agent-image")
+    // Both files went to the check-only mode; the fixture cannot tell the query, so the proof of
+    // "no upload" is the body the dry run was sent: flags, no URL, and no real launch afterwards.
+    expect(checks).toHaveLength(2)
+    const sent = f.calls.find((call) => call.path === "/api/v1/launch/headless/dry-run")?.body
+    expect(sent).toMatchObject({ imageChecked: true, bannerChecked: true })
+    expect(sent).not.toHaveProperty("imageUrl")
+    expect(sent).not.toHaveProperty("bannerUrl")
+    expect(f.paths()).not.toContain("/api/v1/launch/headless")
+    expect(json(f.stdout.text)).toMatchObject({ dryRun: true, imageChecked: true, bannerChecked: true })
+    expect(json(f.stdout.text).imageUrl).toBeUndefined()
+    expect(humanText(f.stderr.text)).not.toContain(humanText("public and permanent"))
+  })
+
+  test("BE-2668: the check goes to the upload route's dryRun mode", async () => {
+    const urls: string[] = []
+    const f = await fixture()
+    const inner = f.deps.fetch
+    f.deps.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      urls.push(String(input))
+      return inner(input, init)
+    }) as typeof fetch
+    const image = join(f.dir, "logo.png")
+    await writeFile(image, Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]))
+    const args = launchArgs.map((arg, i) =>
+      arg === "--image-url" ? "--image" : launchArgs[i - 1] === "--image-url" ? image : arg,
+    )
+    expect(await run([...args, "--dry-run"], f.deps)).toBe(0)
+    expect(urls.filter((url) => url.includes("/uploads/agent-image")).map((url) => new URL(url).search)).toEqual([
+      "?dryRun=true",
+    ])
+  })
+
   test("noninteractive launch still requires --yes", async () => {
     const f = await fixture()
     f.deps.isTTY.stdin = false

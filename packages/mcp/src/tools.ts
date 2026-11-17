@@ -57,6 +57,7 @@ import { keyedRedirectGuard, type RequestConfig, resolveConfig } from "./client"
 import { CLUSTER_READ_DESCRIPTION, readTokenClusters, tokenClustersShape } from "./cluster-read"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
 import {
+  checkedFields,
   configuredImageDir,
   imageRefusalBody,
   resolveLaunchImage,
@@ -1638,11 +1639,11 @@ const localImageShape = {
     .string()
     .optional()
     .describe(
-      "An absolute image path inside CANDLE_IMAGE_DIR. The file is uploaded and becomes public and permanent, " +
-        "including on a dry run. PNG, JPEG, GIF or WebP, at most 10MB, read from the file's first bytes. " +
+      "An absolute image path inside CANDLE_IMAGE_DIR. A launch uploads the file and it becomes public and permanent; " +
+        "a dry run only checks it and uploads nothing. PNG, JPEG, GIF or WebP, at most 10MB, read from the file's first bytes. " +
         "Uploading spends no funds and does not count against the launch cap; only the upload limit applies. " +
-        "Pass this or imageUrl, never both. The result carries the imageUrl used: pass that on a retry, or " +
-        "after a dry run, instead of uploading the file again. This is the square token image: Candle crops " +
+        "Pass this or imageUrl, never both. A launch's result carries the imageUrl used: pass that on a retry " +
+        "instead of uploading the file again. This is the square token image: Candle crops " +
         "it to a square, so a wide banner belongs in bannerPath, not here",
     ),
   bannerUrl: tokenBannerUrl.describe(`${tokenBannerUrl.description}. Pass this or bannerPath, never both`),
@@ -1651,8 +1652,8 @@ const localImageShape = {
     .optional()
     .describe(
       "An absolute path, inside CANDLE_IMAGE_DIR, to WIDE banner artwork for the token page strip (wider than " +
-        "1.5:1, e.g. 2171x724 or 1200x630). The file is uploaded uncropped and becomes public and permanent, " +
-        "including on a dry run; PNG, JPEG, GIF or WebP, at most 10MB. A square image is refused with " +
+        "1.5:1, e.g. 2171x724 or 1200x630). A launch uploads the file uncropped and it becomes public and permanent; " +
+        "a dry run only checks it and uploads nothing; PNG, JPEG, GIF or WebP, at most 10MB. A square image is refused with " +
         "BANNER_WRONG_SHAPE: send the wide original, not a cropped copy. Pass this or bannerUrl, never both. " +
         "The result carries the bannerUrl used: pass that on a retry instead of uploading the file again",
     ),
@@ -1662,8 +1663,8 @@ const localLaunchAndSeedShape = { ...launchAndSeedShape, ...localImageShape }
 
 /** Added to both launch tools' descriptions where imagePath is offered: an upload is a publication. */
 const IMAGE_PATH_DISCLOSURE =
-  " With imagePath or bannerPath, the file is uploaded first and becomes public and permanent, on a dry run too; " +
-  "nothing about a dry run keeps that file private. imagePath is the square token image (Candle crops it); " +
+  " With imagePath or bannerPath, a launch uploads the file first and it becomes public and permanent. " +
+  "A dry run does not: it checks the file (type, size, shape) and uploads nothing. imagePath is the square token image (Candle crops it); " +
   "a wide banner goes in bannerPath, which is not cropped."
 
 const transferShape = {
@@ -2041,12 +2042,19 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       if (socialsProblem) {
         return { content: [{ type: "text", text: imageRefusalBody(socialsProblem) }], isError: true }
       }
-      const image = await resolveLaunchImage(args, imageDir, getConfig(), doFetch)
+      const image = await resolveLaunchImage(args, imageDir, getConfig(), doFetch, undefined, {
+        dryRun: (args as { dryRun?: unknown }).dryRun === true,
+      })
       if ("refused" in image) {
         return { content: [{ type: "text", text: imageRefusalBody(image.refused) }], isError: true }
       }
       if ("uploadFailed" in image) return { content: [{ type: "text", text: image.uploadFailed }], isError: true }
       const relayed = await callAndRelay("candle_launch_token", image.args, getConfig(), doFetch)
+      if (image.checked) {
+        // A dry run checked the file and published nothing; say so beside the API's verbatim body.
+        const note = JSON.stringify(checkedFields(image))
+        return { ...relayed, content: [...relayed.content, { type: "text" as const, text: note }] }
+      }
       if (image.uploaded === undefined && image.uploadedBanner === undefined) return relayed
       // The API's body stays verbatim in the first block; what this server did rides in a second.
       const uploaded = JSON.stringify({
@@ -2065,6 +2073,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       title: "Get market state",
       description:
         "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. quoteAsset names the pool pair; quoteAssets lists accepted settlement ids, with quoteAssets[0] the default (not a liquidity promise). " +
+        "quoteState, when the quote watcher covers the quote token, says whether it is paused (paused) or in a split hold (split) and whether new launches against it are blocked (launchBlocked, refusal). " +
         EXTERNAL_MARKET_DISCLOSURE +
         " " +
         "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " +

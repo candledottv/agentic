@@ -575,7 +575,7 @@ function readClusterResult(value, mint) {
 }
 
 // src/version.ts
-var SERVER_VERSION = "0.10.32";
+var SERVER_VERSION = "0.10.33";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -816,10 +816,11 @@ async function readImageInDir(imageDir, imagePath, fs = nodeFs, field = "imagePa
     throw new ImageRefusal("IMAGE_TYPE_UNSUPPORTED", `The file at ${field} is not a PNG, JPEG, GIF or WebP image. The type is read from the file's first bytes, not its name. ${NOTHING_UPLOADED}`);
   return { bytes, contentType };
 }
-async function uploadLocalImage(image, kind, cfg, apiKey, doFetch) {
+async function uploadLocalImage(image, kind, cfg, apiKey, doFetch, dryRun = false) {
+  const query = [...kind === "banner" ? ["kind=banner"] : [], ...dryRun ? ["dryRun=true"] : []].join("&");
   let res;
   try {
-    res = await doFetch(`${cfg.apiUrl.replace(/\/$/, "")}/api/v1/uploads/agent-image${kind === "banner" ? "?kind=banner" : ""}`, {
+    res = await doFetch(`${cfg.apiUrl.replace(/\/$/, "")}/api/v1/uploads/agent-image${query ? `?${query}` : ""}`, {
       method: "POST",
       headers: { "Content-Type": image.contentType, "x-api-key": apiKey },
       body: image.bytes
@@ -828,7 +829,7 @@ async function uploadLocalImage(image, kind, cfg, apiKey, doFetch) {
     return {
       refused: {
         code: "MCP_TRANSPORT",
-        message: `The ${kind} upload failed in transit (${error instanceof Error ? error.message : String(error)}). ` + "No launch was attempted. The upload may or may not have reached Candle; if it did, the file is public."
+        message: `The ${kind} upload failed in transit (${error instanceof Error ? error.message : String(error)}). ` + (dryRun ? "No launch was attempted, and nothing was published: a dry run does not host the file." : "No launch was attempted. The upload may or may not have reached Candle; if it did, the file is public.")
       }
     };
   }
@@ -836,6 +837,8 @@ async function uploadLocalImage(image, kind, cfg, apiKey, doFetch) {
   const text = await res.text();
   if (!res.ok)
     return { uploadFailed: text };
+  if (dryRun)
+    return { checked: true };
   let uploaded;
   try {
     uploaded = JSON.parse(text)?.imageUrl;
@@ -851,8 +854,9 @@ async function uploadLocalImage(image, kind, cfg, apiKey, doFetch) {
     };
   return { url: uploaded };
 }
-async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
+async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs, opts = {}) {
   const { imagePath, bannerPath, ...rest } = args;
+  const dryRun = opts.dryRun === true;
   const hasPath = typeof imagePath === "string" && imagePath.length > 0;
   const hasUrl = typeof rest.imageUrl === "string" && rest.imageUrl.length > 0;
   const hasBannerPath = typeof bannerPath === "string" && bannerPath.length > 0;
@@ -899,6 +903,22 @@ async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
     banner = result;
   }
   const launchArgs = { ...rest };
+  if (dryRun) {
+    const checked = {};
+    for (const [file, kind] of [
+      [image, "image"],
+      [banner, "banner"]
+    ]) {
+      if (!file)
+        continue;
+      const result = await uploadLocalImage(file, kind, cfg, cfg.apiKey, doFetch, true);
+      if (!("checked" in result))
+        return result;
+      checked[kind] = true;
+      launchArgs[kind === "image" ? "imageChecked" : "bannerChecked"] = true;
+    }
+    return { args: launchArgs, checked };
+  }
   let uploaded;
   let uploadedBanner;
   if (image) {
@@ -923,6 +943,17 @@ async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
 }
 function imageRefusalBody(refused, extra) {
   return JSON.stringify({ ...extra, success: false, error: { code: refused.code, message: refused.message } });
+}
+var CHECKED_IMAGE_NOTE = "The file was checked and not uploaded: a dry run publishes nothing. A real launch uploads it, or pass an imageUrl you uploaded yourself.";
+function checkedFields(image) {
+  const { checked } = image;
+  if (!checked)
+    return {};
+  return {
+    ...checked.image ? { imageChecked: true } : {},
+    ...checked.banner ? { bannerChecked: true } : {},
+    imageNote: CHECKED_IMAGE_NOTE
+  };
 }
 var UPLOADED_IMAGE_NOTE = "imagePath was uploaded to imageUrl, which is public and permanent. To retry, or to launch after a dry run, pass this imageUrl instead of imagePath, so the file is not uploaded again.";
 var UPLOADED_BANNER_NOTE = "bannerPath was uploaded to bannerUrl, which is public and permanent. To retry, or to launch after a dry run, pass this bannerUrl instead of bannerPath, so the file is not uploaded again.";
@@ -2791,7 +2822,7 @@ async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs, opts 
     if (refused)
       return refused;
   }
-  const image = await resolveLaunchImage(imageFields, imageDir, cfg, doFetch, imageFs);
+  const image = await resolveLaunchImage(imageFields, imageDir, cfg, doFetch, imageFs, { dryRun: dryRun === true });
   if ("refused" in image)
     return { text: imageRefusalBody(image.refused, { clientLaunchId }), isError: true };
   if ("uploadFailed" in image) {
@@ -2803,7 +2834,7 @@ async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs, opts 
     }
     return { text: JSON.stringify({ clientLaunchId, api }), isError: true };
   }
-  const uploaded = uploadedFields(image);
+  const uploaded = { ...uploadedFields(image), ...checkedFields(image) };
   const transportFailure = (thrown) => {
     const failed = transportError("clientLaunchId", clientLaunchId, thrown);
     return Object.keys(uploaded).length === 0 ? failed : { ...failed, text: JSON.stringify({ ...JSON.parse(failed.text), ...uploaded }) };
@@ -8438,13 +8469,13 @@ var tokenImageUrl = launchSchemaField(launchTokenShape, "imageUrl");
 var tokenBannerUrl = launchSchemaField(launchTokenShape, "bannerUrl");
 var localImageShape = {
   imageUrl: tokenImageUrl.optional().describe(`${tokenImageUrl.description}. Pass this or imagePath, never both`),
-  imagePath: z11.string().optional().describe("An absolute image path inside CANDLE_IMAGE_DIR. The file is uploaded and becomes public and permanent, " + "including on a dry run. PNG, JPEG, GIF or WebP, at most 10MB, read from the file's first bytes. " + "Uploading spends no funds and does not count against the launch cap; only the upload limit applies. " + "Pass this or imageUrl, never both. The result carries the imageUrl used: pass that on a retry, or " + "after a dry run, instead of uploading the file again. This is the square token image: Candle crops " + "it to a square, so a wide banner belongs in bannerPath, not here"),
+  imagePath: z11.string().optional().describe("An absolute image path inside CANDLE_IMAGE_DIR. A launch uploads the file and it becomes public and permanent; " + "a dry run only checks it and uploads nothing. PNG, JPEG, GIF or WebP, at most 10MB, read from the file's first bytes. " + "Uploading spends no funds and does not count against the launch cap; only the upload limit applies. " + "Pass this or imageUrl, never both. A launch's result carries the imageUrl used: pass that on a retry " + "instead of uploading the file again. This is the square token image: Candle crops " + "it to a square, so a wide banner belongs in bannerPath, not here"),
   bannerUrl: tokenBannerUrl.describe(`${tokenBannerUrl.description}. Pass this or bannerPath, never both`),
-  bannerPath: z11.string().optional().describe("An absolute path, inside CANDLE_IMAGE_DIR, to WIDE banner artwork for the token page strip (wider than " + "1.5:1, e.g. 2171x724 or 1200x630). The file is uploaded uncropped and becomes public and permanent, " + "including on a dry run; PNG, JPEG, GIF or WebP, at most 10MB. A square image is refused with " + "BANNER_WRONG_SHAPE: send the wide original, not a cropped copy. Pass this or bannerUrl, never both. " + "The result carries the bannerUrl used: pass that on a retry instead of uploading the file again")
+  bannerPath: z11.string().optional().describe("An absolute path, inside CANDLE_IMAGE_DIR, to WIDE banner artwork for the token page strip (wider than " + "1.5:1, e.g. 2171x724 or 1200x630). A launch uploads the file uncropped and it becomes public and permanent; " + "a dry run only checks it and uploads nothing; PNG, JPEG, GIF or WebP, at most 10MB. A square image is refused with " + "BANNER_WRONG_SHAPE: send the wide original, not a cropped copy. Pass this or bannerUrl, never both. " + "The result carries the bannerUrl used: pass that on a retry instead of uploading the file again")
 };
 var localLaunchTokenShape = { ...launchTokenShape, ...localImageShape };
 var localLaunchAndSeedShape = { ...launchAndSeedShape, ...localImageShape };
-var IMAGE_PATH_DISCLOSURE = " With imagePath or bannerPath, the file is uploaded first and becomes public and permanent, on a dry run too; " + "nothing about a dry run keeps that file private. imagePath is the square token image (Candle crops it); " + "a wide banner goes in bannerPath, which is not cropped.";
+var IMAGE_PATH_DISCLOSURE = " With imagePath or bannerPath, a launch uploads the file first and it becomes public and permanent. " + "A dry run does not: it checks the file (type, size, shape) and uploads nothing. imagePath is the square token image (Candle crops it); " + "a wide banner goes in bannerPath, which is not cropped.";
 var transferShape = {
   chain: chainSchema("Which chain the transfer executes on"),
   asset: z11.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).optional().describe("A base asset key. Pass exactly one of asset or mint."),
@@ -8611,13 +8642,19 @@ function registerToolSubset(server, options) {
     if (socialsProblem) {
       return { content: [{ type: "text", text: imageRefusalBody(socialsProblem) }], isError: true };
     }
-    const image = await resolveLaunchImage(args, imageDir, getConfig(), doFetch);
+    const image = await resolveLaunchImage(args, imageDir, getConfig(), doFetch, undefined, {
+      dryRun: args.dryRun === true
+    });
     if ("refused" in image) {
       return { content: [{ type: "text", text: imageRefusalBody(image.refused) }], isError: true };
     }
     if ("uploadFailed" in image)
       return { content: [{ type: "text", text: image.uploadFailed }], isError: true };
     const relayed = await callAndRelay("candle_launch_token", image.args, getConfig(), doFetch);
+    if (image.checked) {
+      const note = JSON.stringify(checkedFields(image));
+      return { ...relayed, content: [...relayed.content, { type: "text", text: note }] };
+    }
     if (image.uploaded === undefined && image.uploadedBanner === undefined)
       return relayed;
     const uploaded = JSON.stringify({
@@ -8628,7 +8665,7 @@ function registerToolSubset(server, options) {
   });
   register("candle_get_market", {
     title: "Get market state",
-    description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. quoteAsset names the pool pair; quoteAssets lists accepted settlement ids, with quoteAssets[0] the default (not a liquidity promise). " + EXTERNAL_MARKET_DISCLOSURE + " " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
+    description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. quoteAsset names the pool pair; quoteAssets lists accepted settlement ids, with quoteAssets[0] the default (not a liquidity promise). " + "quoteState, when the quote watcher covers the quote token, says whether it is paused (paused) or in a split hold (split) and whether new launches against it are blocked (launchBlocked, refusal). " + EXTERNAL_MARKET_DISCLOSURE + " " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
     inputSchema: getMarketShape
   }, async (args) => callAndRelay("candle_get_market", args, getConfig(), doFetch));
   register("candle_quote", {

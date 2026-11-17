@@ -14,8 +14,10 @@
  * operator set `CANDLE_IMAGE_DIR`, and only for files whose REAL path is inside that directory.
  * Everything outside it is refused in one sentence that says nothing about what is there.
  *
- * An upload is a publication. Candle pins the file to public storage, the URL cannot be taken
- * back, and a dry run uploads too, because the dry-run route fetches the image it validates.
+ * An upload is a publication. Candle pins the file to public storage and the URL cannot be taken
+ * back. A dry run therefore does not upload (BE-2668): the file is read and checked here, then sent
+ * to the upload route with `?dryRun=true`, which runs the upload's own checks and hosts nothing, and
+ * the launch dry run is sent with `imageChecked` (and `bannerChecked`) in place of a URL.
  */
 import { type BigIntStats, constants } from "node:fs"
 import { lstat, open, realpath } from "node:fs/promises"
@@ -255,7 +257,13 @@ export type LaunchImage =
    * The launch arguments to send: `imageUrl` (and `bannerUrl`) set, `imagePath` and `bannerPath` gone.
    * `uploaded` and `uploadedBanner` are the URLs an upload returned.
    */
-  | { args: Record<string, unknown>; uploaded?: string; uploadedBanner?: string }
+  | {
+      args: Record<string, unknown>
+      uploaded?: string
+      uploadedBanner?: string
+      /** A dry run checked these files without uploading them: `args` carries `imageChecked` / `bannerChecked`. */
+      checked?: { image?: true; banner?: true }
+    }
   /** Refused on this machine. No launch was attempted. */
   | { refused: { code: string; message: string } }
   /** The upload route refused. Its body, as sent. No launch was attempted. */
@@ -264,36 +272,56 @@ export type LaunchImage =
 type UploadKind = "image" | "banner"
 
 /** POSTs one file to `/uploads/agent-image` (`?kind=banner` for a banner) and returns the https URL. */
+type UploadFailure = { refused: { code: string; message: string } } | { uploadFailed: string }
 async function uploadLocalImage(
   image: LocalImage,
   kind: UploadKind,
   cfg: RequestConfig,
   apiKey: string,
   doFetch: FetchLike,
-): Promise<{ url: string } | { refused: { code: string; message: string } } | { uploadFailed: string }> {
+  dryRun?: false,
+): Promise<{ url: string } | UploadFailure>
+async function uploadLocalImage(
+  image: LocalImage,
+  kind: UploadKind,
+  cfg: RequestConfig,
+  apiKey: string,
+  doFetch: FetchLike,
+  dryRun: true,
+): Promise<{ checked: true } | UploadFailure>
+async function uploadLocalImage(
+  image: LocalImage,
+  kind: UploadKind,
+  cfg: RequestConfig,
+  apiKey: string,
+  doFetch: FetchLike,
+  dryRun = false,
+): Promise<{ url: string } | { checked: true } | UploadFailure> {
+  const query = [...(kind === "banner" ? ["kind=banner"] : []), ...(dryRun ? ["dryRun=true"] : [])].join("&")
   let res: Awaited<ReturnType<FetchLike>>
   try {
-    res = await doFetch(
-      `${cfg.apiUrl.replace(/\/$/, "")}/api/v1/uploads/agent-image${kind === "banner" ? "?kind=banner" : ""}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": image.contentType, "x-api-key": apiKey },
-        body: image.bytes as BodyInit,
-      },
-    )
+    res = await doFetch(`${cfg.apiUrl.replace(/\/$/, "")}/api/v1/uploads/agent-image${query ? `?${query}` : ""}`, {
+      method: "POST",
+      headers: { "Content-Type": image.contentType, "x-api-key": apiKey },
+      body: image.bytes as BodyInit,
+    })
   } catch (error) {
     return {
       refused: {
         code: "MCP_TRANSPORT",
         message:
           `The ${kind} upload failed in transit (${error instanceof Error ? error.message : String(error)}). ` +
-          "No launch was attempted. The upload may or may not have reached Candle; if it did, the file is public.",
+          (dryRun
+            ? "No launch was attempted, and nothing was published: a dry run does not host the file."
+            : "No launch was attempted. The upload may or may not have reached Candle; if it did, the file is public."),
       },
     }
   }
   noteVersionHeaders(res)
   const text = await res.text()
   if (!res.ok) return { uploadFailed: text }
+  // A dry run's answer carries no URL: the route checked the file and hosted nothing.
+  if (dryRun) return { checked: true }
   let uploaded: unknown
   try {
     uploaded = (JSON.parse(text) as { imageUrl?: unknown } | null)?.imageUrl
@@ -330,8 +358,10 @@ export async function resolveLaunchImage(
   cfg: RequestConfig,
   doFetch: FetchLike,
   fs: ImageFs = nodeFs,
+  opts: { dryRun?: boolean } = {},
 ): Promise<LaunchImage> {
   const { imagePath, bannerPath, ...rest } = args
+  const dryRun = opts.dryRun === true
   const hasPath = typeof imagePath === "string" && imagePath.length > 0
   const hasUrl = typeof rest.imageUrl === "string" && rest.imageUrl.length > 0
   const hasBannerPath = typeof bannerPath === "string" && bannerPath.length > 0
@@ -384,6 +414,22 @@ export async function resolveLaunchImage(
   }
 
   const launchArgs: Record<string, unknown> = { ...rest }
+  if (dryRun) {
+    // BE-2668: check, never publish. The API runs the upload's own checks on each file and hosts
+    // neither; the launch dry run then takes the flags in place of the URLs it would fetch.
+    const checked: { image?: true; banner?: true } = {}
+    for (const [file, kind] of [
+      [image, "image"],
+      [banner, "banner"],
+    ] as const) {
+      if (!file) continue
+      const result = await uploadLocalImage(file, kind, cfg, cfg.apiKey, doFetch, true)
+      if (!("checked" in result)) return result
+      checked[kind] = true
+      launchArgs[kind === "image" ? "imageChecked" : "bannerChecked"] = true
+    }
+    return { args: launchArgs, checked }
+  }
   let uploaded: string | undefined
   let uploadedBanner: string | undefined
   if (image) {
@@ -411,6 +457,21 @@ export async function resolveLaunchImage(
 /** The envelope the launch routes use for a refusal, so an agent branches on `error.code` either way. */
 export function imageRefusalBody(refused: { code: string; message: string }, extra?: Record<string, unknown>): string {
   return JSON.stringify({ ...extra, success: false, error: { code: refused.code, message: refused.message } })
+}
+
+/** What a dry run's result says about files it checked and did not upload. */
+export const CHECKED_IMAGE_NOTE =
+  "The file was checked and not uploaded: a dry run publishes nothing. A real launch uploads it, or pass an imageUrl you uploaded yourself."
+
+/** The fields a dry run's result carries for files checked without an upload. */
+export function checkedFields(image: { checked?: { image?: true; banner?: true } }): Record<string, unknown> {
+  const { checked } = image
+  if (!checked) return {}
+  return {
+    ...(checked.image ? { imageChecked: true } : {}),
+    ...(checked.banner ? { bannerChecked: true } : {}),
+    imageNote: CHECKED_IMAGE_NOTE,
+  }
 }
 
 /** What a result says about an upload it made, whether or not the launch that followed succeeded. */
