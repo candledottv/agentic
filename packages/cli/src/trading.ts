@@ -1271,6 +1271,30 @@ function operationPath(ctx: CommandContext, key: string, id: string): string {
     .digest("hex")
   return join(dir, "operations", `${hash}.json`)
 }
+/** BE-3923: how long a passed execute probe is trusted before the next trade asks again. */
+const EXECUTE_PROBE_TTL_MS = 24 * 60 * 60 * 1000
+function executeProbePath(ctx: CommandContext): string {
+  const dir = ctx.deps.env.CANDLE_CONFIG_DIR || join(ctx.deps.env.HOME || homedir(), ".config", "candle")
+  return join(dir, "execute-probe", `${createHash("sha256").update(ctx.apiUrl).digest("hex")}.json`)
+}
+/** True when this API URL passed the deferred-execute probe within the last day. Never throws. */
+export async function executeProbePassed(ctx: CommandContext): Promise<boolean> {
+  try {
+    const saved = JSON.parse(await readFile(executeProbePath(ctx), "utf8")) as { passedAt?: unknown }
+    const age = Date.now() - Number(saved.passedAt)
+    return Number.isFinite(age) && age >= 0 && age < EXECUTE_PROBE_TTL_MS
+  } catch {
+    return false
+  }
+}
+/** Best effort: a failed write only means the next trade probes again. */
+export async function rememberExecuteProbe(ctx: CommandContext): Promise<void> {
+  try {
+    const path = executeProbePath(ctx)
+    await mkdir(join(path, ".."), { recursive: true, mode: 0o700 })
+    await writeFile(path, JSON.stringify({ passedAt: Date.now() }), { mode: 0o600 })
+  } catch {}
+}
 export async function savedOperation(
   ctx: CommandContext,
   key: string,

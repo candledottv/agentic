@@ -58,6 +58,7 @@ import {
   confirmQuote,
   decimalAmount,
   describeWallet,
+  executeProbePassed,
   HIDDEN_QUOTE_LINE,
   HOOD_BASES,
   type JobKind,
@@ -75,6 +76,7 @@ import {
   type QuoteDisplay,
   rawAmount,
   relaySign,
+  rememberExecuteProbe,
   request,
   rowChain,
   runSequencedLegs,
@@ -642,10 +644,17 @@ export async function decimalsFor(
  * JOB_NOT_FOUND, and one that does not answers without a Candle error code at all.
  */
 async function assertDeferredExecuteSupported(ctx: CommandContext, key: string, id: string): Promise<void> {
+  // BE-3923: a deployment that passed the probe is remembered per API URL for a day, so a trade
+  // does not pay the extra round trip each time. Only a pass is cached, and a rollback is bounded
+  // by the expiry.
+  if (await executeProbePassed(ctx)) return
   try {
     await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id })
   } catch (error) {
-    if (error instanceof TradingError && error.code === "JOB_NOT_FOUND") return
+    if (error instanceof TradingError && error.code === "JOB_NOT_FOUND") {
+      await rememberExecuteProbe(ctx)
+      return
+    }
     throw new TradingError(
       "EMBEDDED_PAYER_UNSUPPORTED",
       "This Candle deployment cannot hold an embedded-wallet trade back for confirmation, so the quote could not be shown before the money moved. Nothing was built. Name a TEE wallet with --wallet, or point at a deployment that has it.",
@@ -748,13 +757,25 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
       )
     const kind: OperationKind = fromBase && toBase ? "swap" : "trade"
     const key = await tradingKey(ctx)
-    const prior = await lookupOperation(ctx, key, id, kind)
-    if (prior) return printTradingResult(ctx, prior)
-    const payerWallet = await tradingPayer(ctx, key, flags["--wallet"])
-    const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address }
     const solana = lazySolanaClient(ctx, flags["--rpc-url"])
-    const decimals = await decimalsFor(ctx, from, solana)
-    const outDecimals = await decimalsFor(ctx, to, solana)
+    // BE-3923: the job, wallet and decimals reads are independent and read-only, so they run
+    // together. Settled, not raced: the outcome is then read in the order the serial code had, so
+    // a prior operation still wins over a wallet or RPC failure and no error changes.
+    const [priorRun, payerRun, decimalsRun, outDecimalsRun] = await Promise.allSettled([
+      lookupOperation(ctx, key, id, kind),
+      tradingPayer(ctx, key, flags["--wallet"]),
+      decimalsFor(ctx, from, solana),
+      decimalsFor(ctx, to, solana),
+    ])
+    if (priorRun.status === "rejected") throw priorRun.reason
+    if (priorRun.value) return printTradingResult(ctx, priorRun.value)
+    if (payerRun.status === "rejected") throw payerRun.reason
+    if (decimalsRun.status === "rejected") throw decimalsRun.reason
+    if (outDecimalsRun.status === "rejected") throw outDecimalsRun.reason
+    const payerWallet = payerRun.value
+    const decimals = decimalsRun.value
+    const outDecimals = outDecimalsRun.value
+    const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address }
     let amountRaw: string
     if (percent !== undefined) {
       const reader = await solana()

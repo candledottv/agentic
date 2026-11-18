@@ -96,6 +96,7 @@ async function fixture(
     }
   }
   let built = false
+  const builtIds = new Set<string>()
   const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
     const path = new URL(String(input)).pathname
     // An image upload's body is the file's bytes, not JSON.
@@ -119,7 +120,7 @@ async function fixture(
         ? path.includes("/agent/swap/jobs/")
           ? ok({ success: true, job: opts.swapJob })
           : Response.json({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, { status: 404 })
-        : built
+        : built && (builtIds.size === 0 || builtIds.has(decodeURIComponent(path.split("/").pop() ?? "")))
           ? ok({ success: true, job: { status: "built" } })
           : Response.json({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, { status: 404 })
     if (path === "/api/v1/agent/wallets/trading")
@@ -164,6 +165,7 @@ async function fixture(
       if (path.includes("launch") && opts.launchBuildError)
         return Response.json({ success: false, error: opts.launchBuildError }, { status: 400 })
       built = true
+      if (typeof body?.clientTradeId === "string") builtIds.add(body.clientTradeId)
       const echo = body?.hide === true && !opts.noHideEcho ? { hide: true } : {}
       if (path.includes("launch"))
         return ok({ success: true, transaction: "unsigned", maxDebitLamports: "30000000", expiresAt: 10000, ...echo })
@@ -812,6 +814,35 @@ describe("TEE CLI trading", () => {
     // Two: the pre-build support probe, then the execution itself, after the quote was shown.
     expect(executes).toHaveLength(2)
     expect(JSON.parse(f.stdout.text)).toMatchObject({ status: "executed", wallet: expect.any(String) })
+  })
+  // ── BE-3923: the CLI fast path ─────────────────────────────────────────────────────────────
+  test("a passed execute probe is cached, so the next embedded trade does not repeat it", async () => {
+    const f = await fixture()
+    const args = (id: string) => [
+      "swap",
+      "SOL",
+      mint,
+      "--amount",
+      "1",
+      "--wallet",
+      embedded,
+      "--yes",
+      "--json",
+      "--client-trade-id",
+      id,
+    ]
+    expect(await run(args("probe-cache-1"), f.deps)).toBe(0)
+    expect(await run(args("probe-cache-2"), f.deps)).toBe(0)
+    const bodies = f.calls.filter((call) => call.path === "/api/v1/trade/agent/execute").map((call) => call.body)
+    // First trade: probe + execute. Second trade: execute only.
+    expect(bodies).toHaveLength(3)
+  })
+  test("a deployment without the execute route is never cached as supported", async () => {
+    const f = await fixture({ noExecuteRoute: true })
+    const args = ["swap", "SOL", mint, "--amount", "1", "--wallet", embedded, "--yes", "--json"]
+    expect(await run(args, f.deps)).toBe(1)
+    expect(await run([...args, "--client-trade-id", "probe-cache-3"], f.deps)).toBe(1)
+    expect(f.calls.filter((call) => call.path === "/api/v1/trade/agent/execute")).toHaveLength(2)
   })
   test("declining an embedded quote executes nothing", async () => {
     const f = await fixture({ prompt: "n" })

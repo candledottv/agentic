@@ -25956,6 +25956,26 @@ function operationPath(ctx, key, id) {
   const hash = createHash2("sha256").update(JSON.stringify([ctx.apiUrl, key, id])).digest("hex");
   return join6(dir, "operations", `${hash}.json`);
 }
+function executeProbePath(ctx) {
+  const dir = ctx.deps.env.CANDLE_CONFIG_DIR || join6(ctx.deps.env.HOME || homedir2(), ".config", "candle");
+  return join6(dir, "execute-probe", `${createHash2("sha256").update(ctx.apiUrl).digest("hex")}.json`);
+}
+async function executeProbePassed(ctx) {
+  try {
+    const saved = JSON.parse(await readFile8(executeProbePath(ctx), "utf8"));
+    const age = Date.now() - Number(saved.passedAt);
+    return Number.isFinite(age) && age >= 0 && age < EXECUTE_PROBE_TTL_MS;
+  } catch {
+    return false;
+  }
+}
+async function rememberExecuteProbe(ctx) {
+  try {
+    const path = executeProbePath(ctx);
+    await mkdir7(join6(path, ".."), { recursive: true, mode: 448 });
+    await writeFile4(path, JSON.stringify({ passedAt: Date.now() }), { mode: 384 });
+  } catch {}
+}
 async function savedOperation(ctx, key, id) {
   try {
     return JSON.parse(await readFile8(operationPath(ctx, key, id), "utf8"));
@@ -26118,7 +26138,7 @@ function payerSignature(transaction) {
     throw new TradingError("INVALID_RESPONSE", "Missing payer signature.");
   return base58.encode(bytes.subarray(offset, offset + 64));
 }
-var CANCELLED_EXIT = 5, TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, HIDDEN_QUOTE_LINE = "this order will not appear in the public activity stream", BASES, HOOD_BASES, SWAP_SUBMIT_EVIDENCE, TRADE_BROADCAST_PATHS, TRADE_BROADCAST_EVIDENCE, sequencedLegSchema, legKindSchema, landedLegSchema, sequencedSchema, ERC20_TRANSFER_GAS = 65000n, ETH_TRANSFER_GAS = 21000n, RESERVE_FEE_MULTIPLIER = 2n, RESERVE_EXTRA_ERC20_TRANSFERS = 1, TradingUsage;
+var CANCELLED_EXIT = 5, TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, HIDDEN_QUOTE_LINE = "this order will not appear in the public activity stream", BASES, HOOD_BASES, SWAP_SUBMIT_EVIDENCE, TRADE_BROADCAST_PATHS, TRADE_BROADCAST_EVIDENCE, sequencedLegSchema, legKindSchema, landedLegSchema, sequencedSchema, ERC20_TRANSFER_GAS = 65000n, ETH_TRANSFER_GAS = 21000n, RESERVE_FEE_MULTIPLIER = 2n, RESERVE_EXTRA_ERC20_TRANSFERS = 1, TradingUsage, EXECUTE_PROBE_TTL_MS;
 var init_trading = __esm(() => {
   init_sha3();
   init_esm();
@@ -26296,6 +26316,7 @@ var init_trading = __esm(() => {
   }).passthrough();
   TradingUsage = class TradingUsage extends Error {
   };
+  EXECUTE_PROBE_TTL_MS = 24 * 60 * 60 * 1000;
 });
 
 // src/bridge.ts
@@ -28211,11 +28232,15 @@ async function decimalsFor(ctx, asset, client) {
   return decimals;
 }
 async function assertDeferredExecuteSupported(ctx, key, id) {
+  if (await executeProbePassed(ctx))
+    return;
   try {
     await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
   } catch (error) {
-    if (error instanceof TradingError && error.code === "JOB_NOT_FOUND")
+    if (error instanceof TradingError && error.code === "JOB_NOT_FOUND") {
+      await rememberExecuteProbe(ctx);
       return;
+    }
     throw new TradingError("EMBEDDED_PAYER_UNSUPPORTED", "This Candle deployment cannot hold an embedded-wallet trade back for confirmation, so the quote could not be shown before the money moved. Nothing was built. Name a TEE wallet with --wallet, or point at a deployment that has it.");
   }
   throw new TradingError("INVALID_RESPONSE", "The execute route answered for a trade that does not exist.");
@@ -28294,14 +28319,27 @@ async function swap2(args, ctx) {
       throw new TradingError("INVALID_AMOUNT", "Percent must be greater than 0 and at most 100 (up to six decimal places).");
     const kind = fromBase && toBase ? "swap" : "trade";
     const key = await tradingKey(ctx);
-    const prior = await lookupOperation(ctx, key, id, kind);
-    if (prior)
-      return printTradingResult(ctx, prior);
-    const payerWallet = await tradingPayer(ctx, key, flags["--wallet"]);
-    const wallet3 = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address };
     const solana = lazySolanaClient(ctx, flags["--rpc-url"]);
-    const decimals = await decimalsFor(ctx, from, solana);
-    const outDecimals = await decimalsFor(ctx, to, solana);
+    const [priorRun, payerRun, decimalsRun, outDecimalsRun] = await Promise.allSettled([
+      lookupOperation(ctx, key, id, kind),
+      tradingPayer(ctx, key, flags["--wallet"]),
+      decimalsFor(ctx, from, solana),
+      decimalsFor(ctx, to, solana)
+    ]);
+    if (priorRun.status === "rejected")
+      throw priorRun.reason;
+    if (priorRun.value)
+      return printTradingResult(ctx, priorRun.value);
+    if (payerRun.status === "rejected")
+      throw payerRun.reason;
+    if (decimalsRun.status === "rejected")
+      throw decimalsRun.reason;
+    if (outDecimalsRun.status === "rejected")
+      throw outDecimalsRun.reason;
+    const payerWallet = payerRun.value;
+    const decimals = decimalsRun.value;
+    const outDecimals = outDecimalsRun.value;
+    const wallet3 = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address };
     let amountRaw;
     if (percent !== undefined) {
       const reader2 = await solana();
