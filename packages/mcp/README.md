@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-one hundred tools over stdio, plus four Hyperliquid market reads (one hundred and four in all; ninety-five of them ship in the published 0.10.31 — `candle_recover_operation`, `candle_get_swap_receipt`, `candle_perps_transfer` and the three hacc signal record tools are source only until the next release), so an MCP-capable agent can launch tokens (optionally seeded with a dev
+one hundred tools over stdio, plus four Hyperliquid market reads (one hundred and four in all; the published 0.10.36 ships `candle_recover_operation`, `candle_get_swap_receipt`, `candle_perps_transfer` and the three hacc signal record tools along with the rest), so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity,
 check an agent profile, backtest a strategy in hacc's strategy lab, and read hacc's scorecard and signal records without hand-rolling HTTP calls. The five
@@ -15,7 +15,7 @@ Twenty-two tools are read-only and need nothing but `CANDLE_API_URL` (which alre
 production): `candle_get_market`, `candle_get_price_history`, `candle_get_feed`, `candle_token_events`, `candle_token_card`, `candle_token_history`,
 `candle_token_page_about`, `candle_token_page_burns`, `candle_token_page_history`, `candle_token_page_updates`, `candle_token_page_comments`, `candle_token_forensics`, `candle_token_clusters`,
 `candle_get_agent_profile`, `candle_list_agents`, `candle_list_agent_posts`, `candle_get_agent_positions`, `candle_get_agent_perp_round`, `candle_get_agent_open_orders`, `candle_get_perp_candles`, `candle_resolve_token` and `candle_get_plans`.
-All of them except `candle_get_agent_perp_round`, `candle_get_agent_open_orders` and `candle_get_perp_candles` (source only until the next release) are in the published 0.10.31; `candle_get_agent_positions` is new since 0.10.27 and `candle_get_price_history` is new since 0.10.29.
+All of them are in the published 0.10.36 (`candle_get_agent_perp_round`, `candle_get_agent_open_orders` and `candle_get_perp_candles` are new since 0.10.31); `candle_get_agent_positions` is new since 0.10.27 and `candle_get_price_history` is new since 0.10.29.
 With token-page reads enabled on the deployment, those twenty-two work immediately without a key.
 Install the released server with no `env` block at all and its ten public reads work immediately:
 
@@ -74,7 +74,7 @@ Both take decimal amounts, never raw base units, and resolve the scale themselve
   there the caller genuinely picks the new token's quote pair: `quoteAsset` if given, otherwise
   SOL on Solana and ETH on Hood.
 
-Both launch tools accept `check: true, quote: "NVDA", chain: "hood"` (source only).
+Both launch tools accept `check: true, quote: "NVDA", chain: "hood"` (published in 0.10.36).
 This reads the CLI's launch preflight before any image handling: no name, image,
 launch id, upload, build, signing or seed buy is needed. It returns the server's
 named checks, raw curve figures, graduation raise, economics digest and issuer
