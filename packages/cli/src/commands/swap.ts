@@ -47,6 +47,7 @@ import { isRateLimited, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solan
 import { solanaSpendProblem } from "../solana-verify"
 import { terminalLines } from "../terminal-text"
 import {
+  assertHideEchoed,
   BASES,
   baseAsset,
   CANCELLED_EXIT,
@@ -57,6 +58,7 @@ import {
   confirmQuote,
   decimalAmount,
   describeWallet,
+  HIDDEN_QUOTE_LINE,
   HOOD_BASES,
   type JobKind,
   type Json,
@@ -654,17 +656,22 @@ async function assertDeferredExecuteSupported(ctx: CommandContext, key: string, 
   throw new TradingError("INVALID_RESPONSE", "The execute route answered for a trade that does not exist.")
 }
 
+/** `--hide` is a trade order's flag; a base-asset swap or bridge is refused by the API, so refused here too. */
+const HIDE_TOKEN_ONLY =
+  "--hide applies to a token buy or sell (a curve trade). A swap between base assets and a bridge cannot be hidden; remove --hide."
+
 export async function swap(args: string[], ctx: CommandContext): Promise<number> {
   if (args.includes("--dry-run")) return swapCheck(args, ctx)
   const parsed = parseArgs(args, {
     valueFlags: ["--amount", "--percent", "--wallet", "--to", "--client-trade-id", "--slippage-bps", "--rpc-url"],
-    booleanFlags: ["--yes", "--wait"],
+    booleanFlags: ["--yes", "--wait", "--hide"],
   })
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json)
     return 2
   }
   const flags = parsed.values
+  const hide = parsed.booleans.has("--hide")
   const id = flags["--client-trade-id"] ?? `swap-${randomUUID()}`
   const slippage = Number(flags["--slippage-bps"] ?? "50")
   if (!Number.isInteger(slippage) || slippage < 0 || slippage > AGENT_MAX_SLIPPAGE_BPS) {
@@ -680,7 +687,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
       ctx.deps,
       // --wallet is optional since BE-249: an account with exactly one payer does not have to name
       // it, and the payer may now be the embedded wallet as well as a TEE one.
-      "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--to <tee>] [--wait] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token. SOL or USDC to ETH or USDG, or back, is a bridge between two TEE wallets.",
+      "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--to <tee>] [--wait] [--hide] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token. SOL or USDC to ETH or USDG, or back, is a bridge between two TEE wallets.",
       ctx.json,
     )
     return 2
@@ -692,6 +699,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
     // Ember 4c (R1): a base asset on each chain is a bridge. Every other cross-chain pair is still
     // CHAIN_MISMATCH below. --to only selects a bridge destination.
     const bridge = bridgePair(fromAsset, toAsset)
+    if (hide && (bridge || (fromAsset.base && toAsset.base))) throw new TradingUsage(HIDE_TOKEN_ONLY)
     if (bridge)
       return await bridgeSwap(ctx, {
         flags,
@@ -713,6 +721,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
         wait: parsed.booleans.has("--wait"),
         flags,
         yes: parsed.booleans.has("--yes"),
+        hide,
         id,
         slippage,
         from: fromAsset,
@@ -801,7 +810,11 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
             // Sent only for the embedded payer: a TEE payer's build never executed anyway, and
             // the route refuses the flag alongside a linked payer.
             ...(payerWallet.kind === "embedded" ? { deferExecution: true } : {}),
+            // BE-3673: sent only when asked, so no other trade body carries the key.
+            ...(hide ? { hide: true } : {}),
           })
+    // Fail closed before anything is signed or executed: an API that ignored hide would make it public.
+    assertHideEchoed(built, hide)
     if (built.job || built.status === "executed") return printTradingResult(ctx, { ...built, clientTradeId: id, kind })
     const data = swapBuildSchema.parse(kind === "swap" ? built.payload : built)
     if (kind === "swap" && (data.venue !== "jupiter" || data.recipient !== wallet.address))
@@ -845,6 +858,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
       minOutRaw: data.minOutRaw,
       minimumReceivedRaw: minimumRaw,
       tokenRisks: artifacts.tokenRisks ?? [],
+      ...(hide ? { hidden: HIDDEN_QUOTE_LINE } : {}),
     }
     if (!(await confirmQuote(ctx, quote, parsed.booleans.has("--yes"))))
       return printCancelledResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind, quote })
@@ -1031,6 +1045,8 @@ async function hoodSwap(
     flags: Record<string, string>
     yes: boolean
     wait: boolean
+    /** BE-3673: token trades only; a Hood base swap refuses it before this runs. */
+    hide?: boolean
     id: string
     slippage: number
     from: TradeAsset
@@ -1107,6 +1123,7 @@ async function hoodSwap(
     maxSlippageBps: args.slippage,
     payer: payerBody,
     ...(payer.kind === "embedded" ? { deferExecution: true } : {}),
+    ...(args.hide ? { hide: true } : {}),
   }
   // BE-3369 (BE-3361 4.5): a Hood TEE payer previews first. The preview holds nothing, so a run that
   // stops before confirmation (no TTY, a decline, a held wallet, too little gas) leaves the wallet
@@ -1125,7 +1142,10 @@ async function hoodSwap(
           "PAIR_UNSUPPORTED",
           `This token settles in ${safeText(preview.artifacts.quoteAsset ?? "an unknown asset")}, not ${base}. Nothing was built.`,
         )
-      const shown = previewQuote(preview, { intent, wallet: payerAddress, kind, token, from, to, outDecimals })
+      const shown = {
+        ...previewQuote(preview, { intent, wallet: payerAddress, kind, token, from, to, outDecimals }),
+        ...(args.hide ? { hidden: HIDDEN_QUOTE_LINE } : {}),
+      }
       const stop = previewStop(preview)
       if (stop) {
         printQuote(ctx, shown)
@@ -1179,6 +1199,13 @@ async function hoodSwap(
     if (preview && error instanceof TradingError && error.code === "QUOTE_MOVED")
       return tradingFailure(ctx, quoteMoved(preview, error.details ?? {}, { to: to.asset, outDecimals }))
     throw error
+  }
+  // BE-3673: fail closed. A TEE hold taken by this build is released by the cancel hint below.
+  try {
+    assertHideEchoed(built, Boolean(args.hide))
+  } catch (error) {
+    const held = typeof built.operationId === "string" ? built.operationId : undefined
+    throw held && error instanceof TradingError ? withCancelHint(error, held) : error
   }
   if (built.job || built.status === "executed") return replay({ ...built, clientTradeId: id, kind })
   const body = (kind === "swap" ? built.payload : built) as Json | undefined
@@ -1260,6 +1287,7 @@ async function hoodSwap(
       minOutRaw: data.minOutRaw,
       minimumReceivedRaw: minimumRaw,
       tokenRisks: artifacts.tokenRisks ?? [],
+      ...(args.hide ? { hidden: HIDDEN_QUOTE_LINE } : {}),
     }
     if (sequenced) {
       const leg = sequenced.nextLeg
@@ -1518,7 +1546,8 @@ export async function hoodPreview(
   buildBody: Json,
   kind: OperationKind,
 ): Promise<HoodPreviewBody | undefined> {
-  const { clientTradeId: _ignored, deferExecution: _never, ...previewBody } = buildBody
+  // `hide` is placed on the build only: the preview holds nothing and records nothing.
+  const { clientTradeId: _ignored, deferExecution: _never, hide: _hide, ...previewBody } = buildBody
   const answer = await hoodPost(
     ctx,
     key,

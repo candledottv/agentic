@@ -24867,6 +24867,17 @@ import { createHash as createHash2, sign as sign3 } from "node:crypto";
 import { mkdir as mkdir7, open as open4, readFile as readFile7, rename as rename4, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir2 } from "node:os";
 import { join as join6 } from "node:path";
+function hideEchoed2(body) {
+  if (body === null || typeof body !== "object")
+    return false;
+  const record2 = body;
+  return record2.hide === true || record2.streamHidden === true;
+}
+function assertHideEchoed(body, wanted, stage = "build") {
+  if (!wanted || hideEchoed2(body))
+    return;
+  throw new TradingError("HIDE_NOT_CONFIRMED", `--hide was asked for, but the server's ${stage} response did not confirm the order is hidden (no hide: true echo). This Candle deployment may predate --hide or have it off. Nothing was signed or sent by this check; if an order was already placed it is NOT hidden. Remove --hide to place a visible order.`, { details: { hide: false } });
+}
 function baseAsset(value) {
   return Object.keys(BASES).find((key) => key === value.toUpperCase() || BASES[key]?.mint === value);
 }
@@ -25420,6 +25431,9 @@ ${quote.fee ? `Tier fee: ${safeText(quote.fee.bps)} bps (${safeText(quote.fee.fe
   if (quote.feeWallet)
     output.write(`Fee wallet: ${safeText(quote.feeWallet)}
 `);
+  if (quote.hidden)
+    output.write(`Hidden: ${safeText(quote.hidden)}
+`);
   if (quote.legs)
     output.write(`Legs, signed one at a time: ${quote.legs.map(safeText).join(", ")}
 `);
@@ -25514,7 +25528,7 @@ function payerSignature(transaction) {
     throw new TradingError("INVALID_RESPONSE", "Missing payer signature.");
   return base58.encode(bytes.subarray(offset, offset + 64));
 }
-var CANCELLED_EXIT = 5, TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, BASES, HOOD_BASES, SWAP_SUBMIT_EVIDENCE, TRADE_BROADCAST_PATHS, TRADE_BROADCAST_EVIDENCE, sequencedLegSchema, legKindSchema, landedLegSchema, sequencedSchema, ERC20_TRANSFER_GAS = 65000n, ETH_TRANSFER_GAS = 21000n, RESERVE_FEE_MULTIPLIER = 2n, RESERVE_EXTRA_ERC20_TRANSFERS = 1, TradingUsage;
+var CANCELLED_EXIT = 5, TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, HIDDEN_QUOTE_LINE = "this order will not appear in the public activity stream", BASES, HOOD_BASES, SWAP_SUBMIT_EVIDENCE, TRADE_BROADCAST_PATHS, TRADE_BROADCAST_EVIDENCE, sequencedLegSchema, legKindSchema, landedLegSchema, sequencedSchema, ERC20_TRANSFER_GAS = 65000n, ETH_TRANSFER_GAS = 21000n, RESERVE_FEE_MULTIPLIER = 2n, RESERVE_EXTRA_ERC20_TRANSFERS = 1, TradingUsage;
 var init_trading = __esm(() => {
   init_sha3();
   init_esm();
@@ -27088,13 +27102,15 @@ async function teeCheck(args, ctx) {
 async function swapCheck(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--amount", "--percent", "--wallet", "--to", "--client-trade-id", "--slippage-bps", "--rpc-url"],
-    booleanFlags: ["--dry-run", "--yes", "--wait"]
+    booleanFlags: ["--dry-run", "--yes", "--wait", "--hide"]
   });
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
     return 2;
   }
   try {
+    if (parsed.booleans.has("--hide"))
+      throw new TradingError("VALIDATION_FAILED", "--dry-run records nothing, so --hide does nothing here. Drop --hide.");
     if (parsed.booleans.has("--yes") || parsed.values["--client-trade-id"] !== undefined || parsed.values["--percent"] !== undefined)
       throw new TradingError("VALIDATION_FAILED", "--dry-run refuses --yes, --client-trade-id and --percent.");
     if (parsed.positionals.length !== 2 || !parsed.values["--amount"]) {
@@ -27619,13 +27635,14 @@ async function swap2(args, ctx) {
     return swapCheck(args, ctx);
   const parsed = parseArgs(args, {
     valueFlags: ["--amount", "--percent", "--wallet", "--to", "--client-trade-id", "--slippage-bps", "--rpc-url"],
-    booleanFlags: ["--yes", "--wait"]
+    booleanFlags: ["--yes", "--wait", "--hide"]
   });
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
     return 2;
   }
   const flags = parsed.values;
+  const hide = parsed.booleans.has("--hide");
   const id = flags["--client-trade-id"] ?? `swap-${randomUUID5()}`;
   const slippage = Number(flags["--slippage-bps"] ?? "50");
   if (!Number.isInteger(slippage) || slippage < 0 || slippage > AGENT_MAX_SLIPPAGE_BPS) {
@@ -27633,13 +27650,15 @@ async function swap2(args, ctx) {
     return 2;
   }
   if (parsed.positionals.length !== 2 || Boolean(flags["--amount"]) === Boolean(flags["--percent"]) || !validClientId(id)) {
-    writeUsageFailure(ctx.deps, "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--to <tee>] [--wait] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token. SOL or USDC to ETH or USDG, or back, is a bridge between two TEE wallets.", ctx.json);
+    writeUsageFailure(ctx.deps, "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--to <tee>] [--wait] [--hide] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token. SOL or USDC to ETH or USDG, or back, is a bridge between two TEE wallets.", ctx.json);
     return 2;
   }
   try {
     const fromAsset = classifyAsset(parsed.positionals[0]);
     const toAsset = classifyAsset(parsed.positionals[1]);
     const bridge = bridgePair(fromAsset, toAsset);
+    if (hide && (bridge || fromAsset.base && toAsset.base))
+      throw new TradingUsage(HIDE_TOKEN_ONLY);
     if (bridge)
       return await bridgeSwap(ctx, {
         flags,
@@ -27662,6 +27681,7 @@ async function swap2(args, ctx) {
         wait: parsed.booleans.has("--wait"),
         flags,
         yes: parsed.booleans.has("--yes"),
+        hide,
         id,
         slippage,
         from: fromAsset,
@@ -27735,8 +27755,10 @@ async function swap2(args, ctx) {
       amountRaw,
       maxSlippageBps: slippage,
       payer,
-      ...payerWallet.kind === "embedded" ? { deferExecution: true } : {}
+      ...payerWallet.kind === "embedded" ? { deferExecution: true } : {},
+      ...hide ? { hide: true } : {}
     });
+    assertHideEchoed(built, hide);
     if (built.job || built.status === "executed")
       return printTradingResult(ctx, { ...built, clientTradeId: id, kind });
     const data = swapBuildSchema.parse(kind === "swap" ? built.payload : built);
@@ -27761,7 +27783,8 @@ async function swap2(args, ctx) {
       minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to}`,
       minOutRaw: data.minOutRaw,
       minimumReceivedRaw: minimumRaw,
-      tokenRisks: artifacts.tokenRisks ?? []
+      tokenRisks: artifacts.tokenRisks ?? [],
+      ...hide ? { hidden: HIDDEN_QUOTE_LINE } : {}
     };
     if (!await confirmQuote(ctx, quote, parsed.booleans.has("--yes")))
       return printCancelledResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind, quote });
@@ -27935,7 +27958,8 @@ async function hoodSwap(ctx, args) {
     amountRaw,
     maxSlippageBps: args.slippage,
     payer: payerBody,
-    ...payer.kind === "embedded" ? { deferExecution: true } : {}
+    ...payer.kind === "embedded" ? { deferExecution: true } : {},
+    ...args.hide ? { hide: true } : {}
   };
   let preview;
   if (payer.kind === "tee") {
@@ -27945,7 +27969,10 @@ async function hoodSwap(ctx, args) {
         throw new TradingError("INVALID_RESPONSE", "The Hood preview does not name the requested payer; nothing was built.");
       if (kind === "trade" && preview.artifacts.quoteAsset !== base2.toLowerCase())
         throw new TradingError("PAIR_UNSUPPORTED", `This token settles in ${safeText(preview.artifacts.quoteAsset ?? "an unknown asset")}, not ${base2}. Nothing was built.`);
-      const shown = previewQuote(preview, { intent, wallet: payerAddress, kind, token: token2, from, to, outDecimals });
+      const shown = {
+        ...previewQuote(preview, { intent, wallet: payerAddress, kind, token: token2, from, to, outDecimals }),
+        ...args.hide ? { hidden: HIDDEN_QUOTE_LINE } : {}
+      };
       const stop = previewStop(preview);
       if (stop) {
         printQuote(ctx, shown);
@@ -27985,6 +28012,12 @@ async function hoodSwap(ctx, args) {
     if (preview && error instanceof TradingError && error.code === "QUOTE_MOVED")
       return tradingFailure(ctx, quoteMoved(preview, error.details ?? {}, { to: to.asset, outDecimals }));
     throw error;
+  }
+  try {
+    assertHideEchoed(built, Boolean(args.hide));
+  } catch (error) {
+    const held = typeof built.operationId === "string" ? built.operationId : undefined;
+    throw held && error instanceof TradingError ? withCancelHint(error, held) : error;
   }
   if (built.job || built.status === "executed")
     return replay({ ...built, clientTradeId: id, kind });
@@ -28029,7 +28062,8 @@ async function hoodSwap(ctx, args) {
       minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to.asset}`,
       minOutRaw: data.minOutRaw,
       minimumReceivedRaw: minimumRaw,
-      tokenRisks: artifacts.tokenRisks ?? []
+      tokenRisks: artifacts.tokenRisks ?? [],
+      ...args.hide ? { hidden: HIDDEN_QUOTE_LINE } : {}
     };
     if (sequenced) {
       const leg = sequenced.nextLeg;
@@ -28175,7 +28209,7 @@ async function hoodPost(ctx, key, path, body, optional = false) {
   });
 }
 async function hoodPreview(ctx, key, buildBody, kind) {
-  const { clientTradeId: _ignored, deferExecution: _never, ...previewBody } = buildBody;
+  const { clientTradeId: _ignored, deferExecution: _never, hide: _hide, ...previewBody } = buildBody;
   const answer = await hoodPost(ctx, key, kind === "swap" ? "/api/v1/agent/swap/preview" : "/api/v1/trade/agent/preview", previewBody, true);
   if (!answer)
     return;
@@ -28623,7 +28657,7 @@ async function swapRecover(args, ctx) {
   }
   return hoodOperationRead(ctx, parsed.values["--operation"], parsed.values["--hash"], true);
 }
-var isText = (value) => typeof value === "string" && value.length > 0, textsOf = (value) => Array.isArray(value) ? value.filter(isText) : [], AGENT_MAX_SLIPPAGE_BPS = 5000, SLIPPAGE_RANGE_MESSAGE, settlementSchema, SWAP_RECEIPT_USAGE = "Usage: candle swap receipt <hash> | candle swap receipt --client-swap-id <id>", BRIDGE_STATUS_WORDS, bridgeFactsSchema, HOOD_TRADE_LEGS, hoodPreviewSchema, HOOD_ERROR_FACTS, HOOD_LEG_NAMES, weiText = (value) => value !== undefined && /^\d+$/.test(value) ? `${formatUnits(BigInt(value), 18)} ETH` : "unknown", hoodCancelPath = (operationId) => `/api/v1/agent/hood-tee/operations/${encodeURIComponent(operationId)}/cancel`, hoodCancelCommand = (operationId) => `candle swap cancel --operation ${operationId}`, SWAP_CANCEL_USAGE = "Usage: candle swap cancel --operation <operationId>", bridgeBuildSchema;
+var isText = (value) => typeof value === "string" && value.length > 0, textsOf = (value) => Array.isArray(value) ? value.filter(isText) : [], AGENT_MAX_SLIPPAGE_BPS = 5000, SLIPPAGE_RANGE_MESSAGE, settlementSchema, SWAP_RECEIPT_USAGE = "Usage: candle swap receipt <hash> | candle swap receipt --client-swap-id <id>", BRIDGE_STATUS_WORDS, bridgeFactsSchema, HIDE_TOKEN_ONLY = "--hide applies to a token buy or sell (a curve trade). A swap between base assets and a bridge cannot be hidden; remove --hide.", HOOD_TRADE_LEGS, hoodPreviewSchema, HOOD_ERROR_FACTS, HOOD_LEG_NAMES, weiText = (value) => value !== undefined && /^\d+$/.test(value) ? `${formatUnits(BigInt(value), 18)} ETH` : "unknown", hoodCancelPath = (operationId) => `/api/v1/agent/hood-tee/operations/${encodeURIComponent(operationId)}/cancel`, hoodCancelCommand = (operationId) => `candle swap cancel --operation ${operationId}`, SWAP_CANCEL_USAGE = "Usage: candle swap cancel --operation <operationId>", bridgeBuildSchema;
 var init_swap = __esm(() => {
   init_zod();
   init_api_key_file();
@@ -79456,7 +79490,7 @@ var HELP = {
     ],
     rows: [
       {
-        invocation: "<from> <to> --amount <n>|--percent <n> --wallet <tee> [--to <tee>] [--wait]",
+        invocation: "<from> <to> --amount <n>|--percent <n> --wallet <tee> [--to <tee>] [--wait] [--hide]",
         description: "Quote, confirm and swap on Solana or Hood, or bridge between them"
       },
       {
@@ -79477,6 +79511,10 @@ var HELP = {
       }
     ],
     flags: [
+      {
+        invocation: "--hide",
+        description: "Keep this one token buy or sell out of Candle's public activity stream: no stream entry, no agent mark and no Candle handle on it. Set when the order is placed, never edited later. A token trade only (a swap between base assets and a bridge refuse it; so does --dry-run). Fails closed: if the server does not confirm the order is hidden, nothing is signed and the command exits 1. An older candle refuses the flag as unknown."
+      },
       {
         invocation: "--dry-run",
         description: "Check a TEE payer and quote. Hood swaps and bridges preview fees, legs, gas, route and destination without builds or locks; Solana same-chain checks the built payload. Never signs, sends, prompts or saves a local operation. Refuses --yes, --percent, --wait and --client-trade-id; embedded payers are unsupported"
@@ -97246,13 +97284,13 @@ async function embeddedLaunch(ctx, key, args) {
       ...typeof raw2?.bundleId === "string" ? { details: { bundleId: raw2.bundleId } } : {}
     });
   }
-  return printTradingResult(ctx, {
-    ...exports_external.record(exports_external.unknown()).parse(result2.body),
-    clientTradeId: id,
-    kind: "launch",
-    quote,
-    ...used
-  });
+  const landed = exports_external.record(exports_external.unknown()).parse(result2.body);
+  const printed = await printTradingResult(ctx, { ...landed, clientTradeId: id, kind: "launch", quote, ...used });
+  if (flags["--hide"] === "true" && !hideEchoed2(landed)) {
+    notice(ctx.deps, "stderr", "danger", `--hide was passed, but the launch response did not confirm it is hidden. Treat launch ${id} as PUBLIC, and do not send it again: it already ran. The result above carries its identifiers.`);
+    return printed || 1;
+  }
+  return printed;
 }
 async function settleUnconfirmedLaunch(ctx, flags, id, chain2, refusal4, serverCode, serverMessage, shown) {
   const stage = String(refusal4.stage);

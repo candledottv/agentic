@@ -543,13 +543,20 @@ export async function teeCheck(args: string[], ctx: CommandContext): Promise<num
 export async function swapCheck(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
     valueFlags: ["--amount", "--percent", "--wallet", "--to", "--client-trade-id", "--slippage-bps", "--rpc-url"],
-    booleanFlags: ["--dry-run", "--yes", "--wait"],
+    booleanFlags: ["--dry-run", "--yes", "--wait", "--hide"],
   })
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json)
     return 2
   }
   try {
+    // BE-3673: a dry run builds nothing that is recorded, so there is nothing to hide; refuse rather
+    // than let a preview suggest the flag was honored.
+    if (parsed.booleans.has("--hide"))
+      throw new TradingError(
+        "VALIDATION_FAILED",
+        "--dry-run records nothing, so --hide does nothing here. Drop --hide.",
+      )
     if (
       parsed.booleans.has("--yes") ||
       parsed.values["--client-trade-id"] !== undefined ||

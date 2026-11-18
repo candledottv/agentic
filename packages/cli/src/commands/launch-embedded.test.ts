@@ -37,6 +37,8 @@ async function fixture(
     prompt?: string
     badFill?: boolean
     lost?: boolean
+    /** BE-3673: which answers echo `hide: true` when the request asked for it (default: both). */
+    hideEcho?: { dryRun: boolean; live: boolean }
     /** BE-3575: the headless route's refusal, as `fail()` sends it. */
     headlessError?: Record<string, unknown>
     /** BE-3575: one `getSignatureStatuses` value per read, the last repeated; a string throws. */
@@ -81,6 +83,7 @@ async function fixture(
           success: true,
           dryRun: true,
           resolved: { chain: body.chain, quoteAsset: body.quoteAsset ?? "sol", mode: body.mode ?? "open" },
+          ...(body.hide === true && (opts.hideEcho?.dryRun ?? true) ? { hide: true } : {}),
           ...(body.buyAmount && body.chain === "solana"
             ? {
                 launchWallet: EMBEDDED,
@@ -111,6 +114,7 @@ async function fixture(
           clientLaunchId: body.clientLaunchId,
           mint: EMBEDDED,
           signature: "launchSig",
+          ...(body.hide === true && (opts.hideEcho?.live ?? true) ? { hide: true } : {}),
           ...(body.buyAmount
             ? { devBuySignature: "buySig", bundleId: "bundle-1", booking: { state: "booked", missing: [] } }
             : {}),
@@ -137,6 +141,37 @@ async function fixture(
     },
   }
 }
+
+describe("BE-3673: embedded launch --hide checks the live response too", () => {
+  test("a live success that echoes hide exits 0", async () => {
+    const f = await fixture()
+    expect(await run([...launchArgs, "--yes", "--hide"], f.deps)).toBe(0)
+    expect(f.calls.at(-1)?.body).toMatchObject({ hide: true })
+    expect(json(f.stdout.text)).toMatchObject({ success: true, hide: true })
+  })
+
+  test("a dry run that echoes hide but a live success that does not: result kept, warning, exit nonzero", async () => {
+    const f = await fixture({ hideEcho: { dryRun: true, live: false } })
+    const code = await run([...launchArgs, "--yes", "--hide"], f.deps)
+    expect(code).not.toBe(0)
+    expect(f.paths().filter((path) => path === "/api/v1/launch/headless")).toHaveLength(1)
+    // The launch ran, so its identifiers stay available for recovery.
+    expect(json(f.stdout.text)).toMatchObject({
+      success: true,
+      clientTradeId: "launch-1",
+      mint: EMBEDDED,
+      signature: "launchSig",
+    })
+    expect(humanText(f.stderr.text)).toContain(humanText("Treat launch launch-1 as PUBLIC"))
+    expect(humanText(f.stderr.text)).toContain(humanText("do not send it again"))
+  })
+
+  test("a dry run without the echo never reaches the live launch", async () => {
+    const f = await fixture({ hideEcho: { dryRun: false, live: false } })
+    expect(await run([...launchArgs, "--yes", "--hide"], f.deps)).not.toBe(0)
+    expect(f.paths()).not.toContain("/api/v1/launch/headless")
+  })
+})
 
 describe("embedded launch through headless, with an optional first buy", () => {
   test.each([false, true])("buy=%s: dry run, confirm, one headless request, one JSON value", async (buy) => {

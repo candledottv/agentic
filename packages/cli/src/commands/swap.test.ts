@@ -70,6 +70,8 @@ async function fixture(
     launchBuildError?: Record<string, unknown>
     /** BE-1283: a Candle error POST /uploads/agent-image answers instead of a URL, until cleared. */
     uploadError?: { code: string; message: string } | null
+    /** BE-3673: an API that predates `hide`: it accepts the body and never echoes `hide: true`. */
+    noHideEcho?: boolean
     /** SEC-003: the transaction a Solana build returns and the chain it simulates against. Honest by default. */
     scenario?: (honest: SwapBuild) => SolanaScenario
   } = {},
@@ -162,8 +164,9 @@ async function fixture(
       if (path.includes("launch") && opts.launchBuildError)
         return Response.json({ success: false, error: opts.launchBuildError }, { status: 400 })
       built = true
+      const echo = body?.hide === true && !opts.noHideEcho ? { hide: true } : {}
       if (path.includes("launch"))
-        return ok({ success: true, transaction: "unsigned", maxDebitLamports: "30000000", expiresAt: 10000 })
+        return ok({ success: true, transaction: "unsigned", maxDebitLamports: "30000000", expiresAt: 10000, ...echo })
       const quote = {
         status: "built",
         swapId: "server-swap",
@@ -197,6 +200,7 @@ async function fixture(
       return path.includes("trade/agent")
         ? ok({
             ...quote,
+            ...echo,
             ...(main && opts.mainBuildStatus ? { status: opts.mainBuildStatus } : {}),
             chain: "solana",
             walletAddress: main ? embedded : mint,
@@ -411,6 +415,62 @@ describe("TEE CLI trading", () => {
       expect(methods).toContain("simulateTransaction")
       const simulated = f.calls.findIndex((call) => call.body?.method === "simulateTransaction")
       expect(simulated).toBeLessThan(f.calls.findIndex((call) => call.path.endsWith("/sign")))
+    })
+  })
+  describe("BE-3673: --hide", () => {
+    const tokenArgs = ["swap", "SOL", mint, "--amount", "1", "--wallet", "tee", "--yes", "--json"]
+    test("a hidden token trade sends hide: true on the build, says so before the confirm, and proceeds on the echo", async () => {
+      const f = await fixture()
+      expect(await run([...tokenArgs, "--hide"], f.deps)).toBe(0)
+      expect(f.calls.find((call) => call.path.endsWith("trade/agent/build"))?.body).toMatchObject({ hide: true })
+      expect(humanText(f.stderr.text)).toContain(
+        humanText("Hidden: this order will not appear in the public activity stream"),
+      )
+      expect(f.calls.some((call) => call.path.endsWith("/submit"))).toBe(true)
+    })
+    test("no body mentions hide unless it was asked for", async () => {
+      const f = await fixture()
+      expect(await run(tokenArgs, f.deps)).toBe(0)
+      const l = await fixture()
+      expect(await run([...launchArgs], l.deps)).toBe(0)
+      for (const call of [...f.calls, ...l.calls].filter((c) => c.path !== "/rpc"))
+        expect(JSON.stringify(call.body ?? {})).not.toContain("hide")
+    })
+    test("a server that does not echo hide fails closed: exit 1, HIDE_NOT_CONFIRMED, nothing signed or submitted", async () => {
+      const f = await fixture({ noHideEcho: true })
+      expect(await run([...tokenArgs, "--hide"], f.deps)).toBe(1)
+      expect(JSON.parse(f.stdout.text).code).toBe("HIDE_NOT_CONFIRMED")
+      expect(f.calls.some((call) => /\/(sign|submit|execute)$/.test(call.path) && call.body !== undefined)).toBe(false)
+      expect(f.stdout.text).not.toContain('"status":"executed"')
+    })
+    test("an embedded-wallet trade without the echo is never executed", async () => {
+      const f = await fixture({ noHideEcho: true, teeWallets: 0 })
+      expect(await run(["swap", "SOL", mint, "--amount", "1", "--yes", "--json", "--hide"], f.deps)).toBe(1)
+      // the support probe is the only /execute call, and it carries only the id
+      expect(f.calls.filter((call) => call.path === "/api/v1/trade/agent/execute")).toHaveLength(1)
+    })
+    test("a base-asset swap and a bridge refuse --hide before any request", async () => {
+      const f = await fixture()
+      expect(await run([...swapArgs, "--hide"], f.deps)).toBe(2)
+      expect(f.calls.filter((call) => call.path !== "/rpc")).toHaveLength(0)
+      expect(await run(["swap", "SOL", "ETH", "--amount", "1", "--hide", "--json"], f.deps)).toBe(2)
+      expect(f.calls.filter((call) => call.path !== "/rpc")).toHaveLength(0)
+    })
+    test("--dry-run refuses --hide", async () => {
+      const f = await fixture()
+      expect(await run([...tokenArgs.filter((a) => a !== "--yes"), "--dry-run", "--hide"], f.deps)).toBe(1)
+      expect(f.calls.some((call) => call.path.endsWith("/build"))).toBe(false)
+    })
+    test("a hidden launch sends hide: true and proceeds on the echo", async () => {
+      const f = await fixture()
+      await run([...launchArgs, "--hide"], f.deps)
+      expect(f.calls.find((call) => call.path.endsWith("launch/self/build"))?.body).toMatchObject({ hide: true })
+    })
+    test("a launch the server did not echo as hidden is never signed", async () => {
+      const f = await fixture({ noHideEcho: true })
+      expect(await run([...launchArgs, "--hide"], f.deps)).toBe(1)
+      expect(JSON.parse(f.stdout.text).code).toBe("HIDE_NOT_CONFIRMED")
+      expect(f.calls.some((call) => /\/(sign|confirm)$/.test(call.path))).toBe(false)
     })
   })
   test("declining confirmation makes no sign or submit request", async () => {

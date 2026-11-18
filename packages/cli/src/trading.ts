@@ -214,6 +214,29 @@ export interface QuoteDisplay {
   maxLoss?: string
   /** BE-2519: a Solana launch's fee wallet, chosen or defaulted, said in one line before the confirm. */
   feeWallet?: string
+  /** BE-3673: said in one line before the confirm when the order was placed with --hide. */
+  hidden?: string
+}
+/** The one line a `--hide` order's quote carries. */
+export const HIDDEN_QUOTE_LINE = "this order will not appear in the public activity stream"
+/**
+ * BE-3673 (design 5.6): `--hide` fails closed. An API that predates the flag, or has it switched
+ * off, would never hide the order; it must not be signed, executed or reported as hidden. The API
+ * answers a build, dry run or one-shot with `hide: true` when it stored the order as hidden
+ * (`streamHidden` is the stored name and is accepted too). Anything else is a refusal.
+ */
+export function hideEchoed(body: unknown): boolean {
+  if (body === null || typeof body !== "object") return false
+  const record = body as Record<string, unknown>
+  return record.hide === true || record.streamHidden === true
+}
+export function assertHideEchoed(body: unknown, wanted: boolean, stage = "build"): void {
+  if (!wanted || hideEchoed(body)) return
+  throw new TradingError(
+    "HIDE_NOT_CONFIRMED",
+    `--hide was asked for, but the server's ${stage} response did not confirm the order is hidden (no hide: true echo). This Candle deployment may predate --hide or have it off. Nothing was signed or sent by this check; if an order was already placed it is NOT hidden. Remove --hide to place a visible order.`,
+    { details: { hide: false } },
+  )
 }
 export const BASES: Record<string, { mint: string; decimals: number }> = {
   SOL: { mint: "So11111111111111111111111111111111111111112", decimals: 9 },
@@ -1320,6 +1343,7 @@ export function printQuote(ctx: CommandContext, quote: QuoteDisplay): void {
   if (quote.maxDebitLamports) output.write(`Maximum launch debit: ${safeText(quote.maxDebitLamports)} lamports\n`)
   if (quote.maxLoss) output.write(`Most this wallet can lose: ${safeText(quote.maxLoss)}\n`)
   if (quote.feeWallet) output.write(`Fee wallet: ${safeText(quote.feeWallet)}\n`)
+  if (quote.hidden) output.write(`Hidden: ${safeText(quote.hidden)}\n`)
   if (quote.legs) output.write(`Legs, signed one at a time: ${quote.legs.map(safeText).join(", ")}\n`)
   if (quote.gas) output.write(`Gas: ${safeText(quote.gas)}\n`)
   if (quote.reserve) output.write(`Gas reserve: ${safeText(quote.reserve)}\n`)

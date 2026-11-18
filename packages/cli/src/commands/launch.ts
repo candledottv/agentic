@@ -55,6 +55,7 @@ import {
   decimalAmount,
   embeddedSchema,
   HOOD_BASES,
+  hideEchoed,
   type Json,
   launchBuildSchema,
   mayHaveLanded,
@@ -1514,13 +1515,21 @@ async function embeddedLaunch(
       ...(typeof raw?.bundleId === "string" ? { details: { bundleId: raw.bundleId } } : {}),
     })
   }
-  return printTradingResult(ctx, {
-    ...z.record(z.unknown()).parse(result.body),
-    clientTradeId: id,
-    kind: "launch",
-    quote,
-    ...used,
-  })
+  const landed = z.record(z.unknown()).parse(result.body)
+  const printed = await printTradingResult(ctx, { ...landed, clientTradeId: id, kind: "launch", quote, ...used })
+  // The dry run echoed hide, but only this response describes the order that ran. Without the echo
+  // the launch may be public: keep the result for recovery (it is printed above), say so, and exit
+  // nonzero. Never suggest sending it again; the launch id is spent.
+  if (flags["--hide"] === "true" && !hideEchoed(landed)) {
+    notice(
+      ctx.deps,
+      "stderr",
+      "danger",
+      `--hide was passed, but the launch response did not confirm it is hidden. Treat launch ${id} as PUBLIC, and do not send it again: it already ran. The result above carries its identifiers.`,
+    )
+    return printed || 1
+  }
+  return printed
 }
 
 /**

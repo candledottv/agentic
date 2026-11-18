@@ -301,7 +301,7 @@ export const HELP: Record<string, Topic> = {
     ],
     rows: [
       {
-        invocation: "<from> <to> --amount <n>|--percent <n> --wallet <tee> [--to <tee>] [--wait]",
+        invocation: "<from> <to> --amount <n>|--percent <n> --wallet <tee> [--to <tee>] [--wait] [--hide]",
         description: "Quote, confirm and swap on Solana or Hood, or bridge between them",
       },
       {
@@ -324,6 +324,11 @@ export const HELP: Record<string, Topic> = {
       },
     ],
     flags: [
+      {
+        invocation: "--hide",
+        description:
+          "Keep this one token buy or sell out of Candle's public activity stream: no stream entry, no agent mark and no Candle handle on it. Set when the order is placed, never edited later. A token trade only (a swap between base assets and a bridge refuse it; so does --dry-run). Fails closed: if the server does not confirm the order is hidden, nothing is signed and the command exits 1. An older candle refuses the flag as unknown.",
+      },
       {
         invocation: "--dry-run",
         description:
