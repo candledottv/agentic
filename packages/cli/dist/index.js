@@ -778,7 +778,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.30";
+var CLI_VERSION = "0.13.31";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -10561,7 +10561,7 @@ var init_token_clusters = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.35";
+var SERVER_VERSION = "0.10.36";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -80418,7 +80418,7 @@ var HELP = {
       },
       {
         invocation: "transfer --to-dex <dex> <amount> | --from-dex <dex> <amount>|--all | transfer status <id>",
-        description: "Move free USDC between this wallet's own Hyperliquid main perps and builder dex balances (perps:write); destination is fixed to itself, no other address or subaccount accepted. A non-USDC dex is refused; held position margin stays in place. Perps to spot is not in this release. Source only until the transfer policy probe and authorized rollout"
+        description: "Move free USDC between this wallet's own Hyperliquid main perps and builder dex balances (perps:write); destination is fixed to itself, no other address or subaccount accepted. A non-USDC dex is refused; held position margin stays in place. Perps to spot is not in this release. Needs an API with the transfer endpoint and a wallet whose transfer policy has been migrated"
       },
       {
         invocation: "withdraw <amount> --to solana|hood [--wallet <evm tee>] | withdraw status <id>",

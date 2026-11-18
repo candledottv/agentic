@@ -294,7 +294,7 @@ const fill = await candle.trade({ mint: "9dXSV8...CNDL", side: "buy", amountRaw:
 - `closeEmptyAccounts()` closes the embedded wallet's empty token accounts and returns the rent;
   with `wallet` and `privyWalletId`, a Solana TEE wallet's, signed through `signLinkedTransaction()`.
 - The `perps*` methods (`perpsSetup`, `perpsOpen`, `perpsClose`, `perpsOrders`,
-  `perpsPositions`, ...) drive Hyperliquid perps.
+  `perpsPositions`, ...) drive Hyperliquid perps. `perpsTransfer` (0.6.25 and later) moves USDC between the wallet's own main perps and a builder dex balance (`perps:write`; no destination address, perps to spot refused).
 
 Perps setup and signing use this release's builder pin,
 `0xc43ff1f6ad9f93fc94558e07c2071b8458e7470b`, independently of the API.

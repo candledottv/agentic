@@ -534,7 +534,7 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "transfer --to-dex <dex> <amount> | --from-dex <dex> <amount>|--all | transfer status <id>",
         description:
-          "Move free USDC between this wallet's own Hyperliquid main perps and builder dex balances (perps:write); destination is fixed to itself, no other address or subaccount accepted. A non-USDC dex is refused; held position margin stays in place. Perps to spot is not in this release. Source only until the transfer policy probe and authorized rollout",
+          "Move free USDC between this wallet's own Hyperliquid main perps and builder dex balances (perps:write); destination is fixed to itself, no other address or subaccount accepted. A non-USDC dex is refused; held position margin stays in place. Perps to spot is not in this release. Needs an API with the transfer endpoint and a wallet whose transfer policy has been migrated",
       },
       {
         invocation: "withdraw <amount> --to solana|hood [--wallet <evm tee>] | withdraw status <id>",
