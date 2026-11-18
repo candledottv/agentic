@@ -171,6 +171,7 @@ anyone signs up for anything.
 | `candle_perps_flatten` | yes | cancel every main-perp order, then close every main-perp position |
 | `candle_perps_reduce_only` | yes | read the key's reduce-only setting, or turn it on |
 | `candle_perps_deposit` | yes | deposit onto the Hyperliquid account through Relay from the Solana or Hood TEE wallet (needs `swap:write`) |
+| `candle_perps_transfer` | yes | source-only local MCP own-account USDC moves between main perps and a builder dex; `perps:write`, no caller destination/subaccount; recorded probe receipt and authorized policy rollout required; unavailable through core/TUI |
 | `candle_perps_orders` | yes | open orders and every action Candle built |
 | `candle_perps_positions` | yes | positions and account value, read live, with each position's liquidation distance and the risk level (the risk fields are in 0.10.19 and later) |
 | `candle_perps_account` | yes | the account line and recent realized P&L, fees and funding, read from Hyperliquid directly |

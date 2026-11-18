@@ -148,6 +148,9 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   // User-started only (K-3).
   candle_transfer: card("transfer"),
   candle_sweep: card("transfer"),
+  // BE-3765: ordinary local MCP only. The core's transfer class refuses harness calls
+  // and is never offered; this card does not add a core/TUI transfer approval flow.
+  candle_perps_transfer: card("transfer"),
 }
 
 /**

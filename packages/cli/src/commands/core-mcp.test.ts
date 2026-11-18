@@ -201,7 +201,11 @@ describe("the core MCP face (A-5)", () => {
     expect(names).toEqual(
       [
         ...TOOL_NAMES.filter(
-          (name) => name !== "candle_transfer" && name !== "candle_sweep" && !TOKEN_PAGE_CORE_DEFERRED.includes(name),
+          (name) =>
+            name !== "candle_transfer" &&
+            name !== "candle_sweep" &&
+            name !== "candle_perps_transfer" &&
+            !TOKEN_PAGE_CORE_DEFERRED.includes(name),
         ),
         "candle_get_signals",
       ].sort(),
@@ -226,6 +230,15 @@ describe("the core MCP face (A-5)", () => {
     // A transfer called by name anyway is refused, not run.
     const direct = await harnessClientCall(core, h.token, "candle_transfer", { to: "x", amount: "1" })
     expect(direct).toMatchObject({ success: false, error: { code: "TRANSFER_USER_ONLY" } })
+    const before = core.m.api.length
+    const ownBalance = await harnessClientCall(core, h.token, "candle_perps_transfer", {
+      clientTransferId: "core-must-refuse",
+      mode: "toDex",
+      dex: "xyz",
+      amount: "1",
+    })
+    expect(ownBalance).toMatchObject({ success: false, error: { code: "TRANSFER_USER_ONLY" } })
+    expect(core.m.api).toHaveLength(before)
   })
 
   test("T-15: a live trade answers APPROVAL_REQUIRED with its clientTradeId; get_operation reads awaiting_approval, then the record", async () => {

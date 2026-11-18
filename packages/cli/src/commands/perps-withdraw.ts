@@ -46,6 +46,7 @@ import { CANCELLED_EXIT, type Json, listTradingWallets, safeText, TradingError, 
 import { isVaultError } from "../vault/errors"
 import { closeVault } from "../vault/store"
 import { perpsRequest, perpsWallet, typedDataAuthorization, venueRefusal } from "./perps"
+import { submitTransferBuild, type TransferBuild, verifyTransferBuild } from "./perps-transfer"
 import { printTradingResult, tradingFailure } from "./swap"
 import {
   groupAddress,
@@ -109,6 +110,15 @@ async function withdrawStatus(ctx: CommandContext, id: string): Promise<number> 
   const key = await tradingKey(ctx)
   const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/withdraw/${encodeURIComponent(id)}`)
   if (ctx.json) return printTradingResult(ctx, result)
+  if (result.status === "sweeping") {
+    writeFields(ctx.deps, "stdout", [
+      ["Withdrawal", id],
+      ["Status", "sweeping"],
+      ["Retained USDC", JSON.stringify(result.retained ?? [])],
+      ["Transfers", JSON.stringify(result.transfers ?? [])],
+    ])
+    return 0
+  }
   const to = (result.to ?? {}) as Record<string, unknown>
   const relay = result.relay as { status?: unknown } | null | undefined
   writeFields(ctx.deps, "stdout", [
@@ -257,12 +267,53 @@ export async function perpsWithdraw(args: string[], ctx: CommandContext): Promis
       )
 
     writeFields(ctx.deps, "stderr", [["Withdrawal", id]])
-    const build = (await perpsRequest(ctx, key, "/api/v1/agent/perps/withdraw", {
+    let build = (await perpsRequest(ctx, key, "/api/v1/agent/perps/withdraw", {
       clientWithdrawalId: id,
       amountUsdc: amount,
       to,
       wallet: wallet.id,
     })) as unknown as PerpsWithdrawBuild
+    // BE-3765: the same withdrawal id resumes its persisted, sequential own-balance sweep.
+    // Confirm the free-balance moves before signing any, then retain the existing vault gate for
+    // the actual Relay withdrawal. The server must produce a quote only after every sweep.
+    let sweepConfirmed = false
+    for (let step = 0; (build as unknown as Json).status === "sweeping"; step++) {
+      if (step >= 128)
+        throw new TradingError("PERPS_SWEEP_INCOMPLETE", `Sweep step limit reached; resume with --id ${id}.`)
+      const answer = build as unknown as { nextTransfer?: TransferBuild; retained?: unknown }
+      const next = answer.nextTransfer
+      if (!next || !["fromDex", "fromSpot"].includes(next.mode) || next.walletId !== wallet.id)
+        throw new TradingError("PERPS_BUILD_REFUSED", "Invalid withdrawal sweep build")
+      const problem = verifyTransferBuild(next, {
+        id: next.id,
+        account: wallet.address,
+        mode: next.mode,
+        dex: next.dex,
+        amountMicros: null,
+      })
+      if (problem) throw new TradingError("PERPS_BUILD_REFUSED", problem)
+      if (!sweepConfirmed) {
+        writeFields(ctx.deps, "stderr", [
+          [
+            "Withdrawal sweeps",
+            "Move only free builder-dex USDC back to this same wallet's main balance; open positions stay open. Spot USDC is not swept.",
+          ],
+          ["Retained balances", JSON.stringify(answer.retained ?? [])],
+        ])
+        if ((await ctx.deps.promptLine("Type confirm to sweep free balances: ")).trim().toLowerCase() !== "confirm")
+          throw new TradingError("CANCELLED", "Sweep not confirmed; nothing signed", { exitCode: CANCELLED_EXIT })
+        sweepConfirmed = true
+      }
+      const result = await submitTransferBuild(ctx, key, wallet, next)
+      const refusal = venueRefusal(result.exchange)
+      if (refusal) throw new TradingError("PERPS_VENUE_REFUSED", refusal)
+      build = (await perpsRequest(ctx, key, "/api/v1/agent/perps/withdraw", {
+        clientWithdrawalId: id,
+        amountUsdc: amount,
+        to,
+        wallet: wallet.id,
+      })) as unknown as PerpsWithdrawBuild
+    }
     // The id already names a withdrawal past its quote: report it and sign nothing again.
     if (build.status !== "quoted") return printTradingResult(ctx, build as unknown as Json)
     const refused = (problem: string) =>

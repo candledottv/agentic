@@ -1,3 +1,4 @@
+import { executePerpsTransfer, perpsTransferShape } from "./perps-transfer"
 /**
  * The agent-rail tools this MCP server exposes, and their mapping onto the Candle REST surface
  * (apps/api/src/routes/{launch-headless,markets,activity,users,trade}.ts).
@@ -278,6 +279,7 @@ export const TOOL_NAMES = [
   "candle_perps_reduce_only",
   // Hyperliquid perps C (BE-647): the Relay deposit (perps.ts).
   "candle_perps_deposit",
+  "candle_perps_transfer",
   // BE-1582 (spec A-12): read-only risk and visibility, read from Hyperliquid by this server.
   "candle_perps_account",
   "candle_perps_risk",
@@ -372,6 +374,7 @@ type RestToolName = Exclude<
   | PerpsToolName
   | PerpsMarketToolName
   | "candle_perps_deposit"
+  | "candle_perps_transfer"
   | LabToolName
   | SignalRecordToolName
 >
@@ -3490,6 +3493,20 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: perpsShapes.candle_perps_reduce_only,
     },
     perpsTool("candle_perps_reduce_only"),
+  )
+
+  register(
+    "candle_perps_transfer",
+    {
+      title: "Transfer own Hyperliquid USDC",
+      description:
+        "Move USDC between this wallet's own main perps and builder dex balances (toDex, fromDex). Needs perps:write. No destination address accepted. clientTransferId is required for safe retries; submit=false checks without signing.",
+      inputSchema: perpsTransferShape,
+    },
+    async (args) => {
+      const result = await executePerpsTransfer(args as Record<string, unknown>, getConfig(), env, doFetch)
+      return { content: [{ type: "text" as const, text: result.text }], ...(result.isError ? { isError: true } : {}) }
+    },
   )
 
   register(

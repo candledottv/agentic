@@ -76,6 +76,7 @@ import {
 import { perpsBook, perpsCandles, perpsMarket, perpsMarkets } from "./commands/perps-markets"
 import { perpsAccount, perpsRisk, perpsThresholds, perpsWatch } from "./commands/perps-risk"
 import { perpsSpot } from "./commands/perps-spot"
+import { perpsTransfer } from "./commands/perps-transfer"
 import { perpsWithdraw } from "./commands/perps-withdraw"
 import { maybeAutoRenew, planAutoRenew, planBuy, planRenew, planStatus } from "./commands/plan"
 import { plans } from "./commands/plans"
@@ -378,6 +379,9 @@ const COMMANDS: Record<string, CommandRoute> = {
       // BE-1573 (withdrawals W1): HyperCore to the key's own Solana or Hood TEE wallet, under the
       // bound key's opt-in `perps:withdraw`. One unlock and one typed confirm; no --yes.
       withdraw: perpsWithdraw,
+      // BE-3765 (H2-A): USDC between this wallet's own Hyperliquid balances (main perps, a builder
+      // dex, spot), under `perps:write`: the money stays in the wallet.
+      transfer: perpsTransfer,
       // BE-3771 (HM2): Hyperliquid spot from the same TEE wallet: markets, balances, buy, sell, cancel.
       spot: perpsSpot,
     },

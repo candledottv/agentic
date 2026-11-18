@@ -1,4 +1,5 @@
 import type { HoodTeeOperation } from "./hood-tee"
+import { type OwnTransferBuild, transferAmountMicros, verifyOwnTransferBuild } from "./hyperliquid-transfer"
 /**
  * Typed client for the Candle agent rail REST surface (docs/headless-launch.md and
  * docs/agent-trading.md are the authoritative endpoint references; apps/api/src/routes/{launch,
@@ -2933,16 +2934,77 @@ export interface PerpsWithdrawStatus {
   [key: string]: unknown
 }
 
+/** A retryable withdrawal first returns one own-balance move at a time; no Relay quote exists yet. */
+export interface PerpsWithdrawalSweep {
+  success: true
+  id: string
+  status: "sweeping"
+  nextTransfer: PerpsTransferStatus & OwnTransferBuild & { signature?: string }
+  retained: Array<{ dex: string; amountUsdc: string }>
+  sweepTransferIds: string[]
+}
+
+export interface PerpsWithdrawalSweepStatus {
+  success: true
+  id: string
+  status: "sweeping"
+  retained: Array<{ dex: string; amountUsdc: string }>
+  transfers: Array<{ id: string; status: string; amountUsdc: string; mode: "fromDex" | "fromSpot"; dex?: string }>
+  relay: null
+}
+
 /** The four withdraw routes, one call each. No check runs here: `perpsWithdraw()` runs them. */
 export interface CandlePerpsWithdraw {
-  build(request: PerpsWithdrawBuildRequest): Promise<PerpsWithdrawBuild>
+  build(request: PerpsWithdrawBuildRequest): Promise<PerpsWithdrawBuild | PerpsWithdrawalSweep>
   authorize(request: { clientWithdrawalId: string; signature: string }): Promise<PerpsWithdrawAuthorization>
   reportSubmitted(request: { clientWithdrawalId: string; exchangeResponse: unknown }): Promise<PerpsWithdrawStatus>
-  get(clientWithdrawalId: string): Promise<PerpsWithdrawStatus>
+  get(clientWithdrawalId: string): Promise<PerpsWithdrawStatus | PerpsWithdrawalSweepStatus>
+}
+
+/** `POST /agent/perps/transfer`: a built own-wallet transfer (BE-3765, H2-A). */
+export interface PerpsTransferBuildRequest {
+  clientTransferId: string
+  /** Perps to spot (`toSpot`, `fromSpot`) is not in this release (BE-3864); the API refuses it. */
+  mode: "toDex" | "fromDex"
+  /** The builder dex name, required for toDex/fromDex. */
+  dex?: string
+  /** A positive USDC decimal with at most 6 decimals; or `all: true` on a from-mode. */
+  amountUsdc?: string
+  all?: boolean
+  /** The key's EVM TEE wallet row id; the key's only one when omitted. */
+  wallet?: string
+}
+
+/** One transfer as the server records it. */
+export interface PerpsTransferStatus {
+  success: true
+  id: string
+  status: "built" | "submitted" | "landed" | "failed"
+  mode: "toDex" | "fromDex" | "toSpot" | "fromSpot"
+  dex?: string
+  amountUsdc: string
+  walletId: string
+  from: { walletId: string; address: string; network: string }
+  nonce: number
+  failureReason: string | null
+  createdAt: number
+  submittedAt: number | null
+  landedAt: number | null
+  [key: string]: unknown
+}
+
+/** The transfer routes, one call each. The signed action is posted to Hyperliquid by the caller. */
+export interface CandlePerpsTransfer {
+  build(
+    request: PerpsTransferBuildRequest,
+  ): Promise<PerpsTransferStatus & { typedData?: unknown; action?: unknown; exchangeUrl?: string }>
+  reportSubmitted(request: { clientTransferId: string; exchangeResponse: unknown }): Promise<PerpsTransferStatus>
+  get(clientTransferId: string): Promise<PerpsTransferStatus>
 }
 
 export interface CandlePerps {
   withdraw: CandlePerpsWithdraw
+  transfer: CandlePerpsTransfer
 }
 
 export interface PerpsWithdrawParams extends Omit<PerpsWalletRef, "submit"> {
@@ -4315,10 +4377,35 @@ export class CandleClient {
    * each. Needs `perps:withdraw` on the key. `perpsWithdraw()` is the checked flow.
    */
   readonly perps: CandlePerps = {
+    transfer: {
+      build: async (request) => {
+        this.requireKey("perps.transfer.build()")
+        return this.requestJson<PerpsTransferStatus & { typedData?: unknown; action?: unknown; exchangeUrl?: string }>(
+          "POST",
+          "/api/v1/agent/perps/transfer",
+          request,
+        )
+      },
+      reportSubmitted: async (request) => {
+        this.requireKey("perps.transfer.reportSubmitted()")
+        return this.requestJson<PerpsTransferStatus>("POST", "/api/v1/agent/perps/transfer/submitted", request)
+      },
+      get: async (clientTransferId) => {
+        this.requireKey("perps.transfer.get()")
+        return this.requestJson<PerpsTransferStatus>(
+          "GET",
+          `/api/v1/agent/perps/transfer/${encodeURIComponent(clientTransferId)}`,
+        )
+      },
+    },
     withdraw: {
       build: async (request) => {
         this.requireKey("perps.withdraw.build()")
-        return this.requestJson<PerpsWithdrawBuild>("POST", "/api/v1/agent/perps/withdraw", request)
+        return this.requestJson<PerpsWithdrawBuild | PerpsWithdrawalSweep>(
+          "POST",
+          "/api/v1/agent/perps/withdraw",
+          request,
+        )
       },
       authorize: async (request) => {
         this.requireKey("perps.withdraw.authorize()")
@@ -4330,7 +4417,7 @@ export class CandleClient {
       },
       get: async (clientWithdrawalId) => {
         this.requireKey("perps.withdraw.get()")
-        return this.requestJson<PerpsWithdrawStatus>(
+        return this.requestJson<PerpsWithdrawStatus | PerpsWithdrawalSweepStatus>(
           "GET",
           `/api/v1/agent/perps/withdraw/${encodeURIComponent(clientWithdrawalId)}`,
         )
@@ -7496,7 +7583,7 @@ export class CandleClient {
     const amountMicros = parseWithdrawAmount(params.amountUsdc)
     if (amountMicros === null) throw new Error("perpsWithdraw: amountUsdc must be a positive decimal, at most 6 dp")
     const id = params.clientWithdrawalId ?? `withdraw-${crypto.randomUUID()}`
-    const build = await this.perps.withdraw
+    let answer = await this.perps.withdraw
       .build({
         clientWithdrawalId: id,
         amountUsdc: params.amountUsdc,
@@ -7508,6 +7595,29 @@ export class CandleClient {
           throw new PerpsMaybeLanded(id, null, null)
         throw error
       })
+    for (let step = 0; answer.status === "sweeping"; step++) {
+      if (step >= 128) throw new Error(`perpsWithdraw: sweep step limit; resume ${id}`)
+      const sweep = answer as PerpsWithdrawalSweep
+      const next = sweep.nextTransfer
+      if (!next || next.walletId !== params.walletId || !["fromDex", "fromSpot"].includes(next.mode))
+        throw new Error("perpsWithdraw: refused an invalid own-balance sweep")
+      const problem = verifyOwnTransferBuild(next, {
+        id: next.id,
+        account: params.account,
+        mode: next.mode,
+        dex: next.dex,
+        amountMicros: null,
+      })
+      if (problem) throw new Error(`perpsWithdraw: sweep refused: ${problem}`)
+      await this.submitOwnTransfer(next, { walletId: params.walletId, privyWalletId: params.privyWalletId })
+      answer = await this.perps.withdraw.build({
+        clientWithdrawalId: id,
+        amountUsdc: params.amountUsdc,
+        to: params.to,
+        wallet: params.walletId,
+      })
+    }
+    const build = answer as PerpsWithdrawBuild
     if (params.walletId === "embedded") {
       const answer = build as unknown as Record<string, unknown>
       const destination = answer.to as { address?: string; chain?: string } | undefined
@@ -7599,6 +7709,72 @@ export class CandleClient {
       exchange,
       ...(submitError !== undefined ? { submitError } : {}),
     }
+  }
+
+  /** Checked CLI/MCP-equivalent own-wallet transfer. Calling it authorizes the named internal move. */
+  async perpsTransfer(
+    params: PerpsTransferBuildRequest & { walletId: string; account: string; privyWalletId?: string; submit?: boolean },
+  ) {
+    const { walletId, account, privyWalletId, submit, ...request } = params
+    this.requireKey("perpsTransfer()")
+    if (this.hyperliquidNetwork !== "mainnet") throw new Error("perpsTransfer: transfers are mainnet only")
+    if (
+      request.all === true
+        ? request.amountUsdc !== undefined || !["fromDex", "fromSpot"].includes(request.mode)
+        : transferAmountMicros(request.amountUsdc) === null
+    )
+      throw new Error("perpsTransfer: invalid amount or all direction")
+    const result = await this.perps.transfer.build({ ...request, wallet: walletId })
+    if (result.status !== "built") return result
+    const build = result as unknown as PerpsTransferStatus & OwnTransferBuild & { signature?: string }
+    const problem = verifyOwnTransferBuild(build, {
+      id: request.clientTransferId,
+      account,
+      mode: request.mode,
+      dex: request.dex,
+      amountMicros: request.all ? null : transferAmountMicros(request.amountUsdc),
+    })
+    if (problem) throw new Error(`perpsTransfer: refused build: ${problem}`)
+    if (submit === false) return { ...result, submitted: false }
+    return this.submitOwnTransfer(build, { walletId, privyWalletId })
+  }
+
+  private async submitOwnTransfer(
+    build: PerpsTransferStatus & OwnTransferBuild & { signature?: string },
+    wallet: { walletId: string; privyWalletId?: string },
+  ) {
+    const signature =
+      build.signature ??
+      (await this.signLinkedTypedData({
+        linkedWalletId: wallet.walletId,
+        privyWalletId: wallet.privyWalletId,
+        typedData: build.typedData as HyperliquidTypedData,
+      }))
+    const exchangeBody = hyperliquidExchangeBody(
+      build.action as Record<string, unknown>,
+      Number(build.nonce),
+      signature,
+    )
+    let exchange: unknown
+    try {
+      const response = await this.fetchImpl(HYPERLIQUID_EXCHANGE_URLS.mainnet, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(exchangeBody),
+      })
+      exchange = JSON.parse(await response.text())
+      if (!response.ok || hyperliquidExchangeOutcome(exchange).status === "unknown")
+        throw new Error("unconfirmed venue answer")
+    } catch {
+      throw new PerpsMaybeLanded(build.id, null, exchangeBody)
+    }
+    const reported = await this.perps.transfer.reportSubmitted({
+      clientTransferId: build.id,
+      exchangeResponse: exchange,
+    })
+    if (hyperliquidExchangeOutcome(exchange).status === "rejected")
+      throw new Error(`perpsTransfer: venue refused ${build.id}`)
+    return { ...reported, exchange, signature, submitted: true }
   }
 
   /**

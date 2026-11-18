@@ -1,6 +1,65 @@
 import { createRequire } from "node:module";
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
+// src/hyperliquid-transfer.ts
+function transferAmountMicros(value) {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]{0,11})(\.[0-9]{1,6})?$/.test(value))
+    return null;
+  const [whole = "0", fraction = ""] = value.split(".");
+  const amount = BigInt(whole) * 1000000n + BigInt(fraction.padEnd(6, "0"));
+  return amount > 0n ? amount : null;
+}
+function verifyOwnTransferBuild(build, expect) {
+  if (build.id !== expect.id || build.mode !== expect.mode || build.dex !== expect.dex)
+    return "transfer identity differs";
+  if (!Number.isSafeInteger(build.nonce) || Number(build.nonce) <= 0)
+    return "invalid nonce";
+  const typed = build.typedData;
+  const record = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+  if (!typed || !build.action || !record(build.action) || !record(typed.domain) || !record(typed.types) || !record(typed.message))
+    return "missing or malformed typed data or action";
+  const d = typed.domain;
+  if (Object.keys(d).sort().join() !== "chainId,name,verifyingContract,version" || d.name !== "HyperliquidSignTransaction" || d.version !== "1" || Number(d.chainId) !== 42161 || d.verifyingContract !== `0x${"0".repeat(40)}`)
+    return "untrusted domain";
+  const dex = expect.mode === "toDex" || expect.mode === "fromDex";
+  const primary = dex ? "HyperliquidTransaction:SendAsset" : "HyperliquidTransaction:UsdClassTransfer";
+  const fields = dex ? [
+    ["hyperliquidChain", "string"],
+    ["destination", "string"],
+    ["sourceDex", "string"],
+    ["destinationDex", "string"],
+    ["token", "string"],
+    ["amount", "string"],
+    ["fromSubAccount", "string"],
+    ["nonce", "uint64"]
+  ] : [
+    ["hyperliquidChain", "string"],
+    ["amount", "string"],
+    ["toPerp", "bool"],
+    ["nonce", "uint64"]
+  ];
+  if (typed.primary_type !== primary || Object.keys(typed.types).join() !== primary || JSON.stringify(typed.types[primary]) !== JSON.stringify(fields.map(([name, type]) => ({ name, type }))))
+    return "untrusted type";
+  const m = typed.message;
+  if (Object.keys(m).sort().join() !== fields.map(([name]) => name).sort().join() || m.hyperliquidChain !== "Mainnet" || m.nonce !== build.nonce)
+    return "message shape or nonce differs";
+  const amount = transferAmountMicros(m.amount);
+  if (amount === null || expect.amountMicros !== null && amount !== expect.amountMicros)
+    return "amount differs";
+  if (dex) {
+    if (String(m.destination).toLowerCase() !== expect.account.toLowerCase())
+      return "destination is not this wallet";
+    if (m.token !== "USDC:0x6d1e7cde53ba9467b783cb7c530ce054" || m.fromSubAccount !== "" || m.sourceDex !== (expect.mode === "toDex" ? "" : expect.dex) || m.destinationDex !== (expect.mode === "toDex" ? expect.dex : ""))
+      return "token, subaccount or dex differs";
+  } else if (m.toPerp !== (expect.mode === "fromSpot"))
+    return "direction differs";
+  const action = { type: dex ? "sendAsset" : "usdClassTransfer", signatureChainId: "0xa4b1", ...m };
+  const sorted = (value) => JSON.stringify(Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))));
+  if (sorted(build.action) !== sorted(action))
+    return "action differs from signed message";
+  return null;
+}
+
 // src/client.ts
 import { keccak_256 as keccak_2562 } from "@noble/hashes/sha3";
 import { base58 as base582 } from "@scure/base";
@@ -5800,6 +5859,20 @@ class CandleClient {
   perpsWithdrawPins;
   perpsStreamWebSocket;
   perps = {
+    transfer: {
+      build: async (request) => {
+        this.requireKey("perps.transfer.build()");
+        return this.requestJson("POST", "/api/v1/agent/perps/transfer", request);
+      },
+      reportSubmitted: async (request) => {
+        this.requireKey("perps.transfer.reportSubmitted()");
+        return this.requestJson("POST", "/api/v1/agent/perps/transfer/submitted", request);
+      },
+      get: async (clientTransferId) => {
+        this.requireKey("perps.transfer.get()");
+        return this.requestJson("GET", `/api/v1/agent/perps/transfer/${encodeURIComponent(clientTransferId)}`);
+      }
+    },
     withdraw: {
       build: async (request) => {
         this.requireKey("perps.withdraw.build()");
@@ -7513,7 +7586,7 @@ class CandleClient {
     if (amountMicros === null)
       throw new Error("perpsWithdraw: amountUsdc must be a positive decimal, at most 6 dp");
     const id = params.clientWithdrawalId ?? `withdraw-${crypto.randomUUID()}`;
-    const build = await this.perps.withdraw.build({
+    let answer = await this.perps.withdraw.build({
       clientWithdrawalId: id,
       amountUsdc: params.amountUsdc,
       to: params.to,
@@ -7523,10 +7596,35 @@ class CandleClient {
         throw new PerpsMaybeLanded(id, null, null);
       throw error;
     });
+    for (let step = 0;answer.status === "sweeping"; step++) {
+      if (step >= 128)
+        throw new Error(`perpsWithdraw: sweep step limit; resume ${id}`);
+      const sweep = answer;
+      const next = sweep.nextTransfer;
+      if (!next || next.walletId !== params.walletId || !["fromDex", "fromSpot"].includes(next.mode))
+        throw new Error("perpsWithdraw: refused an invalid own-balance sweep");
+      const problem = verifyOwnTransferBuild(next, {
+        id: next.id,
+        account: params.account,
+        mode: next.mode,
+        dex: next.dex,
+        amountMicros: null
+      });
+      if (problem)
+        throw new Error(`perpsWithdraw: sweep refused: ${problem}`);
+      await this.submitOwnTransfer(next, { walletId: params.walletId, privyWalletId: params.privyWalletId });
+      answer = await this.perps.withdraw.build({
+        clientWithdrawalId: id,
+        amountUsdc: params.amountUsdc,
+        to: params.to,
+        wallet: params.walletId
+      });
+    }
+    const build = answer;
     if (params.walletId === "embedded") {
-      const answer = build;
-      const destination = answer.to;
-      if (build.id !== id || answer.signer !== "embedded" || destination?.chain !== params.to || answer.from?.address?.toLowerCase() !== params.account.toLowerCase() || !params.ownDestinations.some((a) => a.toLowerCase() === destination?.address?.toLowerCase()))
+      const answer2 = build;
+      const destination = answer2.to;
+      if (build.id !== id || answer2.signer !== "embedded" || destination?.chain !== params.to || answer2.from?.address?.toLowerCase() !== params.account.toLowerCase() || !params.ownDestinations.some((a) => a.toLowerCase() === destination?.address?.toLowerCase()))
         throw new Error("Embedded withdrawal destination mismatch");
       const send2 = verifyWithdrawSendAsset(build, {
         mappingNonce: build.nonce,
@@ -7535,8 +7633,8 @@ class CandleClient {
       });
       if (!send2.ok)
         throw new Error(`Embedded withdrawal refused: ${send2.reason}`);
-      const signature2 = hyperliquidSignatureHex(answer.signature);
-      const body = hyperliquidExchangeBody(answer.action, build.nonce, signature2);
+      const signature2 = hyperliquidSignatureHex(answer2.signature);
+      const body = hyperliquidExchangeBody(answer2.action, build.nonce, signature2);
       try {
         const res = await this.fetchImpl(HYPERLIQUID_EXCHANGE_URLS.mainnet, {
           method: "POST",
@@ -7610,6 +7708,58 @@ class CandleClient {
       exchange,
       ...submitError !== undefined ? { submitError } : {}
     };
+  }
+  async perpsTransfer(params) {
+    const { walletId, account, privyWalletId, submit, ...request } = params;
+    this.requireKey("perpsTransfer()");
+    if (this.hyperliquidNetwork !== "mainnet")
+      throw new Error("perpsTransfer: transfers are mainnet only");
+    if (request.all === true ? request.amountUsdc !== undefined || !["fromDex", "fromSpot"].includes(request.mode) : transferAmountMicros(request.amountUsdc) === null)
+      throw new Error("perpsTransfer: invalid amount or all direction");
+    const result = await this.perps.transfer.build({ ...request, wallet: walletId });
+    if (result.status !== "built")
+      return result;
+    const build = result;
+    const problem = verifyOwnTransferBuild(build, {
+      id: request.clientTransferId,
+      account,
+      mode: request.mode,
+      dex: request.dex,
+      amountMicros: request.all ? null : transferAmountMicros(request.amountUsdc)
+    });
+    if (problem)
+      throw new Error(`perpsTransfer: refused build: ${problem}`);
+    if (submit === false)
+      return { ...result, submitted: false };
+    return this.submitOwnTransfer(build, { walletId, privyWalletId });
+  }
+  async submitOwnTransfer(build, wallet) {
+    const signature = build.signature ?? await this.signLinkedTypedData({
+      linkedWalletId: wallet.walletId,
+      privyWalletId: wallet.privyWalletId,
+      typedData: build.typedData
+    });
+    const exchangeBody = hyperliquidExchangeBody(build.action, Number(build.nonce), signature);
+    let exchange;
+    try {
+      const response = await this.fetchImpl(HYPERLIQUID_EXCHANGE_URLS.mainnet, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(exchangeBody)
+      });
+      exchange = JSON.parse(await response.text());
+      if (!response.ok || hyperliquidExchangeOutcome(exchange).status === "unknown")
+        throw new Error("unconfirmed venue answer");
+    } catch {
+      throw new PerpsMaybeLanded(build.id, null, exchangeBody);
+    }
+    const reported = await this.perps.transfer.reportSubmitted({
+      clientTransferId: build.id,
+      exchangeResponse: exchange
+    });
+    if (hyperliquidExchangeOutcome(exchange).status === "rejected")
+      throw new Error(`perpsTransfer: venue refused ${build.id}`);
+    return { ...reported, exchange, signature, submitted: true };
   }
   async signLinkedTypedData(params) {
     if (!params.privyWalletId)
@@ -8479,6 +8629,8 @@ export {
   verifyWebhookSignature,
   verifyPerpsBuildAgainstVenue,
   verifyPerpsBuild,
+  verifyOwnTransferBuild,
+  transferAmountMicros,
   readPerpsRisk,
   readPerpsHistoryPage,
   readHyperliquidPerpDexs,

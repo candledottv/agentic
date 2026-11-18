@@ -102,6 +102,7 @@ function authorization(message: Record<string, unknown> = {}) {
 
 interface Options {
   build?: Record<string, unknown>
+  builds?: Record<string, unknown>[]
   authorization?: Record<string, unknown>
   confirm?: string
   tty?: boolean
@@ -152,7 +153,8 @@ async function fixture(opts: Options = {}) {
         ],
         isDone: true,
       })
-    if (url.pathname === "/api/v1/agent/perps/withdraw") return ok(opts.build ?? build())
+    if (url.pathname === "/api/v1/agent/perps/withdraw") return ok(opts.builds?.shift() ?? opts.build ?? build())
+    if (url.pathname === "/api/v1/agent/perps/transfer/submitted") return ok({ success: true, status: "submitted" })
     if (url.pathname === "/api/v1/agent/perps/withdraw/authorize") return ok(opts.authorization ?? authorization())
     if (url.pathname === "/api/v1/agent/perps/withdraw/submitted") return ok({ success: true, status: "submitted" })
     if (url.pathname === "/api/v1/agent/perps/withdraw/w-1")
@@ -373,4 +375,44 @@ describe("candle perps withdraw status", () => {
     expect(await run(["perps", "withdraw", "status", "w-1"], f.deps)).toBe(0)
     expect(humanText(f.stdout.text)).toContain(humanText("Withdrawal w-1 Status settled Amount 5 USDC To"))
   })
+})
+
+test("BE-3765 CLI sweeps own free balances before the withdrawal vault confirmation", async () => {
+  const message = {
+    hyperliquidChain: "Mainnet",
+    destination: ACCOUNT,
+    sourceDex: "xyz",
+    destinationDex: "",
+    token: PINS.token,
+    amount: "2",
+    fromSubAccount: "",
+    nonce: 7,
+  }
+  const nextTransfer = {
+    id: "child-xyz",
+    walletId: "wallet",
+    status: "built",
+    mode: "fromDex",
+    dex: "xyz",
+    amountUsdc: "2",
+    nonce: 7,
+    signature: SIGNATURE,
+    typedData: {
+      domain: { name: "HyperliquidSignTransaction", version: "1", chainId: 42161, verifyingContract: ZERO },
+      types: HYPERLIQUID_SEND_ASSET_TYPES,
+      primary_type: "HyperliquidTransaction:SendAsset",
+      message,
+    },
+    action: { type: "sendAsset", signatureChainId: "0xa4b1", ...message },
+  }
+  const f = await fixture({
+    builds: [{ id: "w-1", status: "sweeping", nextTransfer, retained: [{ dex: "xyz", amountUsdc: "40" }] }, build()],
+  })
+  expect(await run(WITHDRAW, f.deps)).toBe(0)
+  expect(f.events.find((e) => e.includes("confirm to sweep"))).toBeDefined()
+  expect(f.calls.findIndex((c) => c.path.endsWith("/transfer/submitted"))).toBeLessThan(
+    f.calls.findIndex((c) => c.path.endsWith("/withdraw/authorize")),
+  )
+  expect(relayCalls(f.calls)).toHaveLength(2)
+  expect(f.events.filter((e) => e.startsWith("unlock:"))).toHaveLength(1)
 })

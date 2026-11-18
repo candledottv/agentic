@@ -56,6 +56,7 @@ export type {
   CandleClientOptions,
   CandleFees,
   CandlePerps,
+  CandlePerpsTransfer,
   CandlePerpsWithdraw,
   CandleWallets,
   Chain,
@@ -144,7 +145,11 @@ export type {
   PerpsStreamFrame,
   PerpsStreamSocketOptions,
   PerpsStreamWebSocket,
+  PerpsTransferBuildRequest,
+  PerpsTransferStatus,
   PerpsWalletRef,
+  PerpsWithdrawalSweep,
+  PerpsWithdrawalSweepStatus,
   PerpsWithdrawBuildRequest,
   PerpsWithdrawParams,
   PerpsWithdrawResult,
@@ -330,6 +335,7 @@ export {
   readPerpsRisk,
   watchPerpsRisk,
 } from "./hyperliquid-risk"
+export * from "./hyperliquid-transfer"
 export {
   CANDLE_PERPS_WITHDRAW_PINS,
   type PerpsWithdrawAuthorization,

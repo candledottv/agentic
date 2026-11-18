@@ -345,3 +345,77 @@ describe("perpsWithdraw()", () => {
     expect(calls.some((call) => call.url.startsWith("https://api.relay.link"))).toBe(false)
   })
 })
+
+test("BE-3765 SDK resumes two dexes plus spot before quoting, reusing recorded signatures", async () => {
+  const sweep = (dex?: string) => {
+    const message: Record<string, unknown> = dex
+      ? {
+          hyperliquidChain: "Mainnet",
+          destination: ACCOUNT,
+          sourceDex: dex,
+          destinationDex: "",
+          token: PINS.token,
+          amount: "2",
+          fromSubAccount: "",
+          nonce: 7,
+        }
+      : { hyperliquidChain: "Mainnet", amount: "1", toPerp: true, nonce: 8 }
+    const primary = dex ? "HyperliquidTransaction:SendAsset" : "HyperliquidTransaction:UsdClassTransfer"
+    const types = dex
+      ? HYPERLIQUID_SEND_ASSET_TYPES
+      : {
+          [primary]: [
+            { name: "hyperliquidChain", type: "string" },
+            { name: "amount", type: "string" },
+            { name: "toPerp", type: "bool" },
+            { name: "nonce", type: "uint64" },
+          ],
+        }
+    return {
+      success: true,
+      id: "w-1",
+      status: "sweeping",
+      retained: [{ dex: "xyz", amountUsdc: "40" }],
+      nextTransfer: {
+        id: `child-${dex ?? "spot"}`,
+        walletId: "evm-tee",
+        status: "built",
+        mode: dex ? "fromDex" : "fromSpot",
+        ...(dex ? { dex } : {}),
+        nonce: message.nonce,
+        signature: SIGNATURE,
+        typedData: {
+          domain: { name: "HyperliquidSignTransaction", version: "1", chainId: 42161, verifyingContract: ZERO },
+          types,
+          primary_type: primary,
+          message,
+        },
+        action: { type: dex ? "sendAsset" : "usdClassTransfer", signatureChainId: "0xa4b1", ...message },
+      },
+    }
+  }
+  const responses: Response[] = []
+  for (const dex of ["xyz", "gold", undefined])
+    responses.push(
+      json(sweep(dex)),
+      json({ status: "ok", response: { type: "default" } }),
+      json({ success: true, status: "submitted" }),
+    )
+  responses.push(
+    json(build()),
+    json({ success: true, signature: SIGNATURE }),
+    json(authorization()),
+    json({ success: true, signature: SIGNATURE }),
+    json({ status: "ok", response: { type: "default" } }),
+    json({ success: true, status: "submitted" }),
+  )
+  const { client: c, calls } = await client(responses)
+  expect((await c.perpsWithdraw(params)).submitted).toBe(true)
+  const actions = calls.filter((c) => c.url.endsWith("/exchange")).map((c) => c.body!.action as Record<string, unknown>)
+  expect(actions.map((a) => a.type)).toEqual(["sendAsset", "sendAsset", "usdClassTransfer", "sendAsset"])
+  expect(actions.slice(0, 2).map((a) => a.destination)).toEqual([ACCOUNT, ACCOUNT])
+  expect(relayCalls(calls)).toHaveLength(2)
+  expect(
+    calls.filter((c) => c.url.endsWith("/perps/withdraw")).every((c) => c.body!.clientWithdrawalId === "w-1"),
+  ).toBe(true)
+})

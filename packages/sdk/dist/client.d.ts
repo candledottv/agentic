@@ -1,4 +1,5 @@
 import type { HoodTeeOperation } from "./hood-tee";
+import { type OwnTransferBuild } from "./hyperliquid-transfer";
 import { type SignedTradeLeg } from "./errors";
 import { type HyperliquidNetwork, type HyperliquidSubmitOutcome, type HyperliquidTypedData } from "./hyperliquid";
 import { type PerpsBuildReview, type PerpsTpslParams, type PerpsWorkflowResult } from "./hyperliquid-manage";
@@ -2773,9 +2774,40 @@ export interface PerpsWithdrawStatus {
     } | null;
     [key: string]: unknown;
 }
+/** A retryable withdrawal first returns one own-balance move at a time; no Relay quote exists yet. */
+export interface PerpsWithdrawalSweep {
+    success: true;
+    id: string;
+    status: "sweeping";
+    nextTransfer: PerpsTransferStatus & OwnTransferBuild & {
+        signature?: string;
+    };
+    retained: Array<{
+        dex: string;
+        amountUsdc: string;
+    }>;
+    sweepTransferIds: string[];
+}
+export interface PerpsWithdrawalSweepStatus {
+    success: true;
+    id: string;
+    status: "sweeping";
+    retained: Array<{
+        dex: string;
+        amountUsdc: string;
+    }>;
+    transfers: Array<{
+        id: string;
+        status: string;
+        amountUsdc: string;
+        mode: "fromDex" | "fromSpot";
+        dex?: string;
+    }>;
+    relay: null;
+}
 /** The four withdraw routes, one call each. No check runs here: `perpsWithdraw()` runs them. */
 export interface CandlePerpsWithdraw {
-    build(request: PerpsWithdrawBuildRequest): Promise<PerpsWithdrawBuild>;
+    build(request: PerpsWithdrawBuildRequest): Promise<PerpsWithdrawBuild | PerpsWithdrawalSweep>;
     authorize(request: {
         clientWithdrawalId: string;
         signature: string;
@@ -2784,10 +2816,58 @@ export interface CandlePerpsWithdraw {
         clientWithdrawalId: string;
         exchangeResponse: unknown;
     }): Promise<PerpsWithdrawStatus>;
-    get(clientWithdrawalId: string): Promise<PerpsWithdrawStatus>;
+    get(clientWithdrawalId: string): Promise<PerpsWithdrawStatus | PerpsWithdrawalSweepStatus>;
+}
+/** `POST /agent/perps/transfer`: a built own-wallet transfer (BE-3765, H2-A). */
+export interface PerpsTransferBuildRequest {
+    clientTransferId: string;
+    /** Perps to spot (`toSpot`, `fromSpot`) is not in this release (BE-3864); the API refuses it. */
+    mode: "toDex" | "fromDex";
+    /** The builder dex name, required for toDex/fromDex. */
+    dex?: string;
+    /** A positive USDC decimal with at most 6 decimals; or `all: true` on a from-mode. */
+    amountUsdc?: string;
+    all?: boolean;
+    /** The key's EVM TEE wallet row id; the key's only one when omitted. */
+    wallet?: string;
+}
+/** One transfer as the server records it. */
+export interface PerpsTransferStatus {
+    success: true;
+    id: string;
+    status: "built" | "submitted" | "landed" | "failed";
+    mode: "toDex" | "fromDex" | "toSpot" | "fromSpot";
+    dex?: string;
+    amountUsdc: string;
+    walletId: string;
+    from: {
+        walletId: string;
+        address: string;
+        network: string;
+    };
+    nonce: number;
+    failureReason: string | null;
+    createdAt: number;
+    submittedAt: number | null;
+    landedAt: number | null;
+    [key: string]: unknown;
+}
+/** The transfer routes, one call each. The signed action is posted to Hyperliquid by the caller. */
+export interface CandlePerpsTransfer {
+    build(request: PerpsTransferBuildRequest): Promise<PerpsTransferStatus & {
+        typedData?: unknown;
+        action?: unknown;
+        exchangeUrl?: string;
+    }>;
+    reportSubmitted(request: {
+        clientTransferId: string;
+        exchangeResponse: unknown;
+    }): Promise<PerpsTransferStatus>;
+    get(clientTransferId: string): Promise<PerpsTransferStatus>;
 }
 export interface CandlePerps {
     withdraw: CandlePerpsWithdraw;
+    transfer: CandlePerpsTransfer;
 }
 export interface PerpsWithdrawParams extends Omit<PerpsWalletRef, "submit"> {
     amountUsdc: string;
@@ -4836,6 +4916,39 @@ export declare class CandleClient {
      * CLI has one (`candle perps withdraw`).
      */
     perpsWithdraw(params: PerpsWithdrawParams): Promise<PerpsWithdrawResult>;
+    /** Checked CLI/MCP-equivalent own-wallet transfer. Calling it authorizes the named internal move. */
+    perpsTransfer(params: PerpsTransferBuildRequest & {
+        walletId: string;
+        account: string;
+        privyWalletId?: string;
+        submit?: boolean;
+    }): Promise<(PerpsTransferStatus & {
+        typedData?: unknown;
+        action?: unknown;
+        exchangeUrl?: string;
+    }) | {
+        exchange: unknown;
+        signature: string;
+        submitted: boolean;
+        success: true;
+        id: string;
+        status: "built" | "submitted" | "landed" | "failed";
+        mode: "toDex" | "fromDex" | "toSpot" | "fromSpot";
+        dex?: string;
+        amountUsdc: string;
+        walletId: string;
+        from: {
+            walletId: string;
+            address: string;
+            network: string;
+        };
+        nonce: number;
+        failureReason: string | null;
+        createdAt: number;
+        submittedAt: number | null;
+        landedAt: number | null;
+    }>;
+    private submitOwnTransfer;
     /**
      * Sign EIP-712 typed data with a linked EVM TEE wallet through the relay
      * (`eth_signTypedData_v4`). The relay signs only typed data a perps build stamped.
