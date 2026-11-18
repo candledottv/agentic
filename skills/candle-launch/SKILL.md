@@ -132,6 +132,17 @@ so dry-run first. Launch only with an image that is meant to be public. The file
 
 `bannerUrl` is always a URL: the upload crops to a square, so it cannot host a banner.
 
+## Keep a launch out of the public stream
+
+`hide: true` on a launch (CLI `--hide`) keeps the launch and its dev buy out of the activity stream
+and Discord, and removes Candle's name for the creator (handle, agent name, badge, profile link)
+from public readers. The token stays listed and tradable, and hidden launches still count in
+totals. The creator wallet is public on chain and can be traced to its owner, so hide removes
+Candle's identity layer, not on-chain facts. A hidden launch is left out of the creator's public launch
+list but still counts in totals. It needs a CLI, SDK or MCP release that carries `hide`. It is set once at launch and never edited. If the
+response does not echo `hide: true`, stop: the launch would be public. While the feature is off the
+server refuses the request and launches nothing.
+
 ## Safety rails
 
 `dryRun: true` costs nothing and catches sizing errors before a real launch runs. Every call is
