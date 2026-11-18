@@ -36,6 +36,10 @@ interface PerpRow {
 }
 interface Positions {
   asOfMs: number | null
+  perpsAsOfMs?: number | null
+  /** BE-3767: the perps figures come from a provisional read between certified hours. */
+  perpsProvisional?: true
+  perpsCertifiedAsOfMs?: number
   perpsPartial: boolean
   perpsUnavailable?: true
   portfolioValueUsd: number | null
@@ -126,6 +130,23 @@ function rowOf(p: SpotRow | PerpRow): string[] {
   ]
 }
 
+/**
+ * BE-3767: how fresh the perps figures are. Between certified hours they come from a provisional read
+ * refreshed each board build; the hourly certified snapshot corrects them. Nothing for an answer with
+ * no perps time (no perps, or a server that does not include them).
+ */
+export function perpsFreshness(
+  body: Pick<Positions, "perpsAsOfMs" | "perpsProvisional" | "perpsCertifiedAsOfMs">,
+  now: number,
+): string | null {
+  if (body.perpsAsOfMs === undefined || body.perpsAsOfMs === null) return null
+  const at = formatTime(body.perpsAsOfMs, { now })
+  if (body.perpsProvisional !== true) return `Perps as of ${at} (certified hourly)`
+  const certified =
+    body.perpsCertifiedAsOfMs === undefined ? "" : ` to ${formatTime(body.perpsCertifiedAsOfMs, { now })}`
+  return `Perps as of ${at} (provisional; certified${certified}, corrected hourly)`
+}
+
 function render(body: Positions, now: number): string {
   const lines: string[] = []
   const value =
@@ -138,6 +159,8 @@ function render(body: Positions, now: number): string {
   lines.push(
     `Updated ${formatTime(body.asOfMs, { now, missing: "never" })}${body.perpsPartial ? "; perps partial" : ""}`,
   )
+  const perpsStamp = perpsFreshness(body, now)
+  if (perpsStamp) lines.push(perpsStamp)
   lines.push("")
   if (body.positions.length)
     // Symbols, coins and sizes come from market data anyone can influence: each cell is made safe.

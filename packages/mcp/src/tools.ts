@@ -2496,7 +2496,10 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "unrealized, never idle USDC; null with perpsUnavailable means the perps have no certified snapshot " +
         "yet. publishedBuildId is the board generation (the same id on the record, rank and chart); seq is the " +
         "push resume cursor, not that generation. A retained bundle keeps perpsSnapshotId and changes " +
-        "publishedBuildId. perpsAsOfMs is the oldest wallet cutoff, about an hour behind; perpsPartial or " +
+        "publishedBuildId. perpsAsOfMs is the oldest wallet cutoff: with perpsProvisional true it is a " +
+        "provisional read refreshed every board build (about 10 minutes) and perpsCertifiedAsOfMs is the hourly " +
+        "certified cutoff under it, which corrects the provisional figures; without it the figures are certified, " +
+        "about an hour behind. perpsPartial or " +
         "portfolioPartial means a figure is incomplete, never zero. No wallet address or balance. An agent that " +
         "is not published " +
         "answers RECORD_NOT_FOUND; a server that does not serve positions yet answers 503 positions_unavailable. " +

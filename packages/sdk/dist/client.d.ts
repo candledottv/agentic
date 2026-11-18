@@ -1130,11 +1130,21 @@ export interface AgentPositions {
     asOfMs: number | null;
     spotAsOfMs: number | null;
     /**
-     * The oldest selected certified Hyperliquid cutoff among wallets the profile still owned after
-     * that cutoff. A wallet whose binding ended at or before its cutoff does not age the bundle;
-     * when no wallet qualifies, the oldest selected cutoff.
+     * The oldest selected Hyperliquid cutoff among wallets the profile still owned after that cutoff.
+     * Between certified hours (`perpsProvisional`) it is a provisional read's time, refreshed each board
+     * build (about every 10 minutes); otherwise the certified cutoff, about an hour behind. A wallet whose
+     * binding ended at or before its cutoff does not age the bundle; when no wallet qualifies, the oldest
+     * selected cutoff.
      */
     perpsAsOfMs: number | null;
+    /**
+     * BE-3767: the perps figures come from a provisional read between certified hours. The hourly
+     * certified snapshot replaces them when it certifies that hour and corrects any drift. Absent when
+     * the figures are certified, and on an older API.
+     */
+    perpsProvisional?: true;
+    /** BE-3767: with `perpsProvisional`, the oldest certified cutoff under the provisional figures. */
+    perpsCertifiedAsOfMs?: number;
     perpsSnapshotId: string | null;
     perpsPartial: boolean;
     /**
@@ -1207,6 +1217,27 @@ export interface AgentRecordTotals extends AgentFeeIncome {
     realizedFromTransfersUsd?: number;
     unrealizedFromTransfersUsd?: number;
 }
+/** One window of portfolio return % (PR-A). Portfolio return, not position return. */
+export interface AgentPortfolioReturnFigure {
+    /** Percent, for example 114.59. */
+    pct: number;
+    /** The denominator: max($100, start value + largest net deposits in the window). */
+    baseUsd: number;
+    /** True when the $100 floor set the base. */
+    floored: boolean;
+}
+/**
+ * Portfolio return % per window: agent P&L in the window / max($100, portfolio value at the window
+ * start + the largest net deposits during the window). Deposits are not profit, withdrawals do not
+ * lower the base, and moves between the agent's own wallets are ignored. A window is null when it
+ * cannot be computed. Ranking stays by dollar P&L.
+ */
+export interface AgentPortfolioReturn {
+    "24h"?: AgentPortfolioReturnFigure | null;
+    "7d"?: AgentPortfolioReturnFigure | null;
+    "30d"?: AgentPortfolioReturnFigure | null;
+    all?: AgentPortfolioReturnFigure | null;
+}
 /** A public leaderboard entry, including additive fee income beside its trade totals. */
 export interface AgentLeaderboardEntry extends AgentFeeIncome {
     profileId: string;
@@ -1215,6 +1246,8 @@ export interface AgentLeaderboardEntry extends AgentFeeIncome {
     rank: number;
     totals: AgentRecordTotals;
     winRatePct: number | null;
+    /** Absent until the board stores the figure. */
+    portfolioReturn?: AgentPortfolioReturn;
     unrealizedUsd?: number;
     totalPnlUsd?: number;
     totalRank?: number;
@@ -1243,6 +1276,7 @@ export interface AgentPublicRecord extends AgentFeeIncome {
     totals: AgentRecordTotals;
     unrealizedUsd?: number;
     totalPnlUsd?: number;
+    portfolioReturn?: AgentPortfolioReturn;
     rewardClaims?: AgentRewardClaim[];
     /** Newest 13 claims are retained; true means older claims were omitted. */
     rewardClaimsPartial?: boolean;
@@ -1251,6 +1285,12 @@ export interface AgentPublicRecord extends AgentFeeIncome {
      * and positions. Absent on an older API. `seq` on the snapshot envelope is the push cursor.
      */
     publishedBuildId?: string;
+    /** The oldest perps cutoff in the record's figures; a provisional read's time with `perpsProvisional` (BE-3767). */
+    perpsAsOfMs?: number;
+    /** BE-3767: the perps figures come from a provisional read; the hourly certified snapshot corrects them. */
+    perpsProvisional?: true;
+    /** BE-3767: with `perpsProvisional`, the oldest certified cutoff under it. */
+    perpsCertifiedAsOfMs?: number;
     /** Existing row, series, identity and coverage fields. */
     [key: string]: unknown;
 }

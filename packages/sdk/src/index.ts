@@ -20,6 +20,8 @@ export type {
   AgentPerpRoundFill,
   AgentPerpRoundFunding,
   AgentPerpRoundOutcome,
+  AgentPortfolioReturn,
+  AgentPortfolioReturnFigure,
   AgentPosition,
   AgentPositions,
   AgentPositionsKind,

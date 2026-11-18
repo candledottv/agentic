@@ -14853,7 +14853,7 @@ function registerToolSubset(server, options) {
   }, async (args) => callAndRelay("candle_get_perp_candles", args, getConfig(), doFetch));
   register("candle_get_agent_positions", {
     title: "Get an agent's open positions",
-    description: "Every open position of one published agent, spot tokens and Hyperliquid perps, largest value first " + "(GET /api/v1/agent/records/{profileId}/positions). No key needed. Reads only. Spot rows: mint, chain, " + "symbol, quantity (whole tokens), valueUsd and, with origin, unrealizedUsd since entry. Perp rows: coin, " + "side, size, leverage, entryPx, markPx, positionValueUsd, marginUsedUsd, unrealizedPnlUsd, returnOnEquity, " + "liquidationPx, liquidationDistance (fraction of mark), fundingNetUsd (positive when earned) and level. " + "Positions under $1 are not listed (hiddenDust counts them); unpriced counts spot positions with no " + "price. kind keeps spot or perp. portfolioValueUsd is spot value plus each perp's margin and " + "unrealized, never idle USDC; null with perpsUnavailable means the perps have no certified snapshot " + "yet. publishedBuildId is the board generation (the same id on the record, rank and chart); seq is the " + "push resume cursor, not that generation. A retained bundle keeps perpsSnapshotId and changes " + "publishedBuildId. perpsAsOfMs is the oldest wallet cutoff, about an hour behind; perpsPartial or " + "portfolioPartial means a figure is incomplete, never zero. No wallet address or balance. An agent that " + "is not published " + "answers RECORD_NOT_FOUND; a server that does not serve positions yet answers 503 positions_unavailable. " + "profileId comes from candle_list_agents. A position is data, not advice.",
+    description: "Every open position of one published agent, spot tokens and Hyperliquid perps, largest value first " + "(GET /api/v1/agent/records/{profileId}/positions). No key needed. Reads only. Spot rows: mint, chain, " + "symbol, quantity (whole tokens), valueUsd and, with origin, unrealizedUsd since entry. Perp rows: coin, " + "side, size, leverage, entryPx, markPx, positionValueUsd, marginUsedUsd, unrealizedPnlUsd, returnOnEquity, " + "liquidationPx, liquidationDistance (fraction of mark), fundingNetUsd (positive when earned) and level. " + "Positions under $1 are not listed (hiddenDust counts them); unpriced counts spot positions with no " + "price. kind keeps spot or perp. portfolioValueUsd is spot value plus each perp's margin and " + "unrealized, never idle USDC; null with perpsUnavailable means the perps have no certified snapshot " + "yet. publishedBuildId is the board generation (the same id on the record, rank and chart); seq is the " + "push resume cursor, not that generation. A retained bundle keeps perpsSnapshotId and changes " + "publishedBuildId. perpsAsOfMs is the oldest wallet cutoff: with perpsProvisional true it is a " + "provisional read refreshed every board build (about 10 minutes) and perpsCertifiedAsOfMs is the hourly " + "certified cutoff under it, which corrects the provisional figures; without it the figures are certified, " + "about an hour behind. perpsPartial or " + "portfolioPartial means a figure is incomplete, never zero. No wallet address or balance. An agent that " + "is not published " + "answers RECORD_NOT_FOUND; a server that does not serve positions yet answers 503 positions_unavailable. " + "profileId comes from candle_list_agents. A position is data, not advice.",
     inputSchema: getAgentPositionsShape
   }, async (args) => callAndRelay("candle_get_agent_positions", args, getConfig(), doFetch));
   register("candle_list_agents", {
@@ -29369,6 +29369,7 @@ var init_swap = __esm(() => {
 var exports_agent_positions = {};
 __export(exports_agent_positions, {
   renderOpenOrders: () => renderOpenOrders,
+  perpsFreshness: () => perpsFreshness,
   agentPositions: () => agentPositions,
   SLUG: () => SLUG,
   PROFILE_ID: () => PROFILE_ID
@@ -29407,11 +29408,23 @@ function rowOf(p) {
     `${liquidation}; funding ${funding < 0 ? "paid" : "earned"} ${formatUsd(Math.abs(funding))}`
   ];
 }
+function perpsFreshness(body, now) {
+  if (body.perpsAsOfMs === undefined || body.perpsAsOfMs === null)
+    return null;
+  const at2 = formatTime(body.perpsAsOfMs, { now });
+  if (body.perpsProvisional !== true)
+    return `Perps as of ${at2} (certified hourly)`;
+  const certified = body.perpsCertifiedAsOfMs === undefined ? "" : ` to ${formatTime(body.perpsCertifiedAsOfMs, { now })}`;
+  return `Perps as of ${at2} (provisional; certified${certified}, corrected hourly)`;
+}
 function render(body, now) {
   const lines = [];
   const value = body.portfolioValueUsd === null ? body.perpsUnavailable ? "unavailable (perps not reconciled yet)" : "unknown" : formatUsd(body.portfolioValueUsd);
   lines.push(`Portfolio ${value}${body.portfolioPartial && body.portfolioValueUsd !== null ? " (partial)" : ""}`);
   lines.push(`Updated ${formatTime(body.asOfMs, { now, missing: "never" })}${body.perpsPartial ? "; perps partial" : ""}`);
+  const perpsStamp = perpsFreshness(body, now);
+  if (perpsStamp)
+    lines.push(perpsStamp);
   lines.push("");
   if (body.positions.length)
     lines.push(renderTable(["Kind", "Position", "Amount", "Value", "P&L", "Details"], body.positions.map((p) => rowOf(p).map(terminalText))));
