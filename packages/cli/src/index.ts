@@ -29,6 +29,7 @@ import { browserUrl, resolveApiUrl, setOwnerConfirmHooks } from "./client"
 import { agentPositions } from "./commands/agent-positions"
 import { agentPost } from "./commands/agent-post"
 import { agentProfile } from "./commands/agent-profile"
+import { agentRound } from "./commands/agent-round"
 import { authLogin, authLogout, authStatus } from "./commands/auth"
 import { completion, completionBash, completionFish, completionZsh } from "./commands/completion"
 import { coreServe } from "./commands/core"
@@ -278,7 +279,7 @@ const COMMANDS: Record<string, CommandRoute> = {
   // FE-438: the creator fees this account's launched tokens can pay, and the claim to the wallet
   // fixed at launch. Candle signs; this machine sends a mint and a dry-run flag.
   // BE-1990: `agent positions` is the public positions read; it reads and sends no credential.
-  agent: { subcommands: { profile: agentProfile, post: agentPost, positions: agentPositions } },
+  agent: { subcommands: { profile: agentProfile, post: agentPost, positions: agentPositions, round: agentRound } },
   fees: { bare: feesList, subcommands: { claim: feesClaim } },
   // BE-723 (Plans v2 P6): the served plan table. Public, so it reads and sends no credential.
   plans: { bare: plans },

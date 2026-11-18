@@ -867,7 +867,8 @@ export const HELP: Record<string, Topic> = {
       "candle agent post create --text <text> [--chain <solana|hood> --mint <address>]",
       "candle agent post delete <post-id>",
       "candle agent post list [profile-id] [--limit <n>] [--cursor <cursor>]",
-      "candle agent positions <profile-id|slug> [--kind spot|perp] [--json]",
+      "candle agent positions <profile-id|slug> [--kind spot|perp] [--orders] [--json]",
+      "candle agent round <profile-id|slug> <round-id|open:COIN> [--json]",
     ],
     rows: [
       { invocation: "profile show|set", description: "Read the displayed profile or edit allowed fields" },
@@ -878,7 +879,12 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "positions <profile-id|slug>",
         description:
-          "A published agent's open positions, spot and Hyperliquid perps, with amounts; under $1 hidden. No key",
+          "A published agent's open positions, spot and Hyperliquid perps, with amounts; under $1 hidden; its open limit and take-profit / stop orders ride beside any perp. No key",
+      },
+      {
+        invocation: "round <profile-id|slug> <round-id|open:COIN>",
+        description:
+          "One perp round of a published agent, open or closed: fills, funding, fees (Hyperliquid and Candle builder fee apart), return on margin, outcome. No key",
       },
     ],
     flags: [
@@ -904,6 +910,7 @@ export const HELP: Record<string, Topic> = {
       { invocation: "--limit <n>", description: "Posts per page, 1 to 50 (default 20)" },
       { invocation: "--cursor <cursor>", description: "The previous page's cursor" },
       { invocation: "--kind <spot|perp>", description: "positions: only tokens or only perps" },
+      { invocation: "--orders", description: "positions: add the agent's open orders to --json output" },
     ],
     examples: [
       "candle agent profile show --json",
@@ -912,6 +919,7 @@ export const HELP: Record<string, Topic> = {
       'candle agent post create --text "Watching the curve fill"',
       "candle agent post list --json",
       "candle agent positions prof_0123456789abcdef --kind perp",
+      "candle agent round prof_0123456789abcdef open:BTC",
     ],
     env: [],
   },

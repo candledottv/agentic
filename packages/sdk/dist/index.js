@@ -5739,6 +5739,29 @@ class CandleClient {
     const { success: _success, ...positions } = await this.requestJson("GET", `/api/v1/agent/records/${encodeURIComponent(profileId)}/positions${params.size ? `?${params}` : ""}`);
     return positions;
   }
+  async getAgentPerpRound(profileId, roundId) {
+    const {
+      success: _success,
+      round,
+      ...rest
+    } = await this.requestJson("GET", `/api/v1/agent/records/${encodeURIComponent(profileId)}/perps/rounds/${encodeURIComponent(roundId)}`);
+    return { ...round, ...rest };
+  }
+  async getAgentOpenOrders(profileId) {
+    const { success: _success, ...answer } = await this.requestJson("GET", `/api/v1/agent/records/${encodeURIComponent(profileId)}/open-orders`);
+    return answer;
+  }
+  async getPerpCandles(coin, options = {}) {
+    const params = new URLSearchParams;
+    if (options.interval !== undefined)
+      params.set("interval", options.interval);
+    if (options.count !== undefined)
+      params.set("count", String(options.count));
+    if (options.end !== undefined)
+      params.set("end", String(options.end));
+    const { success: _success, ...answer } = await this.requestJson("GET", `/api/v1/agent/perps-candles/${encodeURIComponent(coin)}${params.size ? `?${params}` : ""}`);
+    return answer;
+  }
   async getAgentProfile(idOrWallet) {
     const body = await this.requestJson("GET", `/api/v1/users/${encodeURIComponent(idOrWallet)}/agent`);
     return body.agent;

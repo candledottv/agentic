@@ -5,10 +5,10 @@ import { formatTime, renderTable, terminalText, writeFailure, writeLocalFailure,
 import { formatPrice, formatQuantity, formatUsd } from "../usd"
 import { tradingFailure } from "./swap"
 
-const USAGE = "Usage: candle agent positions <profile-id|slug> [--kind spot|perp] [--json]"
-const PROFILE_ID = /^prof_[0-9a-f]{16}$/
+const USAGE = "Usage: candle agent positions <profile-id|slug> [--kind spot|perp] [--orders] [--json]"
+export const PROFILE_ID = /^prof_[0-9a-f]{16}$/
 /** The public slug shape (`AGENT_PUBLIC_SLUG`, packages/shared); the server checks it again. */
-const SLUG = /^[a-z0-9][a-z0-9_-]{2,29}$/
+export const SLUG = /^[a-z0-9][a-z0-9_-]{2,29}$/
 
 interface SpotRow {
   kind: "spot"
@@ -43,6 +43,56 @@ interface Positions {
   hiddenDust: number
   unpriced: number
   positions: (SpotRow | PerpRow)[]
+}
+
+interface OpenOrder {
+  coin: string
+  kind: "limit" | "take_profit" | "stop_loss" | "trigger"
+  side: "buy" | "sell"
+  limitPx: string | null
+  triggerPx: string | null
+  size: string
+  reduceOnly: boolean
+}
+interface OpenOrders {
+  orders: OpenOrder[]
+  readAt: number | null
+  stale: boolean
+}
+
+const KIND_LABEL: Record<OpenOrder["kind"], string> = {
+  limit: "limit",
+  take_profit: "take profit",
+  stop_loss: "stop",
+  trigger: "trigger",
+}
+
+/** The agent's open orders, public on Hyperliquid; nothing is printed for an agent with none. */
+export function renderOpenOrders(body: OpenOrders, now: number): string[] {
+  if (!body.orders.length) return []
+  const lines = [
+    "",
+    `Open orders (as of ${formatTime(body.readAt, { now, missing: "unknown" })}${body.stale ? ", stale" : ""})`,
+  ]
+  lines.push(
+    renderTable(
+      ["Market", "Order", "Side", "Price", "Size"],
+      body.orders.map((o) =>
+        [
+          o.coin,
+          `${KIND_LABEL[o.kind]}${o.reduceOnly ? " (reduce only)" : ""}`,
+          o.side,
+          o.triggerPx !== null
+            ? `trigger ${formatPrice(Number(o.triggerPx))}`
+            : o.limitPx !== null
+              ? formatPrice(Number(o.limitPx))
+              : "market",
+          o.size,
+        ].map(terminalText),
+      ),
+    ),
+  )
+  return lines
 }
 
 const pct = (value: number) => `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`
@@ -117,7 +167,7 @@ export async function agentPositions(args: string[], ctx: CommandContext): Promi
     writeUsageFailure(ctx.deps, message, ctx.json)
     return 2
   }
-  const parsed = parseArgs(args, { valueFlags: ["--kind"] })
+  const parsed = parseArgs(args, { valueFlags: ["--kind"], booleanFlags: ["--orders"] })
   if ("error" in parsed) return usage(`${parsed.error}\n${USAGE}`)
   const { values, positionals } = parsed
   const named = positionals[0]?.toLowerCase()
@@ -158,8 +208,34 @@ export async function agentPositions(args: string[], ctx: CommandContext): Promi
       writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: "none" }, ctx.json)
       return 1
     }
-    if (ctx.json) ctx.deps.stdout.write(`${JSON.stringify(result.body)}\n`)
-    else ctx.deps.stdout.write(`${render(result.body as Positions, ctx.deps.now())}\n`)
+    // BE-3756: an agent's open limit and take-profit / stop orders ride beside its perps. They are shown
+    // when it holds a perp (or with --orders); a failed orders read never hides the positions.
+    const positions = result.body as Positions
+    const wantOrders =
+      parsed.booleans.has("--orders") || (!ctx.json && positions.positions.some((p) => p.kind === "perp"))
+    let orders: OpenOrders | null = null
+    if (wantOrders) {
+      const read = await request(`/api/v1/agent/records/${encodeURIComponent(profileId)}/open-orders`)
+      if (!read.ok) {
+        if (ctx.json) {
+          writeFailure(ctx.deps, read, { apiUrl: ctx.apiUrl, authType: "none" }, ctx.json)
+          return 1
+        }
+      } else if (Array.isArray((read.body as Partial<OpenOrders>).orders)) orders = read.body as OpenOrders
+    }
+    if (ctx.json)
+      ctx.deps.stdout.write(
+        `${JSON.stringify(orders ? { ...(positions as object), openOrders: orders } : positions)}\n`,
+      )
+    else {
+      const now = ctx.deps.now()
+      const extra = orders
+        ? renderOpenOrders(orders, now)
+        : wantOrders
+          ? ["", "Open orders unavailable right now."]
+          : []
+      ctx.deps.stdout.write(`${[render(positions, now), ...extra].join("\n")}\n`)
+    }
     return 0
   } catch (err) {
     return tradingFailure(ctx, err)

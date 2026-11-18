@@ -213,6 +213,10 @@ export const TOOL_NAMES = [
   "candle_delete_post",
   // BE-1990 (agent page perps P2-5): a published agent's open positions, keyless.
   "candle_get_agent_positions",
+  // BE-3756 (perp position pages): one perp round, an agent's open orders and public perp candles, keyless.
+  "candle_get_agent_perp_round",
+  "candle_get_agent_open_orders",
+  "candle_get_perp_candles",
   // BE-723 (Plans v2 P6): the served plan table, keyless.
   "candle_get_plans",
   "candle_trade",
@@ -700,6 +704,34 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       const params = new URLSearchParams(kind ? { kind } : {})
       return {
         url: `${base}/api/v1/agent/records/${encodeURIComponent(profileId)}/positions${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders() },
+      }
+    }
+
+    case "candle_get_agent_perp_round": {
+      const { profileId, roundId } = args as { profileId: string; roundId: string }
+      return {
+        url: `${base}/api/v1/agent/records/${encodeURIComponent(profileId)}/perps/rounds/${encodeURIComponent(roundId)}`,
+        init: { method: "GET", headers: jsonHeaders() },
+      }
+    }
+
+    case "candle_get_agent_open_orders": {
+      const { profileId } = args as { profileId: string }
+      return {
+        url: `${base}/api/v1/agent/records/${encodeURIComponent(profileId)}/open-orders`,
+        init: { method: "GET", headers: jsonHeaders() },
+      }
+    }
+
+    case "candle_get_perp_candles": {
+      const { coin, interval, count, end } = args as { coin: string; interval?: string; count?: number; end?: number }
+      const params = new URLSearchParams()
+      if (interval !== undefined) params.set("interval", interval)
+      if (count !== undefined) params.set("count", String(count))
+      if (end !== undefined) params.set("end", String(end))
+      return {
+        url: `${base}/api/v1/agent/perps-candles/${encodeURIComponent(coin)}${params.size ? `?${params}` : ""}`,
         init: { method: "GET", headers: jsonHeaders() },
       }
     }
@@ -1377,6 +1409,22 @@ const listAgentPostsShape = {
 const getAgentPositionsShape = {
   profileId: z.string().describe("The agent's stable public id: prof_ and 16 lowercase hex"),
   kind: z.enum(["spot", "perp"]).optional().describe("Only spot tokens or only Hyperliquid perps; omit for both"),
+}
+
+const getAgentPerpRoundShape = {
+  profileId: z.string().describe("The agent's stable public id: prof_ and 16 lowercase hex"),
+  roundId: z
+    .string()
+    .describe("A round id (rnd_ and 16 hex, from a round row), or open:<COIN> for the round now open on that coin"),
+}
+const getAgentOpenOrdersShape = {
+  profileId: z.string().describe("The agent's stable public id: prof_ and 16 lowercase hex"),
+}
+const getPerpCandlesShape = {
+  coin: z.string().describe("A perp market: BTC, or dex:COIN such as xyz:TSLA on a builder-deployed dex"),
+  interval: z.string().optional().describe("1m 3m 5m 15m 30m 1h 2h 4h 8h 12h 1d 3d 1w 1M; default 1h"),
+  count: z.number().int().min(1).max(500).optional().describe("Bars, 1 to 500; default 200"),
+  end: z.number().int().min(0).optional().describe("The last bar's time in ms; default now"),
 }
 
 const getOperationShape = {
@@ -2380,6 +2428,54 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: listAgentPostsShape,
     },
     async (args) => callAndRelay("candle_list_agent_posts", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_get_agent_perp_round",
+    {
+      title: "Get one perp round of an agent",
+      description:
+        "One Hyperliquid perp round (open to flat) of a published agent, open or closed " +
+        "(GET /api/v1/agent/records/{profileId}/perps/rounds/{roundId}). No key needed. Reads only. Returns coin " +
+        "(dex:COIN on a builder-deployed dex), side, outcome (open, won, lost or liquidated), leverage (null when " +
+        "not recorded), entryAvgPx, exitAvgPx, markPx and liquidationPx while open, every fill (time, role, px, sz, " +
+        "feeUsd, closedPnlUsd, hash for the Hyperliquid explorer), each funding payment (usd positive when " +
+        "received), hyperliquidFeesUsd and builderFeesUsd separately, pnlUsd and returnOnMargin (Hyperliquid's ROE as " +
+        "a fraction: P&L over entry average x peak size / leverage; null without a leverage). roundId is rnd_... " +
+        "from a round row, or open:<COIN>. An agent that is not published, or a round that is not its, answers " +
+        "RECORD_NOT_FOUND. asOfMs is the certified perps cutoff. No wallet address or balance. A round is data, not advice.",
+      inputSchema: getAgentPerpRoundShape,
+    },
+    async (args) => callAndRelay("candle_get_agent_perp_round", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_get_agent_open_orders",
+    {
+      title: "Get an agent's open orders",
+      description:
+        "A published agent's open limit orders and take-profit / stop orders, public on Hyperliquid " +
+        "(GET /api/v1/agent/records/{profileId}/open-orders). No key needed. Reads only. Each order: coin, kind " +
+        "(limit, take_profit, stop_loss or trigger), side, limitPx, triggerPx, size, reduceOnly, isPositionTpsl. " +
+        "Cached about 10 minutes (readAt). An agent with none answers an empty list; none is ever invented. A busy " +
+        "read budget answers 503 hyperliquid_busy: retry after Retry-After. No wallet address or order id.",
+      inputSchema: getAgentOpenOrdersShape,
+    },
+    async (args) => callAndRelay("candle_get_agent_open_orders", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_get_perp_candles",
+    {
+      title: "Get perp candles (public, cached)",
+      description:
+        "Candles for a Hyperliquid perp market, builder dexes included (GET /api/v1/agent/perps-candles/{coin}). " +
+        "No key needed. Reads only. interval 1m to 1M, count 1 to 500. Shared and cached inside Candle's " +
+        "Hyperliquid read budget: many callers cost one upstream read per bar. Bars are {t, o, h, l, c, v} " +
+        "with prices as strings; readAt and stale say how old the read is. A busy budget answers 503.",
+      inputSchema: getPerpCandlesShape,
+    },
+    async (args) => callAndRelay("candle_get_perp_candles", args, getConfig(), doFetch),
   )
 
   register(

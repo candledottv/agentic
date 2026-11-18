@@ -995,6 +995,126 @@ export interface AgentPerpPosition {
     level: "ok" | "warn" | "critical" | "none";
 }
 export type AgentPosition = AgentSpotPosition | AgentPerpPosition;
+/** BE-3756: how a perp round ended. `open` while its position is still held. */
+export type AgentPerpRoundOutcome = "open" | "won" | "lost" | "liquidated";
+export interface AgentPerpRoundFill {
+    time: number;
+    side: "buy" | "sell";
+    /** This fill's part in the round: it opened it, added to it, reduced it or closed it. */
+    role: "open" | "add" | "reduce" | "close";
+    /** Hyperliquid's own direction text, e.g. "Open Long". */
+    dir: string;
+    px: string;
+    sz: string;
+    /** The position after the fill, signed, within this round. */
+    positionAfter: string;
+    feeUsd: number;
+    closedPnlUsd: number;
+    liquidated: boolean;
+    /** The Hyperliquid fill hash, the explorer link. */
+    hash: string;
+}
+export interface AgentPerpRoundFunding {
+    time: number;
+    /** Positive when received. */
+    usd: number;
+    rate: string;
+    hash: string;
+}
+/**
+ * One perp round of a public agent (`GET /api/v1/agent/records/:profileId/perps/rounds/:roundId`,
+ * without `success`). Money is USD numbers, prices and sizes decimal strings. Funding is positive
+ * when received. `returnOnMargin` is Hyperliquid's ROE as a fraction (0.735 is +73.5%): P&L over
+ * entry average x peak size / leverage; null when no leverage was recorded. No wallet address.
+ */
+export interface AgentPerpRound {
+    id: string;
+    /** The market as Hyperliquid names it: `BTC`, or `xyz:TSLA` on a builder-deployed dex. */
+    coin: string;
+    dex: string | null;
+    side: "long" | "short";
+    outcome: AgentPerpRoundOutcome;
+    leverage: {
+        value: number;
+        type: string;
+    } | null;
+    openedMs: number;
+    closedMs: number | null;
+    durationMs: number;
+    size: {
+        peak: string;
+        current: string;
+    };
+    entryAvgPx: string | null;
+    exitAvgPx: string | null;
+    markPx: string | null;
+    liquidationPx: string | null;
+    initialMarginUsd: number | null;
+    returnOnMargin: number | null;
+    realizedUsd: number;
+    unrealizedUsd: number | null;
+    fundingUsd: number;
+    /** Hyperliquid's fees, and Candle's builder fee, separately. */
+    hyperliquidFeesUsd: number;
+    builderFeesUsd: number;
+    pnlUsd: number;
+    fills: AgentPerpRoundFill[];
+    funding: AgentPerpRoundFunding[];
+    complete: boolean;
+    asOfMs: number | null;
+    seq?: number;
+}
+/** One open limit or trigger order of a public agent, public on Hyperliquid. No order id, no wallet. */
+export interface AgentOpenOrder {
+    coin: string;
+    dex: string | null;
+    kind: "limit" | "take_profit" | "stop_loss" | "trigger";
+    side: "buy" | "sell";
+    limitPx: string | null;
+    triggerPx: string | null;
+    triggerCondition: string | null;
+    size: string;
+    originalSize: string;
+    reduceOnly: boolean;
+    isPositionTpsl: boolean;
+    orderType: string;
+    placedAtMs: number;
+}
+/** `GET /api/v1/agent/records/:profileId/open-orders`, without `success`. An agent with none answers `orders: []`. */
+export interface AgentOpenOrders {
+    orders: AgentOpenOrder[];
+    /** When the oldest of the venue reads was made (cached about 10 minutes); null with no wallet. */
+    readAt: number | null;
+    stale: boolean;
+    /** The builder dexes read besides the main exchange. */
+    dexes: string[];
+    seq?: number;
+}
+export interface GetPerpCandlesOptions {
+    /** 1m 3m 5m 15m 30m 1h 2h 4h 8h 12h 1d 3d 1w 1M. Default 1h. */
+    interval?: string;
+    /** 1 to 500, default 200. */
+    count?: number;
+    /** The last bar's time in ms; default now. */
+    end?: number;
+}
+export interface PerpCandle {
+    /** Open time, ms. */
+    t: number;
+    o: string;
+    h: string;
+    l: string;
+    c: string;
+    v: string;
+}
+/** `GET /api/v1/agent/perps-candles/:coin`, without `success`. Public and cached: one upstream read per coin, interval and bar. */
+export interface PerpCandles {
+    coin: string;
+    interval: string;
+    candles: PerpCandle[];
+    readAt: number;
+    stale: boolean;
+}
 /**
  * GET /api/v1/agent/records/:profileId/positions, without `success`. Every open position, largest
  * value first; positions under $1 are counted in `hiddenDust`, not listed. Perps come from the same
@@ -3734,6 +3854,26 @@ export declare class CandleClient {
      * `positions_unavailable` (`CandleApiError`).
      */
     getAgentPositions(profileId: string, options?: GetAgentPositionsOptions): Promise<AgentPositions>;
+    /**
+     * One perp round (open or closed) of a published agent (`GET /api/v1/agent/records/:profileId/perps/rounds/:roundId`,
+     * no credential): fills, funding, fees split between Hyperliquid and Candle's builder fee, entry
+     * and exit averages, return on margin and outcome. `roundId` is `rnd_...` from a round row, or
+     * `open:<COIN>` for the round now open on that coin. Not published or no such round: 404
+     * `RECORD_NOT_FOUND` (`CandleApiError`).
+     */
+    getAgentPerpRound(profileId: string, roundId: string): Promise<AgentPerpRound>;
+    /**
+     * A published agent's open limit and take-profit / stop orders, public on Hyperliquid
+     * (`GET /api/v1/agent/records/:profileId/open-orders`, no credential), cached about 10 minutes. An agent
+     * with none answers an empty list: nothing is invented. A busy Hyperliquid read budget answers 503
+     * `hyperliquid_busy` with `Retry-After`.
+     */
+    getAgentOpenOrders(profileId: string): Promise<AgentOpenOrders>;
+    /**
+     * Candles for a perp market, `dex:COIN` included (`GET /api/v1/agent/perps-candles/:coin`, no credential).
+     * Shared and cached inside Candle's Hyperliquid read budget, so any number of callers cost one read per bar.
+     */
+    getPerpCandles(coin: string, options?: GetPerpCandlesOptions): Promise<PerpCandles>;
     getAgentProfile(idOrWallet: string): Promise<AgentProfile>;
     /**
      * The agent directory (`GET /api/v1/agent/directory`, no credential): every agent its owner
