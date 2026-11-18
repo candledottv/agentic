@@ -325,6 +325,32 @@ export declare function verifyPerpsBuildAgainstVenue(build: PerpsBuildToVerify, 
     fetcher: InfoFetcher;
     now?: () => number;
 }): Promise<PerpsBuildCheck>;
+export declare const HYPERLIQUID_SPOT_ASSET_OFFSET = 10000;
+export type SpotIntentMethod = "spotOrder" | "spotCancel";
+/** Whether `a` is a Hyperliquid spot asset id (`10000 + spot index`, below the builder-dex range). */
+export declare function hyperliquidSpotAsset(a: unknown): boolean;
+interface SpotPairRead {
+    name: string;
+    index: number;
+    base: string;
+    quote: string;
+    quoteToken: number;
+    midPx: string | null;
+}
+/** Resolve `HYPE/USDC`, `PURR/USDC` or `@107` against a raw `spotMetaAndAssetCtxs` answer. */
+export declare function hyperliquidSpotPair(answer: unknown, market: string): SpotPairRead | null;
+export interface VerifySpotBuildOptions {
+    builder: string;
+    network?: HyperliquidNetwork;
+    address: string;
+    intent: {
+        method: SpotIntentMethod;
+        params: Record<string, unknown>;
+    };
+    keyReduceOnly?: boolean;
+    fetcher: InfoFetcher;
+}
+export declare function verifySpotBuildAgainstVenue(build: PerpsBuildToVerify, opts: VerifySpotBuildOptions): Promise<PerpsBuildCheck>;
 /**
  * Hyperliquid's answer to one submitted action, per leg (spec D, section 3: "HTTP 200 alone is not
  * confirmation"). `confirmed` only when the venue said `ok` and no leg carries an error; `rejected`

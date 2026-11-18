@@ -1,0 +1,229 @@
+{
+  "capturedAt": "2026-11-18T01:53Z",
+  "source": "POST https://api.hyperliquid.xyz/info {type: spotMetaAndAssetCtxs} (mainnet), trimmed; ctxs reversed and a decoy added so a resolver that pairs by array position fails; token tokenId fields removed (unused, and gitleaks reads the hex ids as generic API keys)",
+  "meta": {
+    "universe": [
+      {
+        "tokens": [1, 0],
+        "name": "PURR/USDC",
+        "index": 0,
+        "isCanonical": true
+      },
+      {
+        "tokens": [150, 0],
+        "name": "@107",
+        "index": 107,
+        "isCanonical": false
+      },
+      {
+        "tokens": [197, 0],
+        "name": "@142",
+        "index": 142,
+        "isCanonical": false
+      },
+      {
+        "tokens": [268, 0],
+        "name": "@166",
+        "index": 166,
+        "isCanonical": false
+      },
+      {
+        "tokens": [360, 0],
+        "name": "@230",
+        "index": 230,
+        "isCanonical": false
+      },
+      {
+        "tokens": [150, 268],
+        "name": "@207",
+        "index": 207,
+        "isCanonical": false
+      },
+      {
+        "tokens": [297, 268],
+        "name": "@209",
+        "index": 209,
+        "isCanonical": false
+      },
+      {
+        "tokens": [3, 0],
+        "name": "@2",
+        "index": 2,
+        "isCanonical": false
+      },
+      {
+        "tokens": [312, 0],
+        "name": "@189",
+        "index": 189,
+        "isCanonical": false
+      }
+    ],
+    "tokens": [
+      {
+        "name": "USDC",
+        "szDecimals": 8,
+        "weiDecimals": 8,
+        "index": 0,
+        "isCanonical": true
+      },
+      {
+        "name": "PURR",
+        "szDecimals": 0,
+        "weiDecimals": 5,
+        "index": 1,
+        "isCanonical": true
+      },
+      {
+        "name": "LICK",
+        "szDecimals": 0,
+        "weiDecimals": 5,
+        "index": 3,
+        "isCanonical": false
+      },
+      {
+        "name": "HYPE",
+        "szDecimals": 2,
+        "weiDecimals": 8,
+        "index": 150,
+        "isCanonical": false
+      },
+      {
+        "name": "UBTC",
+        "szDecimals": 5,
+        "weiDecimals": 10,
+        "index": 197,
+        "isCanonical": false
+      },
+      {
+        "name": "USDT0",
+        "szDecimals": 2,
+        "weiDecimals": 8,
+        "index": 268,
+        "isCanonical": false
+      },
+      {
+        "name": "XAUT0",
+        "szDecimals": 2,
+        "weiDecimals": 8,
+        "index": 297,
+        "isCanonical": false
+      },
+      {
+        "name": "USPYX",
+        "szDecimals": 2,
+        "weiDecimals": 8,
+        "index": 312,
+        "isCanonical": false
+      },
+      {
+        "name": "USDH",
+        "szDecimals": 2,
+        "weiDecimals": 8,
+        "index": 360,
+        "isCanonical": false
+      }
+    ]
+  },
+  "ctxs": [
+    {
+      "prevDayPx": "0.093184",
+      "dayNtlVlm": "1007551.7607350001",
+      "markPx": "0.089615",
+      "midPx": "0.089675",
+      "circulatingSupply": "594624956.3413900137",
+      "coin": "@99999",
+      "totalSupply": "594624967.6479099989",
+      "dayBaseVlm": "11039174.0"
+    },
+    {
+      "prevDayPx": "0.0",
+      "dayNtlVlm": "0.0",
+      "markPx": "620.0",
+      "midPx": null,
+      "circulatingSupply": "10000000.0",
+      "coin": "@189",
+      "totalSupply": "10000000.0",
+      "dayBaseVlm": "0.0"
+    },
+    {
+      "prevDayPx": "0.00004961",
+      "dayNtlVlm": "0.0",
+      "markPx": "0.00004961",
+      "midPx": "0.00004968",
+      "circulatingSupply": "4869867788.5679702759",
+      "coin": "@2",
+      "totalSupply": "6867873581.875120163",
+      "dayBaseVlm": "0.0"
+    },
+    {
+      "prevDayPx": "3966.0",
+      "dayNtlVlm": "0.0",
+      "markPx": "3966.0",
+      "midPx": "3984.6",
+      "circulatingSupply": "184467440737.0700073242",
+      "coin": "@209",
+      "totalSupply": "184467440737.0795593262",
+      "dayBaseVlm": "0.0"
+    },
+    {
+      "prevDayPx": "69.4",
+      "dayNtlVlm": "15125.29279",
+      "markPx": "68.833",
+      "midPx": "68.8535",
+      "circulatingSupply": "301573825.1295819879",
+      "coin": "@207",
+      "totalSupply": "998725765.8307955265",
+      "dayBaseVlm": "218.66"
+    },
+    {
+      "prevDayPx": "0.992",
+      "dayNtlVlm": "6424.6186952",
+      "markPx": "0.99461",
+      "midPx": "0.9963",
+      "circulatingSupply": "99999991602.1419677734",
+      "coin": "@230",
+      "totalSupply": "99999991602.1609954834",
+      "dayBaseVlm": "6451.88"
+    },
+    {
+      "prevDayPx": "0.99933",
+      "dayNtlVlm": "1289099.9452863",
+      "markPx": "0.99917",
+      "midPx": "0.999135",
+      "circulatingSupply": "184467440737.0398864746",
+      "coin": "@166",
+      "totalSupply": "184467440737.0955200195",
+      "dayBaseVlm": "1290271.6900000002"
+    },
+    {
+      "prevDayPx": "64711.0",
+      "dayNtlVlm": "50247431.1613500565",
+      "markPx": "64389.0",
+      "midPx": "64389.5",
+      "circulatingSupply": "20999999.9967215247",
+      "coin": "@142",
+      "totalSupply": "20999999.9967215359",
+      "dayBaseVlm": "779.14117"
+    },
+    {
+      "prevDayPx": "69.328",
+      "dayNtlVlm": "46414965.3993400559",
+      "markPx": "68.8",
+      "midPx": "68.8005",
+      "circulatingSupply": "301573825.1295819879",
+      "coin": "@107",
+      "totalSupply": "998725765.8307955265",
+      "dayBaseVlm": "673908.5700000008"
+    },
+    {
+      "prevDayPx": "0.093184",
+      "dayNtlVlm": "1007551.7607350001",
+      "markPx": "0.089615",
+      "midPx": "0.089675",
+      "circulatingSupply": "594624956.3413900137",
+      "coin": "PURR/USDC",
+      "totalSupply": "594624967.6479099989",
+      "dayBaseVlm": "11039174.0"
+    }
+  ]
+}

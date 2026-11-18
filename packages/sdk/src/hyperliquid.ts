@@ -1456,6 +1456,192 @@ export async function verifyPerpsBuildAgainstVenue(
   return verifyPerpsBuild(build, { ...verify, ...evidence })
 }
 
+// ── Hyperliquid spot (BE-3771, HM2): the pre-sign check for a spot order or cancel ────────────
+//
+// A spot build is checked on its own path so no perps rule widens: `checkActionIntent` still
+// refuses every spot asset for the perps methods. What this checks, all fail-closed:
+// - the action is one `order` (grouping `na`, not reduce-only) or one `cancel`, on a spot asset
+//   (`10000 + spot index`), and no vault;
+// - the order is the request: side, size, price, time in force and client order id;
+// - the asset is the requested pair's on this machine's own read of `spotMetaAndAssetCtxs`, the pair
+//   is quoted in USDC, and a market order's price sits within its slippage (plus the drift margin)
+//   of the venue's own mid;
+// - a buy carries no builder field (Hyperliquid charges none on spot buys); a sell may carry only
+//   Candle's builder at no more than 0.1%;
+// - a reduce-only key signs only sells and cancels;
+// - a cancel names the asset and oid Hyperliquid shows for that cloid on this wallet;
+// - the typed data commits to this exact action and nonce.
+
+export const HYPERLIQUID_SPOT_ASSET_OFFSET = 10_000
+
+export type SpotIntentMethod = "spotOrder" | "spotCancel"
+
+/** Whether `a` is a Hyperliquid spot asset id (`10000 + spot index`, below the builder-dex range). */
+export function hyperliquidSpotAsset(a: unknown): boolean {
+  return typeof a === "number" && Number.isSafeInteger(a) && a >= 10_000 && a < 100_000
+}
+
+interface SpotPairRead {
+  name: string
+  index: number
+  base: string
+  quote: string
+  quoteToken: number
+  midPx: string | null
+}
+
+/** Resolve `HYPE/USDC`, `PURR/USDC` or `@107` against a raw `spotMetaAndAssetCtxs` answer. */
+export function hyperliquidSpotPair(answer: unknown, market: string): SpotPairRead | null {
+  if (!Array.isArray(answer) || !answer[0] || typeof answer[0] !== "object" || !Array.isArray(answer[1])) return null
+  const meta = answer[0] as { universe?: unknown; tokens?: unknown }
+  if (!Array.isArray(meta.universe) || !Array.isArray(meta.tokens)) return null
+  const tokens = new Map<number, string>()
+  for (const t of meta.tokens as { name?: unknown; index?: unknown }[])
+    if (typeof t?.name === "string" && Number.isSafeInteger(t.index)) tokens.set(t.index as number, t.name)
+  const pairs: SpotPairRead[] = []
+  for (const p of meta.universe as { name?: unknown; index?: unknown; tokens?: unknown }[]) {
+    if (typeof p?.name !== "string" || !Number.isSafeInteger(p.index) || !Array.isArray(p.tokens)) continue
+    const [b, q] = p.tokens as unknown[]
+    const base = tokens.get(b as number)
+    const quote = tokens.get(q as number)
+    if (base === undefined || quote === undefined) continue
+    const ctx = (answer[1] as { coin?: unknown; midPx?: unknown }[]).find((c) => c?.coin === p.name)
+    pairs.push({
+      name: p.name,
+      index: p.index as number,
+      base,
+      quote,
+      quoteToken: q as number,
+      midPx: typeof ctx?.midPx === "string" ? ctx.midPx : null,
+    })
+  }
+  if (/^@(0|[1-9][0-9]{0,5})$/.test(market)) return pairs.find((p) => p.index === Number(market.slice(1))) ?? null
+  const venue = pairs.find((p) => p.name === market)
+  if (venue) return venue
+  const exact = pairs.filter((p) => `${p.base}/${p.quote}` === market)
+  if (exact.length === 1) return exact[0] ?? null
+  if (exact.length > 1) return null
+  const folded = pairs.filter((p) => `${p.base}/${p.quote}`.toLowerCase() === market.toLowerCase())
+  return folded.length === 1 ? (folded[0] ?? null) : null
+}
+
+export interface VerifySpotBuildOptions {
+  builder: string
+  network?: HyperliquidNetwork
+  address: string
+  intent: { method: SpotIntentMethod; params: Record<string, unknown> }
+  keyReduceOnly?: boolean
+  fetcher: InfoFetcher
+}
+
+export async function verifySpotBuildAgainstVenue(
+  build: PerpsBuildToVerify,
+  opts: VerifySpotBuildOptions,
+): Promise<PerpsBuildCheck> {
+  try {
+    const network = opts.network ?? "mainnet"
+    const p = opts.intent.params
+    if (!EVM_ADDRESS_RE.test(opts.builder) || opts.builder.toLowerCase() === ZERO_ADDRESS)
+      return { ok: false, reason: "no valid Candle builder address to check against" }
+    if (build.network !== undefined && build.network !== network)
+      return { ok: false, reason: `the build is for ${build.network}, this client trades ${network}` }
+    if (build.address && build.address.toLowerCase() !== opts.address.toLowerCase())
+      return { ok: false, reason: "the build is for a different wallet" }
+    if (!Number.isSafeInteger(build.nonce) || build.nonce <= 0) return { ok: false, reason: "invalid nonce" }
+    const action = build.action
+    const typed = build.typedData
+    if (!action || typeof action !== "object") return { ok: false, reason: "no action" }
+    if (!typed || typeof typed !== "object" || typed.primary_type !== "Agent")
+      return { ok: false, reason: "a spot build must be an L1 Agent signature" }
+    if ("vaultAddress" in action) return { ok: false, reason: "the action names a vault" }
+    // The same complete-key-set check as perps: no hidden field rides along with the order.
+    const shape = actionShapeProblem(action)
+    if (shape) return { ok: false, reason: shape }
+
+    if (opts.intent.method === "spotOrder") {
+      if (action.type !== "order") return { ok: false, reason: "action type does not match the requested method" }
+      const orders = action.orders
+      if (!Array.isArray(orders) || orders.length !== 1 || action.grouping !== "na")
+        return { ok: false, reason: "a spot order is exactly one order with no grouping" }
+      const o = orders[0] as Record<string, unknown>
+      if (!o || typeof o !== "object" || !hyperliquidSpotAsset(o.a))
+        return { ok: false, reason: "order asset is not a Hyperliquid spot market" }
+      const isBuy = p.side === "buy"
+      if (p.side !== "buy" && p.side !== "sell") return { ok: false, reason: "side must be buy or sell" }
+      if (opts.keyReduceOnly === true && isBuy)
+        return { ok: false, reason: "this key is reduce-only and a buy is not reducing" }
+      if (o.b !== isBuy || o.r !== false || decimal(o.s) === null || decimal(o.s) !== decimal(p.size))
+        return { ok: false, reason: "order side, size or reduce-only flag does not match the request" }
+      const tif = (o.t as { limit?: { tif?: unknown } } | undefined)?.limit?.tif
+      const marketOrder = (p.type ?? (p.price === undefined ? "market" : "limit")) === "market"
+      if (tif !== (marketOrder ? "Ioc" : (p.tif ?? "Gtc")))
+        return { ok: false, reason: "order time in force does not match the request" }
+      if (p.price != null && decimal(o.p) !== decimal(p.price))
+        return { ok: false, reason: "order price does not match the request" }
+      if ((decimal(o.p) ?? 0n) <= 0n) return { ok: false, reason: "invalid order price" }
+      if (p.clientId != null) {
+        const clientId = typeof p.clientId === "string" ? p.clientId.toLowerCase() : null
+        if (clientId === null || !HYPERLIQUID_CLOID_RE.test(clientId) || o.c !== clientId)
+          return { ok: false, reason: "the order does not carry the requested client order id" }
+      }
+      if (o.c !== undefined && (typeof o.c !== "string" || !HYPERLIQUID_CLOID_RE.test(o.c)))
+        return { ok: false, reason: "invalid client order id" }
+      if (isBuy && "builder" in action && action.builder !== undefined)
+        return { ok: false, reason: "a spot buy carries no builder fee on Hyperliquid, so no builder field" }
+      const builderRefusal = checkBuilderField(action, opts.builder)
+      if (builderRefusal) return { ok: false, reason: builderRefusal }
+      // This machine's own read of the pair.
+      if (typeof p.market !== "string") return { ok: false, reason: "no market in the request" }
+      const pair = hyperliquidSpotPair(
+        await infoRead(opts.fetcher, network, { type: "spotMetaAndAssetCtxs" }),
+        p.market,
+      )
+      if (!pair) return { ok: false, reason: "Hyperliquid lists no such spot pair" }
+      if (pair.quoteToken !== 0) return { ok: false, reason: "the pair is not quoted in USDC" }
+      if (o.a !== HYPERLIQUID_SPOT_ASSET_OFFSET + pair.index)
+        return { ok: false, reason: "order asset is not the requested pair's on Hyperliquid" }
+      if (marketOrder) {
+        const mid = decimal(pair.midPx)
+        const slippage = typeof p.slippageBps === "number" ? p.slippageBps : 100
+        if (mid === null || mid <= 0n) return { ok: false, reason: "Hyperliquid shows no mid price for the pair" }
+        if (!withinBps(decimal(o.p) ?? 0n, mid, isBuy, slippage + HYPERLIQUID_MID_DRIFT_BPS))
+          return { ok: false, reason: "order price is outside its slippage of Hyperliquid's mid" }
+      }
+    } else {
+      if (action.type !== "cancel") return { ok: false, reason: "action type does not match the requested method" }
+      const cancels = action.cancels as { a?: unknown; o?: unknown }[] | undefined
+      if (!Array.isArray(cancels) || cancels.length !== 1 || !hyperliquidSpotAsset(cancels[0]?.a))
+        return { ok: false, reason: "invalid spot cancel asset" }
+      if ("builder" in action) return { ok: false, reason: "a cancel action carries no builder" }
+      const status = (await infoRead(opts.fetcher, network, {
+        type: "orderStatus",
+        user: opts.address.toLowerCase(),
+        oid: p.cloid,
+      })) as { order?: { order?: { coin?: unknown; oid?: unknown } } }
+      const resting = status?.order?.order
+      if (!resting || typeof resting.coin !== "string" || !Number.isSafeInteger(resting.oid))
+        return { ok: false, reason: "Hyperliquid shows no order with this cloid on this wallet" }
+      const pair = hyperliquidSpotPair(
+        await infoRead(opts.fetcher, network, { type: "spotMetaAndAssetCtxs" }),
+        resting.coin,
+      )
+      if (!pair || pair.name !== resting.coin)
+        return { ok: false, reason: "the order is not on a Hyperliquid spot pair" }
+      if (cancels[0]?.a !== HYPERLIQUID_SPOT_ASSET_OFFSET + pair.index || cancels[0]?.o !== resting.oid)
+        return { ok: false, reason: "the cancel does not name the order Hyperliquid shows for this request" }
+    }
+    const expected = hyperliquidL1TypedData(hyperliquidActionHash(action, build.nonce), network)
+    if (!sameValue(typed, expected))
+      return { ok: false, reason: "the typed data does not commit to this action and nonce" }
+    return { ok: true, kind: "l1" }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `could not check it against Hyperliquid: ${err instanceof Error ? err.message : "read failed"}`,
+    }
+  }
+}
+
 /**
  * Hyperliquid's answer to one submitted action, per leg (spec D, section 3: "HTTP 200 alone is not
  * confirmation"). `confirmed` only when the venue said `ok` and no leg carries an error; `rejected`

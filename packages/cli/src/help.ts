@@ -537,6 +537,11 @@ export const HELP: Record<string, Topic> = {
           "Move USDC from the Hyperliquid account to this key's own Solana or Hood TEE wallet through Relay (perps:withdraw); at least 10 USDC, with Relay's fees at most 5% (Hyperliquid's one-time 1 USDC activation fee on a first withdrawal not counted); one vault unlock and a typed confirm, no --yes",
       },
       {
+        invocation: "spot <markets|balances|buy|sell|cancel> ...",
+        description:
+          "Hyperliquid spot from the same TEE wallet (BE-3771): markets [--all] [--limit <n>]; balances; buy|sell <pair> <size> [--price <px>] [--tif <t>] [--slippage-bps <n>] [--client-id <id>]; cancel <cloid>. <pair> is HYPE/USDC or @107, size in the base token; USDC-quoted pairs only; a buy spends the spot USDC balance, which is separate from perps",
+      },
+      {
         invocation: "positions [--wallet <tee>]",
         description: "Positions, account value and withdrawable USDC, read live, and any withdrawal in flight",
       },
@@ -679,6 +684,7 @@ export const HELP: Record<string, Topic> = {
       "candle perps flatten",
       "candle perps reduce-only on",
       "candle perps withdraw 25 --to solana",
+      "candle perps spot buy HYPE/USDC 1",
       "candle perps risk --json",
       "candle perps watch --on-critical 'notify-send perps critical'",
       "candle perps thresholds set --warn-distance 20",
