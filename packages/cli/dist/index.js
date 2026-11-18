@@ -778,7 +778,7 @@ var init_terminal_theme = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.29";
+var CLI_VERSION = "0.13.30";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -6013,7 +6013,7 @@ var init_token_clusters = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.34";
+var SERVER_VERSION = "0.10.35";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
