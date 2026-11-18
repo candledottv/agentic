@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import { run } from "../index"
 import { createCapture, createFakeConfigStore, createFakeStore, createTestDeps } from "../test-support"
+
+const BUILDER = JSON.parse(
+  readFileSync(join(import.meta.dir, "../__fixtures__/hyperliquid-builder-dex.json"), "utf8"),
+) as { perpDexs: unknown; metaAndAssetCtxs: Record<string, unknown> }
 
 function fixture(
   key = "key",
@@ -28,6 +34,10 @@ function fixture(
       bodies.push(body)
       expect(new Headers(init?.headers).has("x-api-key")).toBe(false)
       if (opts.down) return new Response("bad", { status: 429 })
+      // BE-3755: builder-dex reads answer from the captured mainnet fixture.
+      if (body.type === "perpDexs") return new Response(JSON.stringify(BUILDER.perpDexs))
+      if (body.type === "metaAndAssetCtxs" && typeof body.dex === "string")
+        return new Response(JSON.stringify(BUILDER.metaAndAssetCtxs[body.dex]))
       if (body.type === "metaAndAssetCtxs")
         return new Response(
           JSON.stringify([
@@ -82,6 +92,20 @@ test("AC1 CLI JSON snapshot includes the common envelope and complete market row
         isDelisted: false,
         atOpenInterestCap: false,
         candle: { tradeable: true, reason: null },
+        dex: "",
+        terms: {
+          dex: "",
+          dexName: null,
+          deployer: null,
+          oracleSource: "validators",
+          oracleSetters: [],
+          marginMode: "cross",
+          collateral: "USDC",
+          feeMultiplier: "1",
+          takerFeePct: "0.045",
+          makerFeePct: "0.015",
+          feeWarning: null,
+        },
       },
     ],
   })
@@ -169,4 +193,38 @@ test("AC7 stored-profile market reads call only config on Candle, without an acc
       "https://api.test/api/v1/agent/perps/config",
     ])
   }
+})
+
+test("BE-3755 market xyz:TSLA prints its dex, oracle, deployer, margin mode, fee and max leverage", async () => {
+  const f = fixture()
+  expect(await run(["perps", "market", "xyz:TSLA", "--api-url", "https://api.test"], f.deps)).toBe(0)
+  expect(f.stdout.text).toContain(
+    "xyz:TSLA: builder dex xyz (XYZ), deployer 0x88806a71d74ad0a510b350545c9ae490912f0888, oracle set by 0x1234567890545d1df9ee64b35fdd16966e08acec; cross or isolated margin; max 20x; collateral USDC; fee 0.2x the main exchange's",
+  )
+  expect(f.bodies).toContainEqual({ type: "metaAndAssetCtxs", dex: "xyz" })
+  const json = fixture()
+  expect(await run(["perps", "market", "xyz:HOOD", "--json", "--api-url", "https://api.test"], json.deps)).toBe(0)
+  expect(JSON.parse(json.stdout.text).market).toMatchObject({
+    coin: "xyz:HOOD",
+    asset: 110004,
+    dex: "xyz",
+    onlyIsolated: true,
+    terms: { marginMode: "isolated", deployer: "0x88806a71d74ad0a510b350545c9ae490912f0888" },
+  })
+})
+test("BE-3755 markets --dex xyz lists that dex and names it; a malformed dex is a usage error", async () => {
+  const f = fixture()
+  expect(
+    await run(["perps", "markets", "--dex", "xyz", "--all", "--json", "--api-url", "https://api.test"], f.deps),
+  ).toBe(0)
+  const result = JSON.parse(f.stdout.text)
+  expect(result.markets.length).toBe(8)
+  expect(result.markets.every((row: { dex: string }) => row.dex === "xyz")).toBe(true)
+  expect(result.dexes).toMatchObject([{ name: "xyz", collateral: "USDC", tradeable: true }])
+  const text = fixture()
+  expect(await run(["perps", "markets", "--dex", "xyz", "--all", "--api-url", "https://api.test"], text.deps)).toBe(0)
+  expect(text.stdout.text).toContain("xyz:TSLA")
+  expect(text.stdout.text).toContain("Builder dex xyz (XYZ): deployer 0x88806a71d74ad0a510b350545c9ae490912f0888")
+  const bad = fixture()
+  expect(await run(["perps", "markets", "--dex", "x:y", "--api-url", "https://api.test"], bad.deps)).toBe(2)
 })

@@ -3188,7 +3188,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       {
         title: name.replace("candle_perps_", "Hyperliquid "),
         description:
-          "Read live market data directly from Hyperliquid's public API on this machine. Needs a Candle agent key of any scope, no signer. candle.tradeable is Candle's build gate at read time, not a promise; OI caps may still refuse an order. The hosted connector offers the same four reads at its Read level, read by Candle's server instead of this machine.",
+          "Read live market data directly from Hyperliquid's public API on this machine. Needs a Candle agent key of any scope, no signer. candle.tradeable is Candle's build gate at read time, not a promise; OI caps may still refuse an order. Builder-deployed (HIP-3) markets are named dex:COIN (xyz:TSLA); each market's terms give its dex, oracle source, deployer, margin mode and fee (feeWarning when above 2x the main exchange's), to show before an order. The hosted connector offers the same four reads at its Read level, read by Candle's server instead of this machine.",
         inputSchema: perpsMarketShapes[name],
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       },
@@ -3208,7 +3208,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
   }
   const perpsWrite =
     " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the action within this key's limits " +
-    "(USD window, maximum leverage, maximum position, slippage and price bands, main-exchange markets only); this " +
+    "(USD window, maximum leverage, maximum position, slippage and price bands, including builder-dex perps); this " +
     "server recomputes its hash and checks the action type and Candle's builder before signing, then submits it to " +
     "Hyperliquid itself. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE for TEE signing. wallet=embedded uses the recorded server signature and requires no PEM; the embedded switch ships off. Embedded open/close generate client ids; repeat only the same id after an uncertain result. A refusal names the limit " +
     "that refused it (error.limit)."
@@ -3441,7 +3441,9 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "Attach, move or remove the position's take-profit and stop-loss, each a reduce-only market trigger sized to " +
         "the position now (it does not grow with later additions). Moving a leg cancels the old one first, so that side " +
         "is briefly unprotected. A leg not named is left alone. Legs Candle did not build are listed in unowned and never " +
-        "touched; several matching legs need targetTp / targetSl. complete is false on any partial result." +
+        "touched; several matching legs need targetTp / targetSl. complete is false on any partial result. " +
+        "Each built step retains preview.terms (dex, oracle, deployer, margin, collateral and venue fee); fee warnings " +
+        "also appear in warnings. Use submit:false to inspect the first build before submission (the cancel when replacing)." +
         perpsWrite,
       inputSchema: perpsShapes.candle_perps_tpsl,
     },

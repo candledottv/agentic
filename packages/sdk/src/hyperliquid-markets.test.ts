@@ -6,7 +6,10 @@ import {
   PERPS_CANDLE_INTERVALS,
   type PerpsMarketFetch,
   PerpsMarketReader,
+  parsePerpsCoin,
+  perpsAssetId,
   perpsCandleWindow,
+  perpsFeeMultiplier,
 } from "./hyperliquid-markets"
 
 const NOW = 1_792_267_200_000
@@ -55,6 +58,7 @@ function fixtures() {
       ],
     ],
     perpsAtOpenInterestCap: ["BTC"],
+    perpDexs: [null],
     l2Book: {
       coin: "BTC",
       time: NOW,
@@ -146,7 +150,23 @@ describe("Spec B public market reads", () => {
       isDelisted: false,
       atOpenInterestCap: true,
       candle: { tradeable: true, reason: null },
+      dex: "",
+      terms: {
+        dex: "",
+        dexName: null,
+        deployer: null,
+        oracleSource: "validators",
+        oracleSetters: [],
+        marginMode: "cross",
+        collateral: "USDC",
+        feeMultiplier: "1",
+        takerFeePct: "0.045",
+        makerFeePct: "0.015",
+        feeWarning: null,
+      },
     })
+    // The main-exchange list reads no builder dex.
+    expect(f.calls.map((c) => c.body)).not.toContainEqual({ type: "perpDexs" })
     const all = await f.reader.markets({ all: true, sort: "name" })
     expect(all.markets.map((row) => [row.coin, row.candle.reason])).toEqual([
       ["BTC", null],
@@ -443,5 +463,179 @@ describe("Phase 3 funding reads (BE-1817)", () => {
     ])
     const down = fake({ predictedFundings: new Error("down") })
     await expect(down.reader.predictedFunding()).rejects.toMatchObject({ code: "PERPS_UNAVAILABLE" })
+  })
+})
+
+// ── BE-3755: builder-deployed (HIP-3) dexes, against the captured mainnet answer ─────────
+
+const BUILDER = JSON.parse(
+  readFileSync(join(import.meta.dir, "__fixtures__/hyperliquid-markets/builder-dex.json"), "utf8"),
+) as { perpDexs: unknown[]; metaAndAssetCtxs: Record<string, unknown> }
+
+function builderFake(config: unknown = { network: "mainnet", limits: { minOpenInterestUsd: 0 } }) {
+  const calls: Record<string, unknown>[] = []
+  const fetcher: PerpsMarketFetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+    calls.push(body)
+    let value: unknown
+    if (body.type === "perpDexs") value = BUILDER.perpDexs
+    else if (body.type === "metaAndAssetCtxs" && typeof body.dex === "string")
+      value = BUILDER.metaAndAssetCtxs[body.dex]
+    else value = fixtures()[String(body.type)]
+    if (value === undefined) return new Response("null", { status: 500 })
+    return new Response(JSON.stringify(value), { status: 200 })
+  }
+  const reader = new PerpsMarketReader({
+    apiKey: "key",
+    network: "mainnet",
+    fetcher,
+    now: () => NOW,
+    readConfig: async () => config,
+  })
+  return { reader, calls }
+}
+
+describe("BE-3755 builder-deployed dexes", () => {
+  test("dex:COIN names: accepted, folded, and malformed or injected names refused", () => {
+    expect(parsePerpsCoin("BTC")).toEqual({ dex: "", coin: "BTC" })
+    expect(parsePerpsCoin("xyz:TSLA")).toEqual({ dex: "xyz", coin: "xyz:TSLA" })
+    expect(parsePerpsCoin("XYZ:tsla")).toEqual({ dex: "xyz", coin: "xyz:tsla" })
+    for (const bad of [
+      "",
+      ":TSLA",
+      "xyz:",
+      "xyz:TS LA",
+      "xyz:TSLA:1",
+      "xyz::TSLA",
+      "xyz/TSLA",
+      "x".repeat(13) + ":A",
+      "xyz:" + "A".repeat(21),
+      "xyz:TSLA\n",
+      '{"type":"x"}',
+      "__proto__:A",
+      7,
+      null,
+    ])
+      expect(parsePerpsCoin(bad)).toBeNull()
+  })
+
+  test("asset ids follow Hyperliquid's builder numbering (100000 + dex * 10000 + index)", () => {
+    expect(perpsAssetId(0, 0)).toBe(0)
+    expect(perpsAssetId(0, 233)).toBe(233)
+    expect(perpsAssetId(1, 0)).toBe(110000)
+    expect(perpsAssetId(1, 1)).toBe(110001)
+    expect(perpsAssetId(4, 2)).toBe(140002)
+  })
+
+  test("fee multiple: 1 + share up to 1, 2 x share above, a tenth under growth mode", () => {
+    expect(perpsFeeMultiplier({ deployerFeeScale: "1.0" }, "")).toBe("1")
+    expect(perpsFeeMultiplier({ deployerFeeScale: "1.0" }, "xyz")).toBe("2")
+    expect(perpsFeeMultiplier({ deployerFeeScale: "1.0", growthMode: "enabled" }, "xyz")).toBe("0.2")
+    expect(perpsFeeMultiplier({ deployerFeeScale: "0.1111" }, "hyna")).toBe("1.1111")
+    expect(perpsFeeMultiplier({ deployerFeeScale: "1.5" }, "xyz")).toBe("3")
+    expect(perpsFeeMultiplier({}, "xyz")).toBe("1")
+  })
+
+  test("market xyz:TSLA resolves with the dex tag, oracle, deployer, margin mode, fee and max leverage", async () => {
+    const { reader, calls } = builderFake()
+    const { market } = await reader.market("xyz:TSLA")
+    expect(market).toMatchObject({
+      coin: "xyz:TSLA",
+      asset: 110001,
+      dex: "xyz",
+      maxLeverage: 20,
+      onlyIsolated: false,
+      szDecimals: 3,
+      candle: { tradeable: true, reason: null },
+      terms: {
+        dex: "xyz",
+        dexName: "XYZ",
+        deployer: "0x88806a71d74ad0a510b350545c9ae490912f0888",
+        oracleSource: "deployer",
+        oracleSetters: ["0x1234567890545d1df9ee64b35fdd16966e08acec"],
+        marginMode: "cross",
+        collateral: "USDC",
+        feeMultiplier: "0.2",
+        takerFeePct: "0.009",
+        feeWarning: null,
+      },
+    })
+    expect(calls).toContainEqual({ type: "metaAndAssetCtxs", dex: "xyz" })
+    // A builder market never reads the main universe.
+    expect(calls).not.toContainEqual({ type: "metaAndAssetCtxs" })
+    expect((await reader.market("XYZ:tsla")).market.coin).toBe("xyz:TSLA")
+  })
+
+  test("isolated-only builder markets (noCross) report isolated", async () => {
+    const { market } = await builderFake().reader.market("xyz:HOOD")
+    expect(market).toMatchObject({ asset: 110004, onlyIsolated: true, terms: { marginMode: "isolated" } })
+  })
+
+  test("non-USDC dexes are not tradeable, and name their collateral", async () => {
+    const { market } = await builderFake().reader.market("hyna:BTC")
+    expect(market.candle).toEqual({ tradeable: false, reason: "collateral" })
+    expect(market.terms.collateral).toBe("USDE")
+    expect(market.asset).toBe(140000)
+  })
+
+  test("the server's per-dex kill switch marks the dex, and the main exchange is untouched", async () => {
+    const { reader } = builderFake({
+      network: "mainnet",
+      limits: { minOpenInterestUsd: 0, dexOpensRefused: ["xyz"] },
+    })
+    const { market, gate } = await reader.market("xyz:TSLA")
+    expect(market.candle).toEqual({ tradeable: false, reason: "dexOpensRefused" })
+    expect(gate.dexOpensRefused).toEqual(["xyz"])
+    expect((await reader.market("BTC")).market.candle.reason).toBeNull()
+  })
+
+  test("markets --dex xyz lists that dex and the dex itself; all lists every dex; bad dex refused", async () => {
+    const { reader } = builderFake()
+    const xyz = await reader.markets({ dex: "xyz", all: true, sort: "name" })
+    expect(xyz.markets.every((row) => row.dex === "xyz" && row.coin.startsWith("xyz:"))).toBe(true)
+    expect(xyz.markets).toHaveLength(8)
+    expect(xyz.dexes?.map((d) => [d.name, d.collateral, d.tradeable])).toEqual([["xyz", "USDC", true]])
+    // The fixture captured three dexes' universes; the other seven answer 500 here and are left out.
+    const every = await reader.markets({ dex: "all", all: true })
+    expect(new Set(every.markets.map((row) => row.dex))).toEqual(new Set(["", "xyz", "flx", "hyna"]))
+    expect(every.warnings).toContain("Builder dex km markets unavailable.")
+    expect(every.dexes?.find((d) => d.name === "km")).toMatchObject({ collateral: null, tradeable: null })
+    expect(every.dexes?.find((d) => d.name === "flx")).toMatchObject({ collateral: "USDH", tradeable: false })
+    await expect(reader.markets({ dex: "x:y" })).rejects.toMatchObject({ code: "PERPS_USAGE" })
+    await expect(reader.markets({ dex: "nope" })).rejects.toMatchObject({ code: "PERPS_MARKET_NOT_FOUND" })
+    await expect(reader.market("nope:TSLA")).rejects.toMatchObject({ code: "PERPS_MARKET_NOT_FOUND" })
+    await expect(reader.market("xyz:NOPE")).rejects.toMatchObject({ code: "PERPS_MARKET_NOT_FOUND" })
+  })
+
+  test("a fee above 2x the main exchange's warns, and never refuses", async () => {
+    const data = structuredClone(BUILDER.metaAndAssetCtxs.xyz) as [{ universe: Record<string, unknown>[] }, unknown[]]
+    const tsla = data[0].universe[1] as Record<string, unknown>
+    tsla.deployerFeeScale = "1.5"
+    delete tsla.growthMode
+    const fetcher: PerpsMarketFetch = async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      const value =
+        body.type === "perpDexs" ? BUILDER.perpDexs : body.dex === "xyz" ? data : fixtures()[String(body.type)]
+      return new Response(JSON.stringify(value), { status: 200 })
+    }
+    const reader = new PerpsMarketReader({
+      apiKey: "key",
+      network: "mainnet",
+      fetcher,
+      readConfig: async () => ({ network: "mainnet", limits: { minOpenInterestUsd: 0 } }),
+    })
+    const { market } = await reader.market("xyz:TSLA")
+    expect(market.terms.feeMultiplier).toBe("3")
+    expect(market.terms.takerFeePct).toBe("0.135")
+    expect(market.terms.feeWarning).toContain("3x")
+    expect(market.candle.tradeable).toBe(true)
+    // Exactly 2x (GOLD: share 1.0, no growth mode) does not warn.
+    expect((await reader.market("xyz:GOLD")).market.terms).toMatchObject({ feeMultiplier: "2", feeWarning: null })
+  })
+
+  test("book and candles resolve a builder coin on its own dex", async () => {
+    const { reader, calls } = builderFake()
+    await reader.book("xyz:TSLA").catch(() => undefined)
+    expect(calls).toContainEqual({ type: "l2Book", coin: "xyz:TSLA" })
   })
 })

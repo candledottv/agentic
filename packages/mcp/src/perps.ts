@@ -218,7 +218,9 @@ export const perpsShapes = {
       .optional()
       .describe("Which stop-loss, when several match"),
     wallet,
-    submit,
+    submit: submit.describe(
+      "false: build and check only the first step (cancel for a replacement), returning steps[].preview.terms and fee warnings without signing or submitting",
+    ),
   },
   candle_perps_schedule_cancel: {
     seconds: z.number().int().min(5).optional().describe("Set the timer this many seconds from now (at least 5)"),
@@ -500,6 +502,8 @@ export async function executePerps(
 
     if (tool === "candle_perps_tpsl" || tool === "candle_perps_flatten") {
       // Calling the tool is the caller's intent: no prompt is invented (spec D, section 3).
+      // The workflow retains previews/terms and fee warnings in this tool's JSON result, even
+      // with submit:false, so agents can inspect a build before invoking submission separately.
       const reduceOnly = await call(cfg, fetch, "GET", "/api/v1/agent/keys/self/perps-reduce-only").catch(() => null)
       const io: PerpsWorkflowIo = {
         network,

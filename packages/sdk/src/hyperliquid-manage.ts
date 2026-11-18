@@ -12,8 +12,8 @@
  * target named.
  *
  * `packages/cli/src/hyperliquid-manage.ts` and `packages/mcp/src/hyperliquid-manage.ts` are
- * byte-identical copies of this file (drift tests enforce it). Its only import is `./hyperliquid`,
- * which is copied the same way.
+ * byte-identical copies of this file (drift tests enforce it). The signing and market helpers it
+ * imports are copied the same way.
  */
 import {
   HYPERLIQUID_EXCHANGE_URLS,
@@ -21,6 +21,7 @@ import {
   type HyperliquidSnapshotOrder,
   type HyperliquidTypedData,
   type HyperliquidWalletSnapshot,
+  hyperliquidCoinDex,
   hyperliquidExchangeBody,
   hyperliquidExchangeOutcome,
   hyperliquidWalletSnapshot,
@@ -28,11 +29,18 @@ import {
   snapshotPosition,
   verifyPerpsBuildAgainstVenue,
 } from "./hyperliquid"
+import type { PerpsDexTerms } from "./hyperliquid-markets"
 
 /** At most this many signed steps per invocation (spec D, section 8); the caller invokes again. */
 export const PERPS_FLATTEN_MAX_STEPS = 100
 
 export type PerpsStepStatus = "planned" | "built" | "submitted" | "confirmed" | "rejected" | "unknown" | "skipped"
+
+export interface PerpsWorkflowPreview extends Record<string, unknown> {
+  terms?: PerpsDexTerms
+}
+
+export type PerpsBuildReview = (step: PerpsWorkflowStep, preview: PerpsWorkflowPreview) => Promise<boolean>
 
 /** One step of a plan, as it ended. `exchangeBody` is kept whenever a signature exists but did not settle. */
 export interface PerpsWorkflowStep {
@@ -46,6 +54,8 @@ export interface PerpsWorkflowStep {
   /** The new order's cloid (an attach or a close), when it has one. */
   cloid: string | null
   status: PerpsStepStatus
+  /** The build's disclosures, including venue terms and fee warning; retained in every mode. */
+  preview?: PerpsWorkflowPreview
   detail?: string
   signature?: string
   exchange?: unknown
@@ -107,6 +117,14 @@ export interface PerpsWorkflowIo {
   /** `no-submit` builds and checks the first step only; `sign-only` signs the first step only. */
   mode: "submit" | "no-submit" | "sign-only"
   confirm?(plan: { steps: PerpsWorkflowStep[]; warnings: string[] }): Promise<boolean>
+  /**
+   * BE-3755 (scope 4): called for every built step, after the venue check and before anything is
+   * signed, with the build's own preview (the market's dex, oracle, deployer, margin, collateral and
+   * venue fee, and any fee warning). False declines the step: nothing is signed or submitted.
+   * No-submit returns the preview without invoking the hook. Agent callers may omit this hook;
+   * their invocation expresses intent, and the result still retains every built step's preview.
+   */
+  reviewBuild?: PerpsBuildReview
   /** A random 16-byte cloid. */
   cloid(): string
 }
@@ -124,6 +142,7 @@ function errorText(err: unknown): string {
 async function runStep(
   io: PerpsWorkflowIo,
   step: PerpsWorkflowStep,
+  warnings: string[],
   path: string,
   body: Record<string, unknown>,
   intent: { method: PerpsIntentMethod; params: Record<string, unknown> },
@@ -135,6 +154,11 @@ async function runStep(
     step.status = "rejected"
     step.detail = `${errorCode(err)}: ${errorText(err)}`
     return false
+  }
+  if (build.preview && typeof build.preview === "object" && !Array.isArray(build.preview)) {
+    step.preview = build.preview as PerpsWorkflowPreview
+    const warning = step.preview.terms?.feeWarning
+    if (typeof warning === "string" && warning && !warnings.includes(warning)) warnings.push(warning)
   }
   if (build.replayed === true) {
     step.status = "skipped"
@@ -160,6 +184,13 @@ async function runStep(
   }
   step.status = "built"
   if (io.mode === "no-submit") return false
+  if (io.reviewBuild) {
+    if (!(await io.reviewBuild(step, step.preview ?? {}))) {
+      step.status = "skipped"
+      step.detail = "Declined at the market terms review. Nothing was signed."
+      return false
+    }
+  }
   let signature: string
   try {
     signature = await io.sign(build.typedData as HyperliquidTypedData)
@@ -239,7 +270,8 @@ const CLOID_RE = /^0x[0-9a-f]{32}$/
 
 /** Why a TP/SL request cannot be planned, before anything is read, or null. */
 export function perpsTpslParamsProblem(p: PerpsTpslParams): string | null {
-  if (typeof p.coin !== "string" || !/^[A-Za-z0-9]{1,20}$/.test(p.coin)) return "coin must be a market name"
+  // BE-3755: a builder-dex market (`xyz:TSLA`) is a market name too; spot and outcome names are not.
+  if (hyperliquidCoinDex(p.coin) === null) return "coin must be a market name such as BTC, or xyz:TSLA on a builder dex"
   for (const [field, value] of [
     ["takeProfit", p.takeProfit],
     ["stopLoss", p.stopLoss],
@@ -288,13 +320,20 @@ export async function runPerpsTpsl(io: PerpsWorkflowIo, params: PerpsTpslParams)
   if (problem) throw new PerpsWorkflowError("VALIDATION_FAILED", problem)
   const coinQuery = encodeURIComponent(params.coin)
   const server = await io.read(`/api/v1/agent/perps/tpsl?walletId=${encodeURIComponent(io.walletId)}&coin=${coinQuery}`)
+  // BE-3755: a builder-dex coin's legs and position live in that dex's state.
+  const dex = hyperliquidCoinDex(params.coin) ?? ""
   let snapshot: HyperliquidWalletSnapshot
   try {
-    snapshot = await hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now)
+    snapshot = await hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now, dex)
   } catch (err) {
     throw new PerpsWorkflowError("PERPS_UNAVAILABLE", `Cannot read the account from Hyperliquid: ${errorText(err)}`)
   }
-  const coin = typeof server.coin === "string" ? server.coin : params.coin.toUpperCase()
+  const coin =
+    typeof server.coin === "string"
+      ? server.coin
+      : dex
+        ? `${dex}:${params.coin.slice(params.coin.indexOf(":") + 1).toUpperCase()}`
+        : params.coin.toUpperCase()
   // Candle names which legs it built; this machine's own venue read decides which of them are open.
   const venueLegs = snapshot.orders.filter((o) => o.coin === coin && o.tpsl !== null)
   const tracked: TrackedLeg[] = []
@@ -410,6 +449,7 @@ export async function runPerpsTpsl(io: PerpsWorkflowIo, params: PerpsTpslParams)
       const ok = await runStep(
         io,
         step,
+        warnings,
         "/api/v1/agent/perps/tpsl",
         {
           coin,
@@ -427,7 +467,7 @@ export async function runPerpsTpsl(io: PerpsWorkflowIo, params: PerpsTpslParams)
       }
       // Seen gone before anything replaces it.
       try {
-        const after = await hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now)
+        const after = await hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now, dex)
         result.readAt = after.readAt
         if (after.orders.some((o) => o.oid === step.target?.oid)) {
           step.status = "unknown"
@@ -450,6 +490,7 @@ export async function runPerpsTpsl(io: PerpsWorkflowIo, params: PerpsTpslParams)
       const ok = await runStep(
         io,
         plan.attach,
+        warnings,
         "/api/v1/agent/perps/tpsl",
         {
           coin,
@@ -550,6 +591,7 @@ export async function runPerpsFlatten(io: PerpsWorkflowIo): Promise<PerpsWorkflo
     runStep(
       io,
       step,
+      warnings,
       "/api/v1/agent/perps/flatten/cancel",
       { coin: step.coin, oid: step.target?.oid, workflowId, workflowStep: step.step },
       { method: "cancel", params: { coin: step.coin, oid: step.target?.oid } },
@@ -559,6 +601,7 @@ export async function runPerpsFlatten(io: PerpsWorkflowIo): Promise<PerpsWorkflo
     return runStep(
       io,
       step,
+      warnings,
       "/api/v1/agent/perps/close",
       { coin: step.coin, clientId, workflowId, workflowStep: step.step },
       { method: "close", params: { coin: step.coin, clientId } },

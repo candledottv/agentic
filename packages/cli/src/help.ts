@@ -459,10 +459,15 @@ export const HELP: Record<string, Topic> = {
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
       {
-        invocation: "markets [--sort <volume|oi|funding|change|name>] [--limit <n>] [--all]",
-        description: "List live main-perp markets directly from Hyperliquid; any Candle agent key required",
+        invocation: "markets [--sort <volume|oi|funding|change|name>] [--limit <n>] [--all] [--dex <name|all>]",
+        description:
+          "List live perp markets directly from Hyperliquid (main exchange by default; --dex for a builder dex); any Candle agent key required",
       },
-      { invocation: "market <coin>", description: "Market detail, margin tiers, impact prices and precision rules" },
+      {
+        invocation: "market <coin>",
+        description:
+          "Market detail, margin tiers, impact prices and precision rules; a builder-dex market is dex:COIN (xyz:TSLA) and prints its dex, oracle, deployer, margin mode and fee",
+      },
       {
         invocation: "book <coin> [--depth <1-20>] [--sig-figs <2-5>]",
         description: "Live order book, spread and mid, directly from Hyperliquid",
@@ -581,6 +586,11 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "--all",
         description: "markets: include refused markets and reasons; OI caps can still refuse an order",
+      },
+      {
+        invocation: "--dex <name|all>",
+        description:
+          "markets: one builder-deployed (HIP-3) dex such as xyz, or all for the main exchange and every builder dex; lists the dexes too",
       },
       { invocation: "--depth <1-20>", description: "book: levels per side (default 20)" },
       { invocation: "--sig-figs <2-5>", description: "book: Hyperliquid price aggregation" },

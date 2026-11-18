@@ -288,9 +288,11 @@ export {
 // BE-1584: the management plans the CLI and MCP run the same way.
 export {
   PERPS_FLATTEN_MAX_STEPS,
+  type PerpsBuildReview,
   type PerpsStepStatus,
   type PerpsTpslParams,
   PerpsWorkflowError,
+  type PerpsWorkflowPreview,
   type PerpsWorkflowResult,
   type PerpsWorkflowStep,
 } from "./hyperliquid-manage"

@@ -1,5 +1,11 @@
-/** Public main-perp reads (Spec B, BE-1581). Self-contained; byte-copied to CLI and MCP.
+/** Public perp market reads (Spec B, BE-1581). Self-contained; byte-copied to CLI and MCP.
  * No signing, relay or exchange calls. readHyperliquidMarkets is also the shared Spec A reader.
+ *
+ * BE-3755 (Hyperliquid HM1): builder-deployed (HIP-3) perp dexes. A builder market is named
+ * `dex:COIN` (`xyz:TSLA`), lives in its own dex's universe (`metaAndAssetCtxs` with a `dex`), and
+ * takes the asset id `100000 + perp_dex_index * 10000 + index_in_meta` (Hyperliquid's asset-id doc,
+ * pinned by `__fixtures__/hyperliquid-markets/builder-dex.json`). Main-exchange names and reads are
+ * unchanged.
  */
 export type PerpsMarketNetwork = "mainnet" | "testnet"
 export type PerpsMarketFetch = (
@@ -66,6 +72,12 @@ export interface PerpsMarketMeta {
   onlyIsolated?: boolean
   isDelisted?: boolean
   marginTableId?: number
+  /** Builder dexes: `noCross` or `strictIsolated` mean isolated margin only. */
+  marginMode?: string
+  /** Builder dexes: the deployer's fee share, a decimal (1.0 = 100% of the protocol fee). */
+  deployerFeeScale?: string
+  /** Builder dexes: `enabled` when growth mode cuts the all-in fee by 90%. */
+  growthMode?: string
 }
 export interface PerpsAssetContext {
   markPx?: string | null
@@ -86,6 +98,180 @@ export interface PerpsMarketSnapshot {
   universe: PerpsMarketMeta[]
   ctxs: PerpsAssetContext[]
   marginTables: Map<number, PerpsMarginTier[]>
+  /** The dex's collateral, a spot token index (0 is USDC). Absent from older answers: USDC. */
+  collateralToken?: number
+}
+
+// ── Builder-deployed (HIP-3) dexes (BE-3755) ─────────────────────────────────────────────
+
+/** One builder dex from `perpDexs`. Index 0 of that list is the main exchange (null), never a dex. */
+export interface PerpsDex {
+  /** `perp_dex_index`: the position in Hyperliquid's `perpDexs` answer, from 1. */
+  index: number
+  name: string
+  fullName: string
+  deployer: string
+  /** The address that posts oracle prices, or null when the deployer (or a setOracle delegate) does. */
+  oracleUpdater: string | null
+  /** Every address allowed to set this dex's oracle price: the updater, setOracle delegates, else the deployer. */
+  oracleSetters: string[]
+}
+
+/** `dex:COIN`: a dex of 1-12 letters and digits, a colon, a coin of 1-20. Main coins carry no colon. */
+const DEX_COIN = /^([A-Za-z0-9]{1,12}):([A-Za-z0-9]{1,20})$/
+const MAIN_COIN = /^[A-Za-z0-9]{1,20}$/
+
+/**
+ * Split a market name: `BTC` is the main exchange (dex ""), `xyz:TSLA` is builder dex `xyz`. The dex
+ * folds to lower case (Hyperliquid's dex names are lower case); the coin keeps its case. Null for
+ * anything else: an empty part, a second colon, a space, a slash, over-long parts.
+ */
+export function parsePerpsCoin(coin: unknown): { dex: string; coin: string } | null {
+  if (typeof coin !== "string") return null
+  if (MAIN_COIN.test(coin)) return { dex: "", coin }
+  const m = DEX_COIN.exec(coin)
+  if (!m || !m[1] || !m[2]) return null
+  return { dex: m[1].toLowerCase(), coin: `${m[1].toLowerCase()}:${m[2]}` }
+}
+
+/** A dex filter: "" (main), a builder dex name (lower-cased), or null when malformed. */
+export function parsePerpsDex(dex: unknown): string | null {
+  if (dex === undefined || dex === null || dex === "") return ""
+  if (typeof dex !== "string" || !/^[A-Za-z0-9]{1,12}$/.test(dex)) return null
+  return dex.toLowerCase()
+}
+
+/** Hyperliquid's asset id: the meta index on the main exchange, `100000 + dex * 10000 + i` on a builder dex. */
+export function perpsAssetId(dexIndex: number, indexInMeta: number): number {
+  return dexIndex === 0 ? indexInMeta : 100_000 + dexIndex * 10_000 + indexInMeta
+}
+
+/** Isolated-only when the market says so, or its margin mode forbids cross. */
+export function perpsMarginMode(meta: Pick<PerpsMarketMeta, "onlyIsolated" | "marginMode">): "cross" | "isolated" {
+  return meta.onlyIsolated === true || meta.marginMode === "noCross" || meta.marginMode === "strictIsolated"
+    ? "isolated"
+    : "cross"
+}
+
+/** Spot token names for the collateral indexes seen on mainnet (2026-11-17). Display only; USDC is index 0. */
+const COLLATERAL_NAMES: Record<number, string> = { 0: "USDC", 235: "USDE", 268: "USDT0", 360: "USDH" }
+
+export function perpsCollateralName(token: number): string {
+  return COLLATERAL_NAMES[token] ?? `spot token ${token}`
+}
+
+/** Hyperliquid's base-tier perp fees, in percent: what `feeMultiplier` scales. */
+export const PERPS_MAIN_TAKER_FEE_PCT = "0.045"
+export const PERPS_MAIN_MAKER_FEE_PCT = "0.015"
+/** BE-3755 (decisions doc section 6, settled call 2): warn when a market's fee is above 2x the main exchange's. */
+export const PERPS_FEE_WARNING_MULTIPLIER = 2
+
+/**
+ * A builder market's fee as a multiple of the main exchange's fee at the same tier (Hyperliquid fee
+ * doc): a deployer share `s` up to 1 adds `s` to the protocol fee (1 + s); above 1 the protocol fee
+ * rises to match it (2s); growth mode cuts the all-in fee by 90%. The main exchange is 1. Exact
+ * decimal (18 places, trailing zeros trimmed).
+ */
+export function perpsFeeMultiplier(
+  meta: Pick<PerpsMarketMeta, "deployerFeeScale" | "growthMode">,
+  dex: string,
+): string {
+  if (dex === "") return "1"
+  const share = nonnegative(meta.deployerFeeScale ?? "0") ?? 0n
+  let multiple = share <= ONE ? ONE + share : 2n * share
+  if (meta.growthMode === "enabled") multiple = multiple / 10n
+  return trim(multiple)
+}
+
+function trim(value: bigint): string {
+  return fixed(value, 18).replace(/\.?0+$/, "") || "0"
+}
+
+/** The terms a client shows before every order on a market (BE-3755, scope 4). */
+export interface PerpsDexTerms {
+  /** "" on Hyperliquid's main perp exchange, else the builder dex (`xyz`). */
+  dex: string
+  dexName: string | null
+  /** The builder dex's deployer; null on the main exchange (validator-operated). */
+  deployer: string | null
+  /** `validators` on the main exchange; `deployer` on a builder dex, with the addresses that may set it. */
+  oracleSource: "validators" | "deployer"
+  oracleSetters: string[]
+  marginMode: "cross" | "isolated"
+  collateral: string
+  /** Fee as a multiple of the main exchange's fee at the same tier, before Candle's builder fee. */
+  feeMultiplier: string
+  takerFeePct: string
+  makerFeePct: string
+  /** Set when the fee is above 2x the main exchange's; never a refusal. */
+  feeWarning: string | null
+}
+
+export function perpsDexTerms(meta: PerpsMarketMeta, dex: PerpsDex | null, collateralToken: number): PerpsDexTerms {
+  const name = dex?.name ?? ""
+  const multiplier = perpsFeeMultiplier(meta, name)
+  const scaledMultiplier = scaled(multiplier)
+  const pct = (base: string) => trim((scaled(base) * scaledMultiplier) / ONE)
+  return {
+    dex: name,
+    dexName: dex?.fullName ?? null,
+    deployer: dex?.deployer ?? null,
+    oracleSource: dex ? "deployer" : "validators",
+    oracleSetters: dex?.oracleSetters ?? [],
+    marginMode: perpsMarginMode(meta),
+    collateral: perpsCollateralName(collateralToken),
+    feeMultiplier: multiplier,
+    takerFeePct: pct(PERPS_MAIN_TAKER_FEE_PCT),
+    makerFeePct: pct(PERPS_MAIN_MAKER_FEE_PCT),
+    feeWarning:
+      scaledMultiplier > BigInt(PERPS_FEE_WARNING_MULTIPLIER) * ONE
+        ? `${meta.name} charges ${multiplier}x the main exchange's fee (its deployer sets it), above Candle's ${PERPS_FEE_WARNING_MULTIPLIER}x warning line`
+        : null,
+  }
+}
+
+function address(value: unknown): value is string {
+  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value)
+}
+
+/** Parse `perpDexs`: entry 0 is null (the main exchange); every other entry is a builder dex. */
+export function parsePerpDexs(value: unknown): PerpsDex[] {
+  if (!Array.isArray(value)) return unavailable()
+  const dexes: PerpsDex[] = []
+  for (const [index, entry] of value.entries()) {
+    if (index === 0 || entry === null) continue
+    if (
+      !object(entry) ||
+      typeof entry.name !== "string" ||
+      !/^[a-z0-9]{1,12}$/.test(entry.name) ||
+      !address(entry.deployer) ||
+      (entry.oracleUpdater !== null && entry.oracleUpdater !== undefined && !address(entry.oracleUpdater))
+    )
+      return unavailable()
+    const setters = new Set<string>()
+    if (address(entry.oracleUpdater)) setters.add(entry.oracleUpdater.toLowerCase())
+    if (Array.isArray(entry.subDeployers))
+      for (const pair of entry.subDeployers)
+        if (Array.isArray(pair) && pair[0] === "setOracle" && Array.isArray(pair[1]))
+          for (const a of pair[1]) if (address(a)) setters.add(a.toLowerCase())
+    if (setters.size === 0) setters.add(entry.deployer.toLowerCase())
+    dexes.push({
+      index,
+      name: entry.name,
+      fullName: typeof entry.fullName === "string" ? entry.fullName : entry.name,
+      deployer: entry.deployer.toLowerCase(),
+      oracleUpdater: address(entry.oracleUpdater) ? entry.oracleUpdater.toLowerCase() : null,
+      oracleSetters: [...setters].sort(),
+    })
+  }
+  return dexes
+}
+
+export async function readHyperliquidPerpDexs(
+  fetcher: PerpsMarketFetch,
+  network: PerpsMarketNetwork,
+): Promise<PerpsDex[]> {
+  return parsePerpDexs(await info(fetcher, network, { type: "perpDexs" }))
 }
 function at<T>(values: readonly T[], index: number): T {
   const value = values[index]
@@ -112,7 +298,11 @@ function parseMarkets(value: unknown): PerpsMarketSnapshot {
     for (const key of ["isDelisted", "onlyIsolated"])
       if (row[key] !== undefined && typeof row[key] !== "boolean") return unavailable()
     if (row.marginTableId !== undefined && !integer(row.marginTableId)) return unavailable()
+    for (const key of ["marginMode", "growthMode"])
+      if (row[key] !== undefined && row[key] !== null && typeof row[key] !== "string") return unavailable()
+    if (row.deployerFeeScale !== undefined && nonnegative(row.deployerFeeScale) === null) return unavailable()
   }
+  if (meta.collateralToken !== undefined && !integer(meta.collateralToken)) return unavailable()
   for (const ctx of ctxs) {
     if (!object(ctx)) return unavailable()
     for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
@@ -138,7 +328,12 @@ function parseMarkets(value: unknown): PerpsMarketSnapshot {
       marginTables.set(entry[0], tiers)
     }
   }
-  return { universe: meta.universe as unknown as PerpsMarketMeta[], ctxs: ctxs as PerpsAssetContext[], marginTables }
+  return {
+    universe: meta.universe as unknown as PerpsMarketMeta[],
+    ctxs: ctxs as PerpsAssetContext[],
+    marginTables,
+    ...(meta.collateralToken === undefined ? {} : { collateralToken: meta.collateralToken as number }),
+  }
 }
 async function info(fetcher: PerpsMarketFetch, network: PerpsMarketNetwork, body: object): Promise<unknown> {
   try {
@@ -155,21 +350,37 @@ async function info(fetcher: PerpsMarketFetch, network: PerpsMarketNetwork, body
     return unavailable()
   }
 }
+/** One dex's universe: the main exchange when `dex` is "" (the unchanged wire body), else that builder dex. */
 export async function readHyperliquidMarkets(
   fetcher: PerpsMarketFetch,
   network: PerpsMarketNetwork,
+  dex = "",
 ): Promise<PerpsMarketSnapshot> {
-  return parseMarkets(await info(fetcher, network, { type: "metaAndAssetCtxs" }))
+  return parseMarkets(
+    await info(fetcher, network, dex ? { type: "metaAndAssetCtxs", dex } : { type: "metaAndAssetCtxs" }),
+  )
 }
 /** Mirrors resolvePerpsMarket, including its mid fallback and rounded-UP USD micros. */
+export type PerpsMarketGateReason = null | "delisted" | "noPrice" | "minOpenInterest" | "collateral" | "dexOpensRefused"
+/**
+ * BE-3755: on a builder dex, a collateral other than USDC refuses (until Hyperliquid spot, HM2), and
+ * the operations kill switch refuses new opens on a named dex. The floor applies on every dex.
+ */
 export function perpsMarketGate(
   meta: Pick<PerpsMarketMeta, "isDelisted">,
   ctx: PerpsAssetContext,
   minOpenInterestUsd: number,
+  dex: { name: string; collateralToken: number; opensRefused: readonly string[] } = {
+    name: "",
+    collateralToken: 0,
+    opensRefused: [],
+  },
 ): {
   tradeable: boolean
-  reason: null | "delisted" | "noPrice" | "minOpenInterest"
+  reason: PerpsMarketGateReason
 } {
+  if (dex.name !== "" && dex.collateralToken !== 0) return { tradeable: false, reason: "collateral" }
+  if (dex.name !== "" && dex.opensRefused.includes(dex.name)) return { tradeable: false, reason: "dexOpensRefused" }
   if (meta.isDelisted === true) return { tradeable: false, reason: "delisted" }
   const mark = nonnegative(ctx.markPx)
   const mid = nonnegative(typeof ctx.midPx === "string" ? ctx.midPx : ctx.markPx)
@@ -183,22 +394,31 @@ export function perpsMarketGate(
     return { tradeable: false, reason: "minOpenInterest" }
   return { tradeable: true, reason: null }
 }
+/** The index of `coin` (already split by parsePerpsCoin) in its dex's universe: exact, else one case-folded match. */
 function resolve(snapshot: PerpsMarketSnapshot, coin: string): number {
-  if (/^[A-Za-z0-9]{1,20}$/.test(coin)) {
-    const exact = snapshot.universe.findIndex((row) => row.name === coin)
-    if (exact !== -1) return exact
-    const matches = snapshot.universe
-      .map((row, i) => ({ row, i }))
-      .filter(({ row }) => row.name.toLowerCase() === coin.toLowerCase())
-    if (matches.length === 1) return at(matches, 0).i
-  }
-  throw new PerpsMarketError("PERPS_MARKET_NOT_FOUND", `${coin} is not a market on Hyperliquid's main perp exchange.`)
+  const exact = snapshot.universe.findIndex((row) => row.name === coin)
+  if (exact !== -1) return exact
+  const matches = snapshot.universe
+    .map((row, i) => ({ row, i }))
+    .filter(({ row }) => row.name.toLowerCase() === coin.toLowerCase())
+  if (matches.length === 1) return at(matches, 0).i
+  return notFound(coin)
+}
+function notFound(coin: string): never {
+  throw new PerpsMarketError(
+    "PERPS_MARKET_NOT_FOUND",
+    coin.includes(":")
+      ? `${coin} is not a market on that Hyperliquid builder dex.`
+      : `${coin} is not a market on Hyperliquid's main perp exchange.`,
+  )
 }
 export type PerpsMarketSort = "volume" | "oi" | "funding" | "change" | "name"
 export interface PerpsMarketsOptions {
   sort?: PerpsMarketSort
   limit?: number
   all?: boolean
+  /** BE-3755: "" or absent for the main exchange (unchanged), a builder dex name (`xyz`), or `all` for every dex. */
+  dex?: string
 }
 export interface PerpsBookOptions {
   depth?: number
@@ -276,7 +496,7 @@ export interface PerpsMarketEnvelope {
   success: true
   network: PerpsMarketNetwork
   readAt: number
-  gate: { minOpenInterestUsd: number; source: "server" | "default" }
+  gate: { minOpenInterestUsd: number; source: "server" | "default"; dexOpensRefused?: string[] }
   warnings: string[]
 }
 export interface PerpsMarketRow {
@@ -298,10 +518,16 @@ export interface PerpsMarketRow {
   onlyIsolated: boolean
   isDelisted: boolean
   atOpenInterestCap: boolean | null
-  candle: { tradeable: boolean | null; reason: null | "delisted" | "noPrice" | "minOpenInterest" | "networkMismatch" }
+  candle: { tradeable: boolean | null; reason: PerpsMarketGateReason | "networkMismatch" }
+  /** BE-3755: "" on the main exchange, else the builder dex. */
+  dex: string
+  /** BE-3755: what a client shows before an order on this market (dex, oracle, deployer, margin, fee). */
+  terms: PerpsDexTerms
 }
 export interface PerpsMarketsResult extends PerpsMarketEnvelope {
   markets: PerpsMarketRow[]
+  /** BE-3755: the builder dexes, when the list was asked with `dex`. */
+  dexes?: (PerpsDex & { collateral: string | null; tradeable: boolean | null })[]
 }
 export interface PerpsMarketResult extends PerpsMarketEnvelope {
   market: PerpsMarketRow & {
@@ -396,7 +622,15 @@ interface GateConfig {
   minOpenInterestUsd: number
   source: "server" | "default"
   network?: PerpsMarketNetwork
+  /** BE-3755: builder dexes the server's operations kill switch refuses new opens on. */
+  dexOpensRefused: string[]
   warnings: string[]
+}
+/** A located market: its dex's snapshot, its index there, and the dex (null on the main exchange). */
+interface Located {
+  snapshot: PerpsMarketSnapshot
+  index: number
+  dex: PerpsDex | null
 }
 interface MarketExtras {
   predicted: Map<string, { fundingRate: string; nextFundingTime: number }> | null
@@ -419,6 +653,10 @@ export class PerpsMarketReader {
   private extrasCache?: { value: MarketExtras; at: number }
   private corePending?: Promise<PerpsMarketSnapshot>
   private extrasPending?: Promise<MarketExtras>
+  private readonly dexCache = new Map<string, { value: PerpsMarketSnapshot; at: number }>()
+  private readonly dexPending = new Map<string, Promise<PerpsMarketSnapshot>>()
+  private dexesCache?: { value: PerpsDex[]; at: number }
+  private dexesPending?: Promise<PerpsDex[]>
   private readonly now: () => number
   constructor(private readonly opts: PerpsMarketReaderOptions) {
     this.now = opts.now ?? Date.now
@@ -442,16 +680,20 @@ export class PerpsMarketReader {
           (value.network !== "mainnet" && value.network !== "testnet")
         )
           throw new Error("config shape")
+        const refused = value.limits.dexOpensRefused
         return {
           minOpenInterestUsd: value.limits.minOpenInterestUsd,
           source: "server" as const,
           network: value.network,
+          // An older server sends no list: nothing refused.
+          dexOpensRefused: Array.isArray(refused) ? refused.filter((d): d is string => typeof d === "string") : [],
           warnings: [],
         }
       } catch {
         return {
           minOpenInterestUsd: 1_000_000,
           source: "default" as const,
+          dexOpensRefused: [],
           warnings: ["Candle config unavailable; using the release's default OI floor."],
         }
       }
@@ -470,6 +712,59 @@ export class PerpsMarketReader {
         this.corePending = undefined
       })
     return this.corePending
+  }
+  /** BE-3755: one builder dex's universe, cached like the main one. */
+  private dexCore(dex: string): Promise<PerpsMarketSnapshot> {
+    const ttl = this.opts.cacheMs ?? 5_000
+    const hit = this.dexCache.get(dex)
+    if (hit && ttl > 0 && this.now() - hit.at < ttl) return Promise.resolve(hit.value)
+    let pending = this.dexPending.get(dex)
+    if (!pending) {
+      pending = readHyperliquidMarkets(this.opts.fetcher, this.opts.network, dex)
+        .then((value) => {
+          this.dexCache.set(dex, { value, at: this.now() })
+          return value
+        })
+        .finally(() => {
+          this.dexPending.delete(dex)
+        })
+      this.dexPending.set(dex, pending)
+    }
+    return pending
+  }
+  /** BE-3755: the builder dexes (`perpDexs`). */
+  private dexes(): Promise<PerpsDex[]> {
+    const ttl = this.opts.cacheMs ?? 5_000
+    if (this.dexesCache && ttl > 0 && this.now() - this.dexesCache.at < ttl)
+      return Promise.resolve(this.dexesCache.value)
+    this.dexesPending ??= readHyperliquidPerpDexs(this.opts.fetcher, this.opts.network)
+      .then((value) => {
+        this.dexesCache = { value, at: this.now() }
+        return value
+      })
+      .finally(() => {
+        this.dexesPending = undefined
+      })
+    return this.dexesPending
+  }
+  /** The named builder dex, or PERPS_MARKET_NOT_FOUND. */
+  private async dex(name: string): Promise<PerpsDex> {
+    const found = (await this.dexes()).find((d) => d.name === name)
+    if (!found) throw new PerpsMarketError("PERPS_MARKET_NOT_FOUND", `${name} is not a Hyperliquid builder dex.`)
+    return found
+  }
+  /** Find a market by name on its dex: `BTC` on the main exchange, `xyz:TSLA` on builder dex xyz. */
+  private async locate(coin: string): Promise<Located> {
+    const parsed = parsePerpsCoin(coin)
+    if (!parsed) return notFound(coin)
+    if (parsed.dex === "") {
+      const snapshot = await this.core()
+      return { snapshot, index: resolve(snapshot, parsed.coin), dex: null }
+    }
+    // The dex is checked first, so an unknown dex never costs a universe read.
+    const dex = await this.dex(parsed.dex)
+    const snapshot = await this.dexCore(dex.name)
+    return { snapshot, index: resolve(snapshot, parsed.coin), dex }
   }
   private extras(): Promise<MarketExtras> {
     const ttl = this.opts.cacheMs ?? 5_000
@@ -524,7 +819,11 @@ export class PerpsMarketReader {
       success: true,
       network: this.opts.network,
       readAt,
-      gate: { minOpenInterestUsd: config.minOpenInterestUsd, source: config.source },
+      gate: {
+        minOpenInterestUsd: config.minOpenInterestUsd,
+        source: config.source,
+        ...(config.dexOpensRefused.length > 0 ? { dexOpensRefused: config.dexOpensRefused } : {}),
+      },
       warnings: [
         ...config.warnings,
         ...warnings,
@@ -532,16 +831,23 @@ export class PerpsMarketReader {
       ],
     }
   }
-  private row(core: PerpsMarketSnapshot, extras: MarketExtras, config: GateConfig, asset: number): PerpsMarketRow {
+  private row(
+    core: PerpsMarketSnapshot,
+    extras: MarketExtras,
+    config: GateConfig,
+    asset: number,
+    dex: PerpsDex | null = null,
+  ): PerpsMarketRow {
     const meta = at(core.universe, asset)
     const ctx = at(core.ctxs, asset)
+    const collateralToken = core.collateralToken ?? 0
     const mark = ctx.markPx == null ? null : scaled(ctx.markPx)
     const oi = ctx.openInterest == null ? null : scaled(ctx.openInterest)
     const prev = ctx.prevDayPx == null ? null : scaled(ctx.prevDayPx)
     const predicted = extras.predicted?.get(meta.name)
     return {
       coin: meta.name,
-      asset,
+      asset: perpsAssetId(dex?.index ?? 0, asset),
       markPx: ctx.markPx ?? null,
       oraclePx: ctx.oraclePx ?? null,
       midPx: ctx.midPx ?? null,
@@ -556,13 +862,20 @@ export class PerpsMarketReader {
       change24hPct:
         prev === null || prev === 0n || mark === null ? null : fixed(((mark - prev) * 100n * ONE) / prev, 1),
       maxLeverage: meta.maxLeverage,
-      onlyIsolated: meta.onlyIsolated === true,
+      onlyIsolated: perpsMarginMode(meta) === "isolated",
       isDelisted: meta.isDelisted === true,
-      atOpenInterestCap: extras.cap?.has(meta.name) ?? null,
+      // The cap list is the main exchange's.
+      atOpenInterestCap: dex ? null : (extras.cap?.has(meta.name) ?? null),
       candle:
         config.network !== undefined && config.network !== this.opts.network
           ? { tradeable: null, reason: "networkMismatch" }
-          : perpsMarketGate(meta, ctx, config.minOpenInterestUsd),
+          : perpsMarketGate(meta, ctx, config.minOpenInterestUsd, {
+              name: dex?.name ?? "",
+              collateralToken,
+              opensRefused: config.dexOpensRefused,
+            }),
+      dex: dex?.name ?? "",
+      terms: perpsDexTerms(meta, dex, collateralToken),
     }
   }
   async markets(opts: PerpsMarketsOptions = {}): Promise<PerpsMarketsResult> {
@@ -571,9 +884,30 @@ export class PerpsMarketReader {
     if (!["volume", "oi", "funding", "change", "name"].includes(sort))
       return usage("sort must be volume, oi, funding, change or name.")
     const limit = opts.limit === undefined ? undefined : bounded(opts.limit, 500, 1, 500, "limit")
-    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()])
-    const rows = core.universe
-      .map((_, asset) => this.row(core, extras, config, asset))
+    const dexFilter = opts.dex === "all" ? "all" : parsePerpsDex(opts.dex)
+    if (dexFilter === null) return usage("dex must be a builder dex name such as xyz, or all.")
+    const main = dexFilter === "" || dexFilter === "all"
+    const [config, core, extras] = await Promise.all([this.config(), main ? this.core() : null, this.extras()])
+    const listed: { snapshot: PerpsMarketSnapshot; dex: PerpsDex | null }[] = []
+    let dexes: PerpsDex[] | null = null
+    const skipped: string[] = []
+    if (core) listed.push({ snapshot: core, dex: null })
+    if (dexFilter !== "") {
+      dexes = await this.dexes()
+      const wanted = dexFilter === "all" ? dexes : [await this.dex(dexFilter)]
+      // One unreadable dex does not sink the whole list: it is left out, with a warning.
+      const settled = await Promise.allSettled(wanted.map((d) => this.dexCore(d.name)))
+      for (const [i, d] of wanted.entries()) {
+        const result = at(settled, i)
+        if (result.status === "fulfilled") listed.push({ snapshot: result.value, dex: d })
+        else if (dexFilter === "all") skipped.push(d.name)
+        else throw result.reason
+      }
+    }
+    const rows = listed
+      .flatMap(({ snapshot, dex }) =>
+        snapshot.universe.map((_, asset) => this.row(snapshot, extras, config, asset, dex)),
+      )
       .filter((row) => opts.all || row.candle.tradeable !== false)
     const field = {
       volume: "dayNotionalVolumeUsd",
@@ -594,21 +928,39 @@ export class PerpsMarketReader {
       }
       return a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0
     })
+    const dexRows =
+      dexes === null
+        ? undefined
+        : await Promise.all(
+            (dexFilter === "all" ? dexes : dexes.filter((d) => d.name === dexFilter)).map(async (d) => {
+              if (skipped.includes(d.name)) return { ...d, collateral: null, tradeable: null }
+              const token = (await this.dexCore(d.name)).collateralToken ?? 0
+              return {
+                ...d,
+                collateral: perpsCollateralName(token),
+                tradeable: token === 0 && !config.dexOpensRefused.includes(d.name),
+              }
+            }),
+          )
+    const warnings = [...extras.warnings, ...skipped.map((d) => `Builder dex ${d} markets unavailable.`)]
     return {
-      ...this.envelope(config, extras.warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
+      ...this.envelope(config, warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
       markets: limit === undefined ? rows : rows.slice(0, limit),
+      ...(dexRows ? { dexes: dexRows } : {}),
     }
   }
   async market(coin: string): Promise<PerpsMarketResult> {
     this.key()
-    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()])
-    const asset = resolve(core, coin)
+    const [config, located, extras] = await Promise.all([this.config(), this.locate(coin), this.extras()])
+    const core = located.snapshot
+    const asset = located.index
     const meta = at(core.universe, asset)
     const ctx = at(core.ctxs, asset)
+    const readAt = located.dex ? (this.dexCache.get(located.dex.name)?.at ?? 0) : (this.coreCache?.at ?? 0)
     return {
-      ...this.envelope(config, extras.warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
+      ...this.envelope(config, extras.warnings, Math.max(readAt, this.extrasCache?.at ?? 0)),
       market: {
-        ...this.row(core, extras, config, asset),
+        ...this.row(core, extras, config, asset, located.dex),
         szDecimals: meta.szDecimals,
         maxPriceDecimals: 6 - meta.szDecimals,
         priceRule: "at most 5 significant figures",
@@ -626,8 +978,8 @@ export class PerpsMarketReader {
     this.key()
     const depth = bounded(opts.depth, 20, 1, 20, "depth")
     if (opts.sigFigs !== undefined) bounded(opts.sigFigs, 5, 2, 5, "sigFigs")
-    const [config, core] = await Promise.all([this.config(), this.core()])
-    const canonical = at(core.universe, resolve(core, coin)).name
+    const [config, located] = await Promise.all([this.config(), this.locate(coin)])
+    const canonical = at(located.snapshot.universe, located.index).name
     const value = await info(this.opts.fetcher, this.opts.network, {
       type: "l2Book",
       coin: canonical,
@@ -676,8 +1028,8 @@ export class PerpsMarketReader {
   async candles(coin: string, opts: PerpsCandlesOptions = {}): Promise<PerpsCandlesResult> {
     this.key()
     const window = perpsCandleWindow(opts, this.now())
-    const [config, core] = await Promise.all([this.config(), this.core()])
-    const canonical = at(core.universe, resolve(core, coin)).name
+    const [config, located] = await Promise.all([this.config(), this.locate(coin)])
+    const canonical = at(located.snapshot.universe, located.index).name
     const value = await info(this.opts.fetcher, this.opts.network, {
       type: "candleSnapshot",
       req: { coin: canonical, interval: window.interval, startTime: window.startTime, endTime: window.endTime },
@@ -719,8 +1071,8 @@ export class PerpsMarketReader {
   async fundingHistory(coin: string, opts: PerpsFundingHistoryOptions = {}): Promise<PerpsFundingHistoryResult> {
     this.key()
     const window = perpsFundingWindow(opts, this.now())
-    const [config, core] = await Promise.all([this.config(), this.core()])
-    const canonical = at(core.universe, resolve(core, coin)).name
+    const [config, located] = await Promise.all([this.config(), this.locate(coin)])
+    const canonical = at(located.snapshot.universe, located.index).name
     const value = await info(this.opts.fetcher, this.opts.network, {
       type: "fundingHistory",
       coin: canonical,

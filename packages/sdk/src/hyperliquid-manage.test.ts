@@ -415,6 +415,61 @@ describe("TP/SL plans", () => {
     expect(w.builds).toHaveLength(0)
   })
 
+  test("BE-3755: the build's market terms reach the review before every signature (attach and replace)", async () => {
+    const w = world()
+    w.positions.set("BTC", "0.5")
+    leg(w, "BTC", "tp", "66000")
+    const terms = {
+      dex: "xyz",
+      deployer: "0xabc",
+      feeMultiplier: 3,
+      feeWarning: "Venue fee is 3x the main exchange's.",
+    }
+    const order: string[] = []
+    const seen: Record<string, unknown>[] = []
+    const result = await runPerpsTpsl(
+      {
+        ...w.io,
+        build: async (path, body) => ({ ...(await w.io.build(path, body)), preview: { coin: "BTC", terms } }),
+        sign: async (typed) => {
+          order.push("sign")
+          return w.io.sign(typed)
+        },
+        reviewBuild: async (_step, preview) => {
+          order.push("review")
+          seen.push(preview)
+          return true
+        },
+      },
+      { coin: "BTC", takeProfit: "67000" },
+    )
+    expect(result.complete).toBe(true)
+    expect(order).toEqual(["review", "sign", "review", "sign"])
+    expect(seen.map((p) => p.terms)).toEqual([terms, terms])
+  })
+
+  test("BE-3755: declining at the terms review signs and submits nothing", async () => {
+    const w = world()
+    w.positions.set("BTC", "0.5")
+    let signed = 0
+    const result = await runPerpsTpsl(
+      {
+        ...w.io,
+        build: async (path, body) => ({ ...(await w.io.build(path, body)), preview: { terms: { dex: "xyz" } } }),
+        sign: async (typed) => {
+          signed++
+          return w.io.sign(typed)
+        },
+        reviewBuild: async () => false,
+      },
+      { coin: "BTC", takeProfit: "66000" },
+    )
+    expect(signed).toBe(0)
+    expect(w.submitted).toHaveLength(0)
+    expect(result.complete).toBe(false)
+    expect(result.steps[0]).toMatchObject({ status: "skipped" })
+  })
+
   test("a hostile build (a leg on the wrong side) is refused before the relay", async () => {
     const w = world()
     w.positions.set("BTC", "0.5")

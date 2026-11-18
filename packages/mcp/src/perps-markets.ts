@@ -23,8 +23,16 @@ export const perpsMarketShapes = {
     sort: z.enum(["volume", "oi", "funding", "change", "name"]).optional(),
     limit: z.number().int().min(1).max(500).optional(),
     all: z.boolean().optional(),
+    // BE-3755: one builder-deployed (HIP-3) dex such as xyz, or all; absent lists the main exchange.
+    dex: z
+      .string()
+      .regex(/^([A-Za-z0-9]{1,12}|all)$/)
+      .optional()
+      .describe("Builder-deployed (HIP-3) dex to list, such as xyz, or all; absent lists the main exchange"),
   },
-  candle_perps_market: { coin: z.string() },
+  candle_perps_market: {
+    coin: z.string().describe("Market name: BTC on the main exchange, or dex:COIN on a builder dex, such as xyz:TSLA"),
+  },
   candle_perps_book: {
     coin: z.string(),
     depth: z.number().int().min(1).max(20).optional(),

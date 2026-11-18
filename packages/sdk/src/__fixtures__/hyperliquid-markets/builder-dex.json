@@ -1,0 +1,487 @@
+{
+  "capturedAt": "2026-11-17T23:55:00Z",
+  "source": "POST https://api.hyperliquid.xyz/info",
+  "perpDexs": [
+    null,
+    {
+      "name": "xyz",
+      "fullName": "XYZ",
+      "deployer": "0x88806a71d74ad0a510b350545c9ae490912f0888",
+      "oracleUpdater": null,
+      "feeRecipient": "0x83ffcfb1f2ad843c474b2e28df86c721cb869d3a",
+      "subDeployers": [
+        [
+          "registerAsset",
+          [
+            "0x7d16f116d252db609c56d27d6c9605eb03e16657",
+            "0x8c4190018486a2dbac2629d688136e8990170ff2",
+            "0xc0892b4f864807ec26dde6ad8dad6914e079059d"
+          ]
+        ],
+        ["setOracle", ["0x1234567890545d1df9ee64b35fdd16966e08acec"]],
+        [
+          "setFeeRecipient",
+          ["0x7d16f116d252db609c56d27d6c9605eb03e16657", "0xc0892b4f864807ec26dde6ad8dad6914e079059d"]
+        ],
+        ["haltTrading", ["0x7d16f116d252db609c56d27d6c9605eb03e16657", "0xc0892b4f864807ec26dde6ad8dad6914e079059d"]],
+        [
+          "setMarginTableIds",
+          [
+            "0x7d16f116d252db609c56d27d6c9605eb03e16657",
+            "0x8c4190018486a2dbac2629d688136e8990170ff2",
+            "0xc0892b4f864807ec26dde6ad8dad6914e079059d"
+          ]
+        ],
+        [
+          "setOpenInterestCaps",
+          [
+            "0x7d16f116d252db609c56d27d6c9605eb03e16657",
+            "0x8c4190018486a2dbac2629d688136e8990170ff2",
+            "0xc0892b4f864807ec26dde6ad8dad6914e079059d"
+          ]
+        ],
+        [
+          "setFundingMultipliers",
+          [
+            "0x7d16f116d252db609c56d27d6c9605eb03e16657",
+            "0x8c4190018486a2dbac2629d688136e8990170ff2",
+            "0xc0892b4f864807ec26dde6ad8dad6914e079059d"
+          ]
+        ],
+        [
+          "setMarginModes",
+          [
+            "0x7d16f116d252db609c56d27d6c9605eb03e16657",
+            "0x8c4190018486a2dbac2629d688136e8990170ff2",
+            "0xc0892b4f864807ec26dde6ad8dad6914e079059d"
+          ]
+        ],
+        [
+          "setDeployerFees",
+          ["0x7d16f116d252db609c56d27d6c9605eb03e16657", "0x8c4190018486a2dbac2629d688136e8990170ff2"]
+        ],
+        [
+          "setFundingInterestRates",
+          [
+            "0x7d16f116d252db609c56d27d6c9605eb03e16657",
+            "0x8c4190018486a2dbac2629d688136e8990170ff2",
+            "0xc0892b4f864807ec26dde6ad8dad6914e079059d"
+          ]
+        ],
+        [
+          "setPerpAnnotation",
+          [
+            "0x7d16f116d252db609c56d27d6c9605eb03e16657",
+            "0x8c4190018486a2dbac2629d688136e8990170ff2",
+            "0xc0892b4f864807ec26dde6ad8dad6914e079059d"
+          ]
+        ]
+      ]
+    },
+    {
+      "name": "flx",
+      "fullName": "Felix Exchange",
+      "deployer": "0x2fab552502a6d45920d5741a2f3ebf4c35536352",
+      "oracleUpdater": "0x94757f8dcb4bf73b850195660e959d1105cfedd5",
+      "feeRecipient": "0xe2872b5ae7dcbba40cc4510d08c8bbea95b42d43",
+      "subDeployers": [
+        ["registerAsset", ["0xd0d4ef34424af3da883672b8cdeca751293655a5"]],
+        ["setOracle", ["0x94757f8dcb4bf73b850195660e959d1105cfedd5", "0xd0d4ef34424af3da883672b8cdeca751293655a5"]],
+        ["insertMarginTable", ["0xd0d4ef34424af3da883672b8cdeca751293655a5"]],
+        ["setFeeRecipient", ["0xd0d4ef34424af3da883672b8cdeca751293655a5"]],
+        ["haltTrading", ["0xd0d4ef34424af3da883672b8cdeca751293655a5"]],
+        ["setMarginTableIds", ["0xd0d4ef34424af3da883672b8cdeca751293655a5"]],
+        [
+          "setOpenInterestCaps",
+          ["0x17f5d164a9fa8ed292cdc91e34c0edeed6fc9b90", "0xd0d4ef34424af3da883672b8cdeca751293655a5"]
+        ],
+        [
+          "setFundingMultipliers",
+          ["0xae083732032a813f9142733cdf380e1bc9e518af", "0xd0d4ef34424af3da883672b8cdeca751293655a5"]
+        ],
+        ["setMarginModes", ["0xd0d4ef34424af3da883672b8cdeca751293655a5"]],
+        ["setDeployerFees", ["0xd0d4ef34424af3da883672b8cdeca751293655a5"]],
+        ["setFundingInterestRates", ["0xd0d4ef34424af3da883672b8cdeca751293655a5"]],
+        ["setPerpAnnotation", ["0xd0d4ef34424af3da883672b8cdeca751293655a5"]]
+      ]
+    },
+    {
+      "name": "vntl",
+      "fullName": "Ventuals",
+      "deployer": "0x8888888192a4a0593c13532ba48449fc24c3beda",
+      "oracleUpdater": null,
+      "feeRecipient": "0x5afe865300895b96d20132a8d9fa8e7829334b52",
+      "subDeployers": []
+    },
+    {
+      "name": "hyna",
+      "fullName": "HyENA",
+      "deployer": "0x53e655101ea361537124ef814ad4e654b54d0637",
+      "oracleUpdater": "0xaab93501e78f5105e265a1eafda10ce6530de17e",
+      "feeRecipient": null,
+      "subDeployers": [
+        ["setOracle", ["0xaab93501e78f5105e265a1eafda10ce6530de17e", "0xaffde4868990b0b547dea3aaf8082b69825bbc2f"]]
+      ]
+    },
+    {
+      "name": "km",
+      "fullName": "Markets by Kinetiq",
+      "deployer": "0x71f0019cc7fa79e4f42587fb7b9a817d8d2429ec",
+      "oracleUpdater": null,
+      "feeRecipient": "0xbcd4071d023bf2aae484d724c130b5af6f0ca0d2",
+      "subDeployers": []
+    },
+    {
+      "name": "abcd",
+      "fullName": "ABCDEx",
+      "deployer": "0x372c7f69d0ecc14f73f89bd8a7dfb41bdf29857c",
+      "oracleUpdater": null,
+      "feeRecipient": null,
+      "subDeployers": []
+    },
+    {
+      "name": "cash",
+      "fullName": "dreamcash",
+      "deployer": "0xffa8198c62adb1e811629bd54c9b646d726deef7",
+      "oracleUpdater": null,
+      "feeRecipient": "0xaa7f0d3da989dae8fd166345a3ce21509f8c8bb4",
+      "subDeployers": []
+    },
+    {
+      "name": "para",
+      "fullName": "Paragon",
+      "deployer": "0x8888888c43cbb7e1c4132542e46831bffd866ed3",
+      "oracleUpdater": "0x8888888c43cbb7e1c4132542e46831bffd866ed3",
+      "feeRecipient": "0x1770f43c71b8b2977771b73ca4c4cbe0c20412ed",
+      "subDeployers": []
+    },
+    {
+      "name": "mkts",
+      "fullName": "Markets By Kinetiq",
+      "deployer": "0x71f0019cc7fa79e4f42587fb7b9a817d8d2429ec",
+      "oracleUpdater": null,
+      "feeRecipient": "0xbcd4071d023bf2aae484d724c130b5af6f0ca0d2",
+      "subDeployers": []
+    },
+    {
+      "name": "io",
+      "fullName": "EntropyIO",
+      "deployer": "0x320c8988e3d1b5198f335802d7bfd2728a8fcac6",
+      "oracleUpdater": "0x94757f8dcb4bf73b850195660e959d1105cfedd5",
+      "feeRecipient": null,
+      "subDeployers": []
+    }
+  ],
+  "metaAndAssetCtxs": {
+    "xyz": [
+      {
+        "universe": [
+          {
+            "szDecimals": 4,
+            "name": "xyz:XYZ100",
+            "maxLeverage": 30,
+            "marginTableId": 30,
+            "growthMode": "enabled",
+            "lastFeeScaleChangeTime": "2025-11-23T17:37:10.033211662",
+            "deployerFeeScale": "1.0"
+          },
+          {
+            "szDecimals": 3,
+            "name": "xyz:TSLA",
+            "maxLeverage": 20,
+            "marginTableId": 20,
+            "growthMode": "enabled",
+            "lastFeeScaleChangeTime": "2025-11-23T17:37:10.033211662",
+            "deployerFeeScale": "1.0"
+          },
+          {
+            "szDecimals": 3,
+            "name": "xyz:NVDA",
+            "maxLeverage": 10,
+            "marginTableId": 10,
+            "growthMode": "enabled",
+            "lastFeeScaleChangeTime": "2025-11-23T17:37:10.033211662",
+            "deployerFeeScale": "1.0"
+          },
+          {
+            "szDecimals": 4,
+            "name": "xyz:GOLD",
+            "maxLeverage": 25,
+            "marginTableId": 25,
+            "lastFeeScaleChangeTime": "1970-01-01T00:00:00",
+            "deployerFeeScale": "1.0"
+          },
+          {
+            "szDecimals": 3,
+            "name": "xyz:HOOD",
+            "maxLeverage": 10,
+            "marginTableId": 10,
+            "onlyIsolated": true,
+            "marginMode": "noCross",
+            "growthMode": "enabled",
+            "lastFeeScaleChangeTime": "2025-11-23T17:37:10.033211662",
+            "deployerFeeScale": "1.0"
+          },
+          {
+            "szDecimals": 2,
+            "name": "xyz:INTC",
+            "maxLeverage": 10,
+            "marginTableId": 10,
+            "growthMode": "enabled",
+            "lastFeeScaleChangeTime": "2025-11-23T17:37:10.033211662",
+            "deployerFeeScale": "1.0"
+          },
+          {
+            "szDecimals": 3,
+            "name": "xyz:PLTR",
+            "maxLeverage": 10,
+            "marginTableId": 10,
+            "onlyIsolated": true,
+            "marginMode": "noCross",
+            "growthMode": "enabled",
+            "lastFeeScaleChangeTime": "2025-11-23T17:37:10.033211662",
+            "deployerFeeScale": "1.0"
+          },
+          {
+            "szDecimals": 3,
+            "name": "xyz:COIN",
+            "maxLeverage": 10,
+            "marginTableId": 10,
+            "onlyIsolated": true,
+            "marginMode": "noCross",
+            "growthMode": "enabled",
+            "lastFeeScaleChangeTime": "2025-11-23T17:37:10.033211662",
+            "deployerFeeScale": "1.0"
+          }
+        ],
+        "collateralToken": 0,
+        "marginTables": []
+      },
+      [
+        {
+          "funding": "0.0001704181",
+          "openInterest": "9614.2862",
+          "prevDayPx": "27230.0",
+          "dayNtlVlm": "702986575.7706001997",
+          "premium": "0.0050592391",
+          "oraclePx": "27178.0",
+          "markPx": "27315.0",
+          "midPx": "27315.5",
+          "impactPxs": ["27315.0", "27316.0"],
+          "dayBaseVlm": "25977.0375"
+        },
+        {
+          "funding": "0.00000625",
+          "openInterest": "99286.61",
+          "prevDayPx": "378.94",
+          "dayNtlVlm": "31871591.5149599984",
+          "premium": "0.0005545407",
+          "oraclePx": "383.2",
+          "markPx": "383.35",
+          "midPx": "383.425",
+          "impactPxs": ["383.395", "383.43"],
+          "dayBaseVlm": "83958.4910000001"
+        },
+        {
+          "funding": "0.00000625",
+          "openInterest": "2848467.0119999987",
+          "prevDayPx": "156.19",
+          "dayNtlVlm": "907774596.9161820412",
+          "premium": "-0.0006487862",
+          "oraclePx": "161.07",
+          "markPx": "161.04",
+          "midPx": "160.97",
+          "impactPxs": ["160.951", "160.98"],
+          "dayBaseVlm": "5818277.332000006"
+        },
+        {
+          "funding": "0.0000249312",
+          "openInterest": "67849.8728",
+          "prevDayPx": "3859.4",
+          "dayNtlVlm": "50918265.2360299975",
+          "premium": "0.0006110852",
+          "oraclePx": "3853.8",
+          "markPx": "3856.1",
+          "midPx": "3856.15",
+          "impactPxs": ["3856.1", "3856.21"],
+          "dayBaseVlm": "13161.7586"
+        },
+        {
+          "funding": "0.00000625",
+          "openInterest": "124499.596",
+          "prevDayPx": "72.189",
+          "dayNtlVlm": "8521968.6395650059",
+          "premium": "-0.0002538178",
+          "oraclePx": "70.917",
+          "markPx": "70.908",
+          "midPx": "70.903",
+          "impactPxs": ["70.883", "70.915"],
+          "dayBaseVlm": "121875.019"
+        },
+        {
+          "funding": "0.0000144586",
+          "openInterest": "1137993.9000000001",
+          "prevDayPx": "53.534",
+          "dayNtlVlm": "29819661.0886899903",
+          "premium": "0.0005342148",
+          "oraclePx": "55.97",
+          "markPx": "55.997",
+          "midPx": "56.0025",
+          "impactPxs": ["55.9898", "56.01"],
+          "dayBaseVlm": "547950.1899999997"
+        },
+        {
+          "funding": "0.00000625",
+          "openInterest": "35860.976",
+          "prevDayPx": "160.31",
+          "dayNtlVlm": "14118470.9637100026",
+          "premium": "0.0004817077",
+          "oraclePx": "158.81",
+          "markPx": "158.81",
+          "midPx": "158.9",
+          "impactPxs": ["158.863", "158.91"],
+          "dayBaseVlm": "88212.743"
+        },
+        {
+          "funding": "0.0000121017",
+          "openInterest": "95213.374",
+          "prevDayPx": "120.38",
+          "dayNtlVlm": "7363959.1740099993",
+          "premium": "0.0002430082",
+          "oraclePx": "117.28",
+          "markPx": "117.32",
+          "midPx": "117.31",
+          "impactPxs": ["117.278", "117.339"],
+          "dayBaseVlm": "62457.822"
+        }
+      ]
+    ],
+    "flx": [
+      {
+        "universe": [
+          {
+            "szDecimals": 2,
+            "name": "flx:TSLA",
+            "maxLeverage": 10,
+            "marginTableId": 10,
+            "isDelisted": true,
+            "growthMode": "enabled",
+            "lastFeeScaleChangeTime": "2025-11-24T21:19:25.980742012",
+            "deployerFeeScale": "1.0"
+          },
+          {
+            "szDecimals": 2,
+            "name": "flx:NVDA",
+            "maxLeverage": 10,
+            "marginTableId": 10,
+            "isDelisted": true,
+            "growthMode": "enabled",
+            "lastFeeScaleChangeTime": "2026-03-08T03:42:24.011287219",
+            "deployerFeeScale": "1.0"
+          }
+        ],
+        "collateralToken": 360,
+        "marginTables": []
+      },
+      [
+        {
+          "funding": "0.0",
+          "openInterest": "0.0",
+          "prevDayPx": "395.5",
+          "dayNtlVlm": "0.0",
+          "premium": null,
+          "oraclePx": "400.53",
+          "markPx": "395.5",
+          "midPx": null,
+          "impactPxs": null,
+          "dayBaseVlm": "0.0"
+        },
+        {
+          "funding": "0.0",
+          "openInterest": "0.0",
+          "prevDayPx": "208.99",
+          "dayNtlVlm": "0.0",
+          "premium": null,
+          "oraclePx": "210.49",
+          "markPx": "208.99",
+          "midPx": null,
+          "impactPxs": null,
+          "dayBaseVlm": "0.0"
+        }
+      ]
+    ],
+    "hyna": [
+      {
+        "universe": [
+          {
+            "szDecimals": 5,
+            "name": "hyna:BTC",
+            "maxLeverage": 40,
+            "marginTableId": 40,
+            "isDelisted": true,
+            "lastFeeScaleChangeTime": "2026-01-20T15:56:29.934742459",
+            "deployerFeeScale": "0.1111"
+          },
+          {
+            "szDecimals": 4,
+            "name": "hyna:ETH",
+            "maxLeverage": 25,
+            "marginTableId": 25,
+            "isDelisted": true,
+            "lastFeeScaleChangeTime": "2026-01-20T15:56:29.934742459",
+            "deployerFeeScale": "0.1111"
+          },
+          {
+            "szDecimals": 2,
+            "name": "hyna:HYPE",
+            "maxLeverage": 10,
+            "marginTableId": 10,
+            "isDelisted": true,
+            "lastFeeScaleChangeTime": "2026-01-20T15:56:29.934742459",
+            "deployerFeeScale": "0.1111"
+          }
+        ],
+        "collateralToken": 235,
+        "marginTables": []
+      },
+      [
+        {
+          "funding": "0.0",
+          "openInterest": "0.0",
+          "prevDayPx": "77066.0",
+          "dayNtlVlm": "0.0",
+          "premium": null,
+          "oraclePx": "77142.1",
+          "markPx": "76888.0",
+          "midPx": null,
+          "impactPxs": null,
+          "dayBaseVlm": "0.0"
+        },
+        {
+          "funding": "0.0",
+          "openInterest": "0.0",
+          "prevDayPx": "2414.8",
+          "dayNtlVlm": "0.0",
+          "premium": null,
+          "oraclePx": "2396.5",
+          "markPx": "2400.9",
+          "midPx": null,
+          "impactPxs": null,
+          "dayBaseVlm": "0.0"
+        },
+        {
+          "funding": "0.0",
+          "openInterest": "0.0",
+          "prevDayPx": "81.945",
+          "dayNtlVlm": "0.0",
+          "premium": null,
+          "oraclePx": "81.125",
+          "markPx": "81.5",
+          "midPx": null,
+          "impactPxs": null,
+          "dayBaseVlm": "0.0"
+        }
+      ]
+    ]
+  }
+}

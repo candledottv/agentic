@@ -3227,6 +3227,783 @@ import { z as z7 } from "zod";
 
 // src/hyperliquid.ts
 import { keccak_256 } from "@noble/hashes/sha3";
+
+// src/hyperliquid-markets.ts
+var INFO_URLS = {
+  mainnet: "https://api.hyperliquid.xyz/info",
+  testnet: "https://api.hyperliquid-testnet.xyz/info"
+};
+var ONE = 10n ** 18n;
+var DECIMAL = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?$/;
+
+class PerpsMarketError extends Error {
+  code;
+  retryable;
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "PerpsMarketError";
+    this.retryable = code === "PERPS_UNAVAILABLE";
+  }
+}
+function unavailable() {
+  throw new PerpsMarketError("PERPS_UNAVAILABLE", "Hyperliquid market data is unavailable; retry shortly.");
+}
+function usage(message) {
+  throw new PerpsMarketError("PERPS_USAGE", message);
+}
+function object2(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function decimal(value) {
+  return typeof value === "string" && value.length <= 100 && DECIMAL.test(value) && (value.split(".")[1]?.length ?? 0) <= 18;
+}
+function scaled(value) {
+  const negative = value.startsWith("-");
+  const [whole = "0", fraction = ""] = (negative ? value.slice(1) : value).split(".");
+  const result = BigInt(whole) * ONE + BigInt(fraction.padEnd(18, "0"));
+  return negative ? -result : result;
+}
+function nonnegative(value) {
+  return decimal(value) && !value.startsWith("-") ? scaled(value) : null;
+}
+function fixed(value, places) {
+  const negative = value < 0n;
+  const abs = negative ? -value : value;
+  const divisor = 10n ** BigInt(18 - places);
+  const rounded = (abs + divisor / 2n) / divisor;
+  const digits = rounded.toString().padStart(places + 1, "0");
+  return `${negative && rounded !== 0n ? "-" : ""}${places ? `${digits.slice(0, -places)}.${digits.slice(-places)}` : digits}`;
+}
+var DEX_COIN = /^([A-Za-z0-9]{1,12}):([A-Za-z0-9]{1,20})$/;
+var MAIN_COIN = /^[A-Za-z0-9]{1,20}$/;
+function parsePerpsCoin(coin) {
+  if (typeof coin !== "string")
+    return null;
+  if (MAIN_COIN.test(coin))
+    return { dex: "", coin };
+  const m = DEX_COIN.exec(coin);
+  if (!m || !m[1] || !m[2])
+    return null;
+  return { dex: m[1].toLowerCase(), coin: `${m[1].toLowerCase()}:${m[2]}` };
+}
+function parsePerpsDex(dex) {
+  if (dex === undefined || dex === null || dex === "")
+    return "";
+  if (typeof dex !== "string" || !/^[A-Za-z0-9]{1,12}$/.test(dex))
+    return null;
+  return dex.toLowerCase();
+}
+function perpsAssetId(dexIndex, indexInMeta) {
+  return dexIndex === 0 ? indexInMeta : 1e5 + dexIndex * 1e4 + indexInMeta;
+}
+function perpsMarginMode(meta) {
+  return meta.onlyIsolated === true || meta.marginMode === "noCross" || meta.marginMode === "strictIsolated" ? "isolated" : "cross";
+}
+var COLLATERAL_NAMES = { 0: "USDC", 235: "USDE", 268: "USDT0", 360: "USDH" };
+function perpsCollateralName(token) {
+  return COLLATERAL_NAMES[token] ?? `spot token ${token}`;
+}
+var PERPS_MAIN_TAKER_FEE_PCT = "0.045";
+var PERPS_MAIN_MAKER_FEE_PCT = "0.015";
+var PERPS_FEE_WARNING_MULTIPLIER = 2;
+function perpsFeeMultiplier(meta, dex) {
+  if (dex === "")
+    return "1";
+  const share = nonnegative(meta.deployerFeeScale ?? "0") ?? 0n;
+  let multiple = share <= ONE ? ONE + share : 2n * share;
+  if (meta.growthMode === "enabled")
+    multiple = multiple / 10n;
+  return trim(multiple);
+}
+function trim(value) {
+  return fixed(value, 18).replace(/\.?0+$/, "") || "0";
+}
+function perpsDexTerms(meta, dex, collateralToken) {
+  const name = dex?.name ?? "";
+  const multiplier = perpsFeeMultiplier(meta, name);
+  const scaledMultiplier = scaled(multiplier);
+  const pct = (base2) => trim(scaled(base2) * scaledMultiplier / ONE);
+  return {
+    dex: name,
+    dexName: dex?.fullName ?? null,
+    deployer: dex?.deployer ?? null,
+    oracleSource: dex ? "deployer" : "validators",
+    oracleSetters: dex?.oracleSetters ?? [],
+    marginMode: perpsMarginMode(meta),
+    collateral: perpsCollateralName(collateralToken),
+    feeMultiplier: multiplier,
+    takerFeePct: pct(PERPS_MAIN_TAKER_FEE_PCT),
+    makerFeePct: pct(PERPS_MAIN_MAKER_FEE_PCT),
+    feeWarning: scaledMultiplier > BigInt(PERPS_FEE_WARNING_MULTIPLIER) * ONE ? `${meta.name} charges ${multiplier}x the main exchange's fee (its deployer sets it), above Candle's ${PERPS_FEE_WARNING_MULTIPLIER}x warning line` : null
+  };
+}
+function address(value) {
+  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
+}
+function parsePerpDexs(value) {
+  if (!Array.isArray(value))
+    return unavailable();
+  const dexes = [];
+  for (const [index, entry] of value.entries()) {
+    if (index === 0 || entry === null)
+      continue;
+    if (!object2(entry) || typeof entry.name !== "string" || !/^[a-z0-9]{1,12}$/.test(entry.name) || !address(entry.deployer) || entry.oracleUpdater !== null && entry.oracleUpdater !== undefined && !address(entry.oracleUpdater))
+      return unavailable();
+    const setters = new Set;
+    if (address(entry.oracleUpdater))
+      setters.add(entry.oracleUpdater.toLowerCase());
+    if (Array.isArray(entry.subDeployers)) {
+      for (const pair of entry.subDeployers)
+        if (Array.isArray(pair) && pair[0] === "setOracle" && Array.isArray(pair[1])) {
+          for (const a of pair[1])
+            if (address(a))
+              setters.add(a.toLowerCase());
+        }
+    }
+    if (setters.size === 0)
+      setters.add(entry.deployer.toLowerCase());
+    dexes.push({
+      index,
+      name: entry.name,
+      fullName: typeof entry.fullName === "string" ? entry.fullName : entry.name,
+      deployer: entry.deployer.toLowerCase(),
+      oracleUpdater: address(entry.oracleUpdater) ? entry.oracleUpdater.toLowerCase() : null,
+      oracleSetters: [...setters].sort()
+    });
+  }
+  return dexes;
+}
+async function readHyperliquidPerpDexs(fetcher, network) {
+  return parsePerpDexs(await info(fetcher, network, { type: "perpDexs" }));
+}
+function at(values, index) {
+  const value = values[index];
+  if (value === undefined)
+    return unavailable();
+  return value;
+}
+function integer(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+function parseMarkets(value) {
+  if (!Array.isArray(value) || value.length !== 2)
+    return unavailable();
+  const [meta, ctxs] = value;
+  if (!object2(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
+    return unavailable();
+  for (const row of meta.universe) {
+    if (!object2(row) || typeof row.name !== "string" || !integer(row.szDecimals) || row.szDecimals > 6 || !integer(row.maxLeverage))
+      return unavailable();
+    for (const key of ["isDelisted", "onlyIsolated"])
+      if (row[key] !== undefined && typeof row[key] !== "boolean")
+        return unavailable();
+    if (row.marginTableId !== undefined && !integer(row.marginTableId))
+      return unavailable();
+    for (const key of ["marginMode", "growthMode"])
+      if (row[key] !== undefined && row[key] !== null && typeof row[key] !== "string")
+        return unavailable();
+    if (row.deployerFeeScale !== undefined && nonnegative(row.deployerFeeScale) === null)
+      return unavailable();
+  }
+  if (meta.collateralToken !== undefined && !integer(meta.collateralToken))
+    return unavailable();
+  for (const ctx of ctxs) {
+    if (!object2(ctx))
+      return unavailable();
+    for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
+      if (ctx[key] !== undefined && ctx[key] !== null && !decimal(ctx[key]))
+        return unavailable();
+    }
+    if (ctx.impactPxs != null && (!Array.isArray(ctx.impactPxs) || ctx.impactPxs.length !== 2 || !ctx.impactPxs.every(decimal)))
+      return unavailable();
+  }
+  const marginTables = new Map;
+  if (meta.marginTables !== undefined) {
+    if (!Array.isArray(meta.marginTables))
+      return unavailable();
+    for (const entry of meta.marginTables) {
+      if (!Array.isArray(entry) || !integer(entry[0]) || !object2(entry[1]) || !Array.isArray(entry[1].marginTiers))
+        return unavailable();
+      const tiers = [];
+      for (const tier of entry[1].marginTiers) {
+        if (!object2(tier) || nonnegative(tier.lowerBound) === null || !integer(tier.maxLeverage))
+          return unavailable();
+        tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
+      }
+      marginTables.set(entry[0], tiers);
+    }
+  }
+  return {
+    universe: meta.universe,
+    ctxs,
+    marginTables,
+    ...meta.collateralToken === undefined ? {} : { collateralToken: meta.collateralToken }
+  };
+}
+async function info(fetcher, network, body) {
+  try {
+    const response = await fetcher(INFO_URLS[network], {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000),
+      redirect: "error"
+    });
+    if (!response.ok)
+      return unavailable();
+    return JSON.parse(await response.text());
+  } catch {
+    return unavailable();
+  }
+}
+async function readHyperliquidMarkets(fetcher, network, dex = "") {
+  return parseMarkets(await info(fetcher, network, dex ? { type: "metaAndAssetCtxs", dex } : { type: "metaAndAssetCtxs" }));
+}
+function perpsMarketGate(meta, ctx, minOpenInterestUsd, dex = {
+  name: "",
+  collateralToken: 0,
+  opensRefused: []
+}) {
+  if (dex.name !== "" && dex.collateralToken !== 0)
+    return { tradeable: false, reason: "collateral" };
+  if (dex.name !== "" && dex.opensRefused.includes(dex.name))
+    return { tradeable: false, reason: "dexOpensRefused" };
+  if (meta.isDelisted === true)
+    return { tradeable: false, reason: "delisted" };
+  const mark = nonnegative(ctx.markPx);
+  const mid = nonnegative(typeof ctx.midPx === "string" ? ctx.midPx : ctx.markPx);
+  const oi = nonnegative(ctx.openInterest);
+  if (mark === null || mid === null || oi === null)
+    return { tradeable: false, reason: "noPrice" };
+  const divisor = 10n ** 30n;
+  const micros = (oi * mark + divisor - 1n) / divisor;
+  if (micros > BigInt(Number.MAX_SAFE_INTEGER))
+    return unavailable();
+  if (minOpenInterestUsd > 0 && micros < BigInt(minOpenInterestUsd) * 1000000n)
+    return { tradeable: false, reason: "minOpenInterest" };
+  return { tradeable: true, reason: null };
+}
+function resolve(snapshot, coin) {
+  const exact = snapshot.universe.findIndex((row) => row.name === coin);
+  if (exact !== -1)
+    return exact;
+  const matches = snapshot.universe.map((row, i) => ({ row, i })).filter(({ row }) => row.name.toLowerCase() === coin.toLowerCase());
+  if (matches.length === 1)
+    return at(matches, 0).i;
+  return notFound(coin);
+}
+function notFound(coin) {
+  throw new PerpsMarketError("PERPS_MARKET_NOT_FOUND", coin.includes(":") ? `${coin} is not a market on that Hyperliquid builder dex.` : `${coin} is not a market on Hyperliquid's main perp exchange.`);
+}
+var PERPS_CANDLE_INTERVALS = [
+  "1m",
+  "3m",
+  "5m",
+  "15m",
+  "30m",
+  "1h",
+  "2h",
+  "4h",
+  "8h",
+  "12h",
+  "1d",
+  "3d",
+  "1w",
+  "1M"
+];
+var INTERVAL_MS = [
+  60000,
+  180000,
+  300000,
+  900000,
+  1800000,
+  3600000,
+  7200000,
+  14400000,
+  28800000,
+  43200000,
+  86400000,
+  259200000,
+  604800000,
+  2678400000
+];
+function perpsCandleWindow(opts, now) {
+  const interval = opts.interval ?? "1h";
+  const index = PERPS_CANDLE_INTERVALS.indexOf(interval);
+  if (index < 0)
+    return usage(`interval must be one of ${PERPS_CANDLE_INTERVALS.join(" ")}.`);
+  const count = bounded(opts.count, 100, 1, 5000, "count");
+  const raw2 = opts.end;
+  const endTime = raw2 === undefined ? now : epoch(raw2);
+  const startTime = endTime - count * at(INTERVAL_MS, index);
+  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
+    return usage("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
+  return { interval, count, startTime, endTime };
+}
+function epoch(raw2) {
+  return typeof raw2 === "number" || /^\d+$/.test(raw2) ? Number(raw2) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw2) ? Date.parse(raw2) : NaN;
+}
+var PERPS_FUNDING_HISTORY_MAX_MS = 30 * 86400000;
+var PERPS_FUNDING_HISTORY_MAX_ROWS = 500;
+function perpsFundingWindow(opts, now) {
+  const endTime = opts.end === undefined ? now : epoch(opts.end);
+  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now)
+    return usage("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
+  const startTime = opts.start === undefined ? endTime - 86400000 : epoch(opts.start);
+  if (!Number.isSafeInteger(startTime) || startTime < 0 || startTime > endTime)
+    return usage("start must be an ISO 8601 time or epoch milliseconds, no later than end.");
+  if (endTime - startTime > PERPS_FUNDING_HISTORY_MAX_MS)
+    return usage("start must be at most 30 days before end.");
+  return { startTime, endTime };
+}
+function bounded(value, fallback, min, max, name) {
+  const n = value ?? fallback;
+  if (!Number.isInteger(n) || n < min || n > max)
+    return usage(`${name} must be an integer from ${min} to ${max}.`);
+  return n;
+}
+function parsePerpsFundingHistory(value, coin, window) {
+  if (!Array.isArray(value))
+    return unavailable();
+  const funding = [];
+  for (const row of value) {
+    if (!object2(row) || row.coin !== coin || !integer(row.time) || !decimal(row.fundingRate) || !decimal(row.premium))
+      return unavailable();
+    if (row.time >= window.startTime && row.time <= window.endTime)
+      funding.push({
+        time: row.time,
+        fundingRate: row.fundingRate,
+        fundingAprPct: fixed(scaled(row.fundingRate) * 876000n, 2),
+        premium: row.premium
+      });
+  }
+  funding.sort((a, b) => a.time - b.time);
+  return {
+    funding: funding.slice(0, PERPS_FUNDING_HISTORY_MAX_ROWS),
+    truncated: funding.length > PERPS_FUNDING_HISTORY_MAX_ROWS
+  };
+}
+
+class PerpsMarketReader {
+  opts;
+  configPromise;
+  coreCache;
+  extrasCache;
+  corePending;
+  extrasPending;
+  dexCache = new Map;
+  dexPending = new Map;
+  dexesCache;
+  dexesPending;
+  now;
+  constructor(opts) {
+    this.opts = opts;
+    this.now = opts.now ?? Date.now;
+  }
+  key() {
+    if (!this.opts.apiKey?.trim())
+      throw new PerpsMarketError("PERPS_KEY_REQUIRED", "Configure a Candle agent key (any scope) to read perps markets.");
+  }
+  config() {
+    this.key();
+    this.configPromise ??= (async () => {
+      try {
+        const value = await this.opts.readConfig();
+        if (!object2(value) || !object2(value.limits) || !integer(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
+          throw new Error("config shape");
+        const refused = value.limits.dexOpensRefused;
+        return {
+          minOpenInterestUsd: value.limits.minOpenInterestUsd,
+          source: "server",
+          network: value.network,
+          dexOpensRefused: Array.isArray(refused) ? refused.filter((d) => typeof d === "string") : [],
+          warnings: []
+        };
+      } catch {
+        return {
+          minOpenInterestUsd: 1e6,
+          source: "default",
+          dexOpensRefused: [],
+          warnings: ["Candle config unavailable; using the release's default OI floor."]
+        };
+      }
+    })();
+    return this.configPromise;
+  }
+  core() {
+    const ttl = this.opts.cacheMs ?? 5000;
+    if (this.coreCache && ttl > 0 && this.now() - this.coreCache.at < ttl)
+      return Promise.resolve(this.coreCache.value);
+    this.corePending ??= readHyperliquidMarkets(this.opts.fetcher, this.opts.network).then((value) => {
+      this.coreCache = { value, at: this.now() };
+      return value;
+    }).finally(() => {
+      this.corePending = undefined;
+    });
+    return this.corePending;
+  }
+  dexCore(dex) {
+    const ttl = this.opts.cacheMs ?? 5000;
+    const hit = this.dexCache.get(dex);
+    if (hit && ttl > 0 && this.now() - hit.at < ttl)
+      return Promise.resolve(hit.value);
+    let pending = this.dexPending.get(dex);
+    if (!pending) {
+      pending = readHyperliquidMarkets(this.opts.fetcher, this.opts.network, dex).then((value) => {
+        this.dexCache.set(dex, { value, at: this.now() });
+        return value;
+      }).finally(() => {
+        this.dexPending.delete(dex);
+      });
+      this.dexPending.set(dex, pending);
+    }
+    return pending;
+  }
+  dexes() {
+    const ttl = this.opts.cacheMs ?? 5000;
+    if (this.dexesCache && ttl > 0 && this.now() - this.dexesCache.at < ttl)
+      return Promise.resolve(this.dexesCache.value);
+    this.dexesPending ??= readHyperliquidPerpDexs(this.opts.fetcher, this.opts.network).then((value) => {
+      this.dexesCache = { value, at: this.now() };
+      return value;
+    }).finally(() => {
+      this.dexesPending = undefined;
+    });
+    return this.dexesPending;
+  }
+  async dex(name) {
+    const found = (await this.dexes()).find((d) => d.name === name);
+    if (!found)
+      throw new PerpsMarketError("PERPS_MARKET_NOT_FOUND", `${name} is not a Hyperliquid builder dex.`);
+    return found;
+  }
+  async locate(coin) {
+    const parsed = parsePerpsCoin(coin);
+    if (!parsed)
+      return notFound(coin);
+    if (parsed.dex === "") {
+      const snapshot2 = await this.core();
+      return { snapshot: snapshot2, index: resolve(snapshot2, parsed.coin), dex: null };
+    }
+    const dex = await this.dex(parsed.dex);
+    const snapshot = await this.dexCore(dex.name);
+    return { snapshot, index: resolve(snapshot, parsed.coin), dex };
+  }
+  extras() {
+    const ttl = this.opts.cacheMs ?? 5000;
+    if (this.extrasCache && ttl > 0 && this.now() - this.extrasCache.at < ttl)
+      return Promise.resolve(this.extrasCache.value);
+    this.extrasPending ??= (async () => {
+      const warnings = [];
+      const [predicted, cap] = await Promise.all([
+        info(this.opts.fetcher, this.opts.network, { type: "predictedFundings" }).then((value2) => {
+          if (!Array.isArray(value2))
+            return unavailable();
+          const map = new Map;
+          for (const entry of value2) {
+            if (!Array.isArray(entry) || typeof entry[0] !== "string" || !Array.isArray(entry[1]))
+              return unavailable();
+            for (const venue of entry[1]) {
+              if (!Array.isArray(venue) || typeof venue[0] !== "string")
+                return unavailable();
+              if (venue[0] === "HlPerp" && venue[1] !== null) {
+                if (!object2(venue[1]) || !decimal(venue[1].fundingRate) || !integer(venue[1].nextFundingTime))
+                  return unavailable();
+                map.set(entry[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
+              }
+            }
+          }
+          return map;
+        }).catch(() => {
+          warnings.push("Predicted funding unavailable.");
+          return null;
+        }),
+        info(this.opts.fetcher, this.opts.network, { type: "perpsAtOpenInterestCap" }).then((value2) => {
+          if (!Array.isArray(value2) || !value2.every((v) => typeof v === "string"))
+            return unavailable();
+          return new Set(value2);
+        }).catch(() => {
+          warnings.push("Open-interest caps unavailable.");
+          return null;
+        })
+      ]);
+      const value = { predicted, cap, warnings: warnings.sort() };
+      this.extrasCache = { value, at: this.now() };
+      return value;
+    })().finally(() => {
+      this.extrasPending = undefined;
+    });
+    return this.extrasPending;
+  }
+  envelope(config, warnings = [], readAt = this.now()) {
+    const mismatch = config.network !== undefined && config.network !== this.opts.network;
+    return {
+      success: true,
+      network: this.opts.network,
+      readAt,
+      gate: {
+        minOpenInterestUsd: config.minOpenInterestUsd,
+        source: config.source,
+        ...config.dexOpensRefused.length > 0 ? { dexOpensRefused: config.dexOpensRefused } : {}
+      },
+      warnings: [
+        ...config.warnings,
+        ...warnings,
+        ...mismatch ? ["Candle and client networks differ; tradeability is unknown."] : []
+      ]
+    };
+  }
+  row(core, extras, config, asset, dex = null) {
+    const meta = at(core.universe, asset);
+    const ctx = at(core.ctxs, asset);
+    const collateralToken = core.collateralToken ?? 0;
+    const mark = ctx.markPx == null ? null : scaled(ctx.markPx);
+    const oi = ctx.openInterest == null ? null : scaled(ctx.openInterest);
+    const prev = ctx.prevDayPx == null ? null : scaled(ctx.prevDayPx);
+    const predicted = extras.predicted?.get(meta.name);
+    return {
+      coin: meta.name,
+      asset: perpsAssetId(dex?.index ?? 0, asset),
+      markPx: ctx.markPx ?? null,
+      oraclePx: ctx.oraclePx ?? null,
+      midPx: ctx.midPx ?? null,
+      fundingRate: ctx.funding ?? null,
+      fundingAprPct: ctx.funding == null ? null : fixed(scaled(ctx.funding) * 876000n, 2),
+      predictedFundingRate: predicted?.fundingRate ?? null,
+      nextFundingTime: predicted?.nextFundingTime ?? null,
+      openInterest: ctx.openInterest ?? null,
+      openInterestUsd: oi === null || mark === null ? null : fixed(oi * mark / ONE, 2),
+      dayNotionalVolumeUsd: ctx.dayNtlVlm ?? null,
+      prevDayPx: ctx.prevDayPx ?? null,
+      change24hPct: prev === null || prev === 0n || mark === null ? null : fixed((mark - prev) * 100n * ONE / prev, 1),
+      maxLeverage: meta.maxLeverage,
+      onlyIsolated: perpsMarginMode(meta) === "isolated",
+      isDelisted: meta.isDelisted === true,
+      atOpenInterestCap: dex ? null : extras.cap?.has(meta.name) ?? null,
+      candle: config.network !== undefined && config.network !== this.opts.network ? { tradeable: null, reason: "networkMismatch" } : perpsMarketGate(meta, ctx, config.minOpenInterestUsd, {
+        name: dex?.name ?? "",
+        collateralToken,
+        opensRefused: config.dexOpensRefused
+      }),
+      dex: dex?.name ?? "",
+      terms: perpsDexTerms(meta, dex, collateralToken)
+    };
+  }
+  async markets(opts = {}) {
+    this.key();
+    const sort = opts.sort ?? "volume";
+    if (!["volume", "oi", "funding", "change", "name"].includes(sort))
+      return usage("sort must be volume, oi, funding, change or name.");
+    const limit = opts.limit === undefined ? undefined : bounded(opts.limit, 500, 1, 500, "limit");
+    const dexFilter = opts.dex === "all" ? "all" : parsePerpsDex(opts.dex);
+    if (dexFilter === null)
+      return usage("dex must be a builder dex name such as xyz, or all.");
+    const main = dexFilter === "" || dexFilter === "all";
+    const [config, core, extras] = await Promise.all([this.config(), main ? this.core() : null, this.extras()]);
+    const listed = [];
+    let dexes = null;
+    const skipped = [];
+    if (core)
+      listed.push({ snapshot: core, dex: null });
+    if (dexFilter !== "") {
+      dexes = await this.dexes();
+      const wanted = dexFilter === "all" ? dexes : [await this.dex(dexFilter)];
+      const settled = await Promise.allSettled(wanted.map((d) => this.dexCore(d.name)));
+      for (const [i, d] of wanted.entries()) {
+        const result = at(settled, i);
+        if (result.status === "fulfilled")
+          listed.push({ snapshot: result.value, dex: d });
+        else if (dexFilter === "all")
+          skipped.push(d.name);
+        else
+          throw result.reason;
+      }
+    }
+    const rows = listed.flatMap(({ snapshot, dex }) => snapshot.universe.map((_, asset) => this.row(snapshot, extras, config, asset, dex))).filter((row) => opts.all || row.candle.tradeable !== false);
+    const field = {
+      volume: "dayNotionalVolumeUsd",
+      oi: "openInterestUsd",
+      funding: "fundingRate",
+      change: "change24hPct"
+    };
+    rows.sort((a, b) => {
+      if (sort !== "name") {
+        const av = a[field[sort]];
+        const bv = b[field[sort]];
+        if (av === null && bv !== null)
+          return 1;
+        if (bv === null && av !== null)
+          return -1;
+        if (av !== null && bv !== null) {
+          const diff = scaled(bv) - scaled(av);
+          if (diff !== 0n)
+            return diff > 0n ? 1 : -1;
+        }
+      }
+      return a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0;
+    });
+    const dexRows = dexes === null ? undefined : await Promise.all((dexFilter === "all" ? dexes : dexes.filter((d) => d.name === dexFilter)).map(async (d) => {
+      if (skipped.includes(d.name))
+        return { ...d, collateral: null, tradeable: null };
+      const token = (await this.dexCore(d.name)).collateralToken ?? 0;
+      return {
+        ...d,
+        collateral: perpsCollateralName(token),
+        tradeable: token === 0 && !config.dexOpensRefused.includes(d.name)
+      };
+    }));
+    const warnings = [...extras.warnings, ...skipped.map((d) => `Builder dex ${d} markets unavailable.`)];
+    return {
+      ...this.envelope(config, warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
+      markets: limit === undefined ? rows : rows.slice(0, limit),
+      ...dexRows ? { dexes: dexRows } : {}
+    };
+  }
+  async market(coin) {
+    this.key();
+    const [config, located, extras] = await Promise.all([this.config(), this.locate(coin), this.extras()]);
+    const core = located.snapshot;
+    const asset = located.index;
+    const meta = at(core.universe, asset);
+    const ctx = at(core.ctxs, asset);
+    const readAt = located.dex ? this.dexCache.get(located.dex.name)?.at ?? 0 : this.coreCache?.at ?? 0;
+    return {
+      ...this.envelope(config, extras.warnings, Math.max(readAt, this.extrasCache?.at ?? 0)),
+      market: {
+        ...this.row(core, extras, config, asset, located.dex),
+        szDecimals: meta.szDecimals,
+        maxPriceDecimals: 6 - meta.szDecimals,
+        priceRule: "at most 5 significant figures",
+        minOrderUsd: 10,
+        impactBidPx: ctx.impactPxs?.[0] ?? null,
+        impactAskPx: ctx.impactPxs?.[1] ?? null,
+        premium: ctx.premium ?? null,
+        marginTiers: core.marginTables.get(meta.marginTableId ?? -1) ?? [
+          { lowerBoundUsd: "0", maxLeverage: meta.maxLeverage }
+        ]
+      }
+    };
+  }
+  async book(coin, opts = {}) {
+    this.key();
+    const depth = bounded(opts.depth, 20, 1, 20, "depth");
+    if (opts.sigFigs !== undefined)
+      bounded(opts.sigFigs, 5, 2, 5, "sigFigs");
+    const [config, located] = await Promise.all([this.config(), this.locate(coin)]);
+    const canonical = at(located.snapshot.universe, located.index).name;
+    const value = await info(this.opts.fetcher, this.opts.network, {
+      type: "l2Book",
+      coin: canonical,
+      ...opts.sigFigs === undefined ? {} : { nSigFigs: opts.sigFigs }
+    });
+    if (!object2(value) || value.coin !== canonical || !integer(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
+      return unavailable();
+    const sides = [];
+    for (const side of value.levels) {
+      if (!Array.isArray(side))
+        return unavailable();
+      const levels = [];
+      for (const level of side) {
+        if (!object2(level) || nonnegative(level.px) === null || nonnegative(level.sz) === null || !integer(level.n))
+          return unavailable();
+        levels.push({ px: level.px, sz: level.sz, n: level.n });
+      }
+      sides.push(levels);
+    }
+    const bids = at(sides, 0).sort((a, b) => scaled(a.px) > scaled(b.px) ? -1 : scaled(a.px) < scaled(b.px) ? 1 : 0).slice(0, depth);
+    const asks = at(sides, 1).sort((a, b) => scaled(a.px) < scaled(b.px) ? -1 : scaled(a.px) > scaled(b.px) ? 1 : 0).slice(0, depth);
+    const bid = bids[0];
+    const ask = asks[0];
+    const spread = bid && ask ? scaled(ask.px) - scaled(bid.px) : null;
+    const mid = bid && ask ? (scaled(ask.px) + scaled(bid.px)) / 2n : null;
+    return {
+      ...this.envelope(config),
+      coin: canonical,
+      time: value.time,
+      bids,
+      asks,
+      spreadPx: spread === null ? null : fixed(spread, 18).replace(/\.?0+$/, ""),
+      midPx: mid === null ? null : fixed(mid, 18).replace(/\.?0+$/, ""),
+      spreadBps: spread === null || mid === null || mid === 0n ? null : fixed(spread * 10000n * ONE / mid, 2)
+    };
+  }
+  async candles(coin, opts = {}) {
+    this.key();
+    const window = perpsCandleWindow(opts, this.now());
+    const [config, located] = await Promise.all([this.config(), this.locate(coin)]);
+    const canonical = at(located.snapshot.universe, located.index).name;
+    const value = await info(this.opts.fetcher, this.opts.network, {
+      type: "candleSnapshot",
+      req: { coin: canonical, interval: window.interval, startTime: window.startTime, endTime: window.endTime }
+    });
+    if (!Array.isArray(value))
+      return unavailable();
+    const candles = [];
+    for (const c of value) {
+      if (!object2(c) || !integer(c.t) || !integer(c.T) || !integer(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative(v) !== null) || c.s !== canonical || c.i !== window.interval)
+        return unavailable();
+      if (c.t <= window.endTime && c.T >= window.startTime)
+        candles.push({
+          t: c.t,
+          T: c.T,
+          o: c.o,
+          h: c.h,
+          l: c.l,
+          c: c.c,
+          v: c.v,
+          n: c.n
+        });
+    }
+    candles.sort((a, b) => a.t - b.t);
+    return {
+      ...this.envelope(config),
+      coin: canonical,
+      interval: window.interval,
+      candles: candles.slice(-window.count)
+    };
+  }
+  async fundingHistory(coin, opts = {}) {
+    this.key();
+    const window = perpsFundingWindow(opts, this.now());
+    const [config, located] = await Promise.all([this.config(), this.locate(coin)]);
+    const canonical = at(located.snapshot.universe, located.index).name;
+    const value = await info(this.opts.fetcher, this.opts.network, {
+      type: "fundingHistory",
+      coin: canonical,
+      startTime: window.startTime,
+      endTime: window.endTime
+    });
+    return {
+      ...this.envelope(config),
+      coin: canonical,
+      startTime: window.startTime,
+      endTime: window.endTime,
+      ...parsePerpsFundingHistory(value, canonical, window)
+    };
+  }
+  async predictedFunding() {
+    this.key();
+    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
+    if (extras.predicted === null)
+      return unavailable();
+    const predicted = [];
+    for (const meta of core.universe) {
+      const row = extras.predicted.get(meta.name);
+      if (row)
+        predicted.push({
+          coin: meta.name,
+          fundingRate: row.fundingRate,
+          fundingAprPct: fixed(scaled(row.fundingRate) * 876000n, 2),
+          nextFundingTime: row.nextFundingTime
+        });
+    }
+    predicted.sort((a, b) => a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0);
+    return { ...this.envelope(config, extras.warnings, this.extrasCache?.at ?? this.now()), predicted };
+  }
+}
+
+// src/hyperliquid.ts
 var HYPERLIQUID_ALLOWED_ACTION_TYPES = [
   "order",
   "cancel",
@@ -3423,11 +4200,11 @@ function sameValue(a, b) {
 var EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 var HYPERLIQUID_CLOID_RE = /^0x[0-9a-f]{32}$/;
 var HYPERLIQUID_STANDARD_ACCOUNT_MODES = ["default", "disabled"];
-async function hyperliquidAccountMode(fetcher, network, address) {
+async function hyperliquidAccountMode(fetcher, network, address2) {
   const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ type: "userAbstraction", user: address.toLowerCase() })
+    body: JSON.stringify({ type: "userAbstraction", user: address2.toLowerCase() })
   });
   if (!res.ok)
     throw new Error("Cannot read the account mode from Hyperliquid");
@@ -3472,7 +4249,7 @@ function checkBuilderField(action, builder) {
   }
   return null;
 }
-function decimal(value) {
+function decimal2(value) {
   if (typeof value !== "string" || !/^-?(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/.test(value))
     return null;
   const negative = value.startsWith("-");
@@ -3535,13 +4312,39 @@ function actionShapeProblem(action) {
     return "the scheduled cancel carries an invalid time";
   return null;
 }
+function hyperliquidPerpAsset(a) {
+  return typeof a === "number" && Number.isSafeInteger(a) && a >= 0 && (a < 1e4 || a >= 110000 && a < 1e8);
+}
+function hyperliquidCoinDex(coin) {
+  return parsePerpsCoin(coin)?.dex ?? null;
+}
+async function venueUniverse(read, dex, withCtxs) {
+  let base2 = 0;
+  if (dex !== "") {
+    const found = parsePerpDexs(await read({ type: "perpDexs" })).find((d) => d.name === dex);
+    if (!found)
+      throw new Error(`Hyperliquid has no builder dex ${dex}`);
+    base2 = perpsAssetId(found.index, 0);
+  }
+  const body = withCtxs ? { type: "metaAndAssetCtxs" } : { type: "meta" };
+  const answer = await read(dex === "" ? body : { ...body, dex });
+  const meta = withCtxs && Array.isArray(answer) ? answer[0] : answer;
+  if (!meta || !Array.isArray(meta.universe))
+    throw new Error("Hyperliquid returned an unreadable market list");
+  const ctxs = withCtxs && Array.isArray(answer) && Array.isArray(answer[1]) ? answer[1] : null;
+  return { dex, base: base2, universe: meta.universe, ctxs };
+}
+function venueIndex(venue, coin) {
+  const upper = coin.toUpperCase();
+  return venue.universe.findIndex((m) => typeof m?.name === "string" && m.name.toUpperCase() === upper);
+}
 function withinBps(px, reference, isBuy, bps) {
   const bound = BigInt(bps);
   return isBuy ? px * 10000n <= reference * (10000n + bound) : px * 10000n >= reference * (10000n - bound);
 }
 function checkActionIntent(action, opts) {
   const intent = opts.intent;
-  const mainAsset = (a) => typeof a === "number" && Number.isInteger(a) && a >= 0 && a < 1e4;
+  const perpAsset = hyperliquidPerpAsset;
   const orderList = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : [];
   if (!Array.isArray(orderList))
     return "invalid orders";
@@ -3549,18 +4352,18 @@ function checkActionIntent(action, opts) {
     if (!raw2 || typeof raw2 !== "object")
       return "invalid order";
     const o = raw2;
-    if (!mainAsset(o.a))
-      return "order asset is outside the main perp universe";
-    if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal(o.s) ?? 0n) <= 0n || (decimal(o.p) ?? 0n) <= 0n)
+    if (!perpAsset(o.a))
+      return "order asset is not a Hyperliquid perp market (spot and outcome markets are refused)";
+    if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal2(o.s) ?? 0n) <= 0n || (decimal2(o.p) ?? 0n) <= 0n)
       return "invalid order side, size, price or reduce-only flag";
     if (opts.keyReduceOnly === true && o.r !== true)
       return "this key is reduce-only and the build is not reducing";
   }
   if (action.type === "cancel") {
-    if (!Array.isArray(action.cancels) || action.cancels.length !== 1 || !mainAsset(action.cancels[0]?.a))
+    if (!Array.isArray(action.cancels) || action.cancels.length !== 1 || !perpAsset(action.cancels[0]?.a))
       return "invalid cancel asset";
   }
-  if ((action.type === "updateLeverage" || action.type === "updateIsolatedMargin") && !mainAsset(action.asset))
+  if ((action.type === "updateLeverage" || action.type === "updateIsolatedMargin") && !perpAsset(action.asset))
     return "invalid action asset";
   if (!intent)
     return null;
@@ -3602,7 +4405,7 @@ function checkActionIntent(action, opts) {
     }
   }
   if (method === "margin") {
-    const amount = decimal(p.amount);
+    const amount = decimal2(p.amount);
     if (amount === null || amount % 10n ** 12n !== 0n || !Number.isSafeInteger(action.ntli) || BigInt(action.ntli) !== amount / 10n ** 12n || action.isBuy !== true)
       return "isolated margin amount does not match the request";
     if (opts.marginTarget && action.asset !== opts.marginTarget.asset)
@@ -3636,18 +4439,18 @@ function checkActionIntent(action, opts) {
     if (list.length !== 1 || !leg || action.grouping !== "positionTpsl")
       return "a take-profit / stop-loss attach is one positionTpsl order";
     const trigger = leg.t?.trigger;
-    if (!trigger || leg.r !== true || trigger.isMarket !== true || trigger.tpsl !== p.leg || decimal(trigger.triggerPx) !== decimal(p.triggerPx))
+    if (!trigger || leg.r !== true || trigger.isMarket !== true || trigger.tpsl !== p.leg || decimal2(trigger.triggerPx) !== decimal2(p.triggerPx))
       return "trigger leg, reduce-only flag or price does not match the request";
     if (typeof leg.c !== "string" || !HYPERLIQUID_CLOID_RE.test(leg.c))
       return "the trigger leg carries no client order id";
-    const triggerPx = decimal(trigger.triggerPx) ?? 0n;
-    if (triggerPx <= 0n || !withinBps(decimal(leg.p) ?? 0n, triggerPx, leg.b === true, HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS))
+    const triggerPx = decimal2(trigger.triggerPx) ?? 0n;
+    if (triggerPx <= 0n || !withinBps(decimal2(leg.p) ?? 0n, triggerPx, leg.b === true, HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS))
       return "trigger order price is outside its slippage of the trigger price";
     const target = opts.tpslTarget;
     if (target) {
-      if (leg.a !== target.asset || leg.b !== target.isBuy || decimal(leg.s) !== decimal(target.size))
+      if (leg.a !== target.asset || leg.b !== target.isBuy || decimal2(leg.s) !== decimal2(target.size))
         return "trigger side, asset or size does not match the position Hyperliquid shows";
-      const mark = decimal(target.markPx) ?? 0n;
+      const mark = decimal2(target.markPx) ?? 0n;
       const above = triggerPx > mark;
       const ok = p.leg === "tp" === !target.isBuy ? above : triggerPx < mark;
       if (mark <= 0n || !ok)
@@ -3672,7 +4475,7 @@ function checkActionIntent(action, opts) {
       return "requested order is not a limit/IOC order";
     if (method === "open") {
       const buy = p.side === "long" || p.side === "buy";
-      if (first.b !== buy || first.r !== false || decimal(first.s) !== decimal(p.size))
+      if (first.b !== buy || first.r !== false || decimal2(first.s) !== decimal2(p.size))
         return "order side, size or reduce-only flag does not match the request";
       const tif = (p.type ?? (p.price === undefined ? "market" : "limit")) === "market" ? "Ioc" : p.tif ?? "Gtc";
       if (typ.limit.tif !== tif)
@@ -3689,10 +4492,10 @@ function checkActionIntent(action, opts) {
         if (!leg)
           return "missing trigger order";
         const trigger = leg.t?.trigger;
-        if (leg.a !== first.a || leg.b !== !buy || leg.r !== true || decimal(leg.s) !== decimal(p.size) || trigger?.tpsl !== kind || trigger.isMarket !== true || decimal(trigger.triggerPx) !== decimal(p[field]))
+        if (leg.a !== first.a || leg.b !== !buy || leg.r !== true || decimal2(leg.s) !== decimal2(p.size) || trigger?.tpsl !== kind || trigger.isMarket !== true || decimal2(trigger.triggerPx) !== decimal2(p[field]))
           return "trigger side, size, reduce-only flag or price does not match the request";
-        const px = decimal(leg.p) ?? 0n;
-        const triggerPx = decimal(trigger.triggerPx) ?? 0n;
+        const px = decimal2(leg.p) ?? 0n;
+        const triggerPx = decimal2(trigger.triggerPx) ?? 0n;
         if (triggerPx <= 0n || !withinBps(px, triggerPx, leg.b === true, HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS))
           return "trigger order price is outside its slippage of the trigger price";
       }
@@ -3701,12 +4504,12 @@ function checkActionIntent(action, opts) {
         return "unexpected extra orders";
       if (method === "close" && p.pct != null && p.size != null)
         return "a close takes a size or a percentage, not both";
-      if (method === "close" && (first.r !== true || typ.limit.tif !== "Ioc" || action.grouping !== "na" || p.size != null && (decimal(first.s) ?? 0n) > (decimal(p.size) ?? 0n)))
+      if (method === "close" && (first.r !== true || typ.limit.tif !== "Ioc" || action.grouping !== "na" || p.size != null && (decimal2(first.s) ?? 0n) > (decimal2(p.size) ?? 0n)))
         return "close size or reduce-only flag does not match the request";
-      if (method === "modify" && p.size != null && decimal(first.s) !== decimal(p.size))
+      if (method === "modify" && p.size != null && decimal2(first.s) !== decimal2(p.size))
         return "replacement size does not match the request";
     }
-    if (p.price != null && decimal(first.p) !== decimal(p.price))
+    if (p.price != null && decimal2(first.p) !== decimal2(p.price))
       return "order price does not match the request";
   }
   return null;
@@ -3719,19 +4522,19 @@ function hyperliquidClosePct(value) {
   return millionths > 0n && millionths <= 1000000n ? millionths : null;
 }
 function hyperliquidPctSize(held, pct, szDecimals) {
-  const scaled = decimal(held);
-  if (scaled === null || scaled < 0n)
+  const scaled2 = decimal2(held);
+  if (scaled2 === null || scaled2 < 0n)
     throw new Error("Invalid held size");
   if (pct === 1000000n)
     return held;
-  return hyperliquidFloorSize(formatScaled(scaled * pct / 1000000n), szDecimals);
+  return hyperliquidFloorSize(formatScaled(scaled2 * pct / 1000000n), szDecimals);
 }
 function hyperliquidFloorSize(value, szDecimals) {
-  const scaled = decimal(value);
-  if (scaled === null || scaled < 0n)
+  const scaled2 = decimal2(value);
+  if (scaled2 === null || scaled2 < 0n)
     throw new Error("Invalid size");
   const unit = 10n ** BigInt(18 - Math.max(0, Math.min(18, szDecimals)));
-  return formatScaled(scaled / unit * unit);
+  return formatScaled(scaled2 / unit * unit);
 }
 function formatScaled(value) {
   const negative = value < 0n;
@@ -3740,7 +4543,7 @@ function formatScaled(value) {
   const frac = (abs % 10n ** 18n).toString().padStart(18, "0").replace(/0+$/, "");
   return `${negative ? "-" : ""}${whole}${frac ? `.${frac}` : ""}`;
 }
-async function hyperliquidCloseOrder(fetcher, network, address, params) {
+async function hyperliquidCloseOrder(fetcher, network, address2, params) {
   const read = async (body) => {
     const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
       method: "POST",
@@ -3751,31 +4554,38 @@ async function hyperliquidCloseOrder(fetcher, network, address, params) {
       throw new Error("Cannot read the close position from Hyperliquid");
     return JSON.parse(await res.text());
   };
-  const [meta, state] = await Promise.all([read({ type: "meta" }), read({ type: "clearinghouseState", user: address })]);
+  const dex = hyperliquidCoinDex(params.coin);
+  if (dex === null)
+    throw new Error("coin must be a market name such as BTC, or xyz:TSLA on a builder dex");
+  const [venue, state] = await Promise.all([
+    venueUniverse(read, dex, false),
+    read(dex === "" ? { type: "clearinghouseState", user: address2 } : { type: "clearinghouseState", user: address2, dex })
+  ]);
   const coin = String(params.coin).toUpperCase();
-  const universe = meta.universe;
-  const asset = universe.findIndex((m) => m.name.toUpperCase() === coin);
+  const universe = venue.universe;
+  const index = venueIndex(venue, coin);
   const szi = state.assetPositions.find((p) => p.position.coin.toUpperCase() === coin)?.position.szi;
-  const signed = decimal(szi);
-  if (asset < 0 || asset >= 1e4 || signed === null || signed === 0n)
-    throw new Error("No main-universe position to close");
+  const signed = decimal2(szi);
+  if (index < 0 || index >= 1e4 || signed === null || signed === 0n)
+    throw new Error(dex === "" ? "No main-universe position to close" : `No position to close on builder dex ${dex}`);
+  const asset = venue.base + index;
   const held = signed < 0n ? -signed : signed;
   const heldSz = String(szi).replace(/^-/, "");
   if (params.pct != null) {
     if (params.size != null)
       throw new Error("A close takes a size or a percentage, not both");
     const pct = hyperliquidClosePct(params.pct);
-    const szDecimals = universe[asset]?.szDecimals;
+    const szDecimals = universe[index]?.szDecimals;
     if (pct === null)
       throw new Error("pct must be above 0 and at most 100, with at most 4 decimals");
     if (!Number.isInteger(szDecimals))
       throw new Error("Hyperliquid did not report this market's size precision");
     const size2 = hyperliquidPctSize(heldSz, pct, szDecimals);
-    if ((decimal(size2) ?? 0n) <= 0n)
+    if ((decimal2(size2) ?? 0n) <= 0n)
       throw new Error("This percentage of the position rounds to zero at the market's size step");
     return { asset, isBuy: signed < 0n, size: size2 };
   }
-  const asked = params.size == null ? held : decimal(params.size);
+  const asked = params.size == null ? held : decimal2(params.size);
   if (asked === null || asked <= 0n)
     throw new Error("Invalid close size");
   const size = asked < held ? String(params.size) : heldSz;
@@ -3784,7 +4594,7 @@ async function hyperliquidCloseOrder(fetcher, network, address, params) {
 var HYPERLIQUID_DEFAULT_SLIPPAGE_BPS = 100;
 var HYPERLIQUID_MID_DRIFT_BPS = 100;
 var HYPERLIQUID_TPSL_SLIPPAGE_BPS = 500;
-async function hyperliquidOrderMarket(fetcher, network, address, method, params) {
+async function hyperliquidOrderMarket(fetcher, network, address2, method, params) {
   const read = async (body) => {
     const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
       method: "POST",
@@ -3798,9 +4608,9 @@ async function hyperliquidOrderMarket(fetcher, network, address, method, params)
   let coin = String(params.coin ?? "").toUpperCase();
   let order;
   if (method === "modify") {
-    const status = await read({ type: "orderStatus", user: address, oid: params.cloid });
+    const status = await read({ type: "orderStatus", user: address2, oid: params.cloid });
     const resting = status?.order?.order ?? null;
-    if (!resting || typeof resting.coin !== "string" || decimal(resting.limitPx) === null)
+    if (!resting || typeof resting.coin !== "string" || decimal2(resting.limitPx) === null)
       throw new Error("No resting order with this cloid on Hyperliquid");
     if (resting.isTrigger === true)
       throw new Error("A take-profit or stop-loss leg cannot be modified; cancel it instead");
@@ -3809,21 +4619,24 @@ async function hyperliquidOrderMarket(fetcher, network, address, method, params)
     order = {
       isBuy: resting.side === "B",
       limitPx: String(resting.limitPx),
-      ...decimal(resting.sz) !== null ? { size: String(resting.sz) } : {},
+      ...decimal2(resting.sz) !== null ? { size: String(resting.sz) } : {},
       reduceOnly: resting.reduceOnly === true,
       tif,
       ...Number.isSafeInteger(resting.oid) ? { oid: resting.oid } : {}
     };
   }
-  const [meta, contexts] = await read({ type: "metaAndAssetCtxs" });
-  const asset = meta.universe.findIndex((m) => m.name.toUpperCase() === coin);
-  if (asset < 0 || asset >= 1e4)
-    throw new Error("No main-universe market for this coin on Hyperliquid");
-  const context = contexts[asset];
+  const dex = hyperliquidCoinDex(coin);
+  if (dex === null)
+    throw new Error("No perp market for this coin on Hyperliquid (spot and outcome markets are refused)");
+  const venue = await venueUniverse(read, dex, true);
+  const index = venueIndex(venue, coin);
+  if (index < 0 || index >= 1e4)
+    throw new Error(dex === "" ? "No main-universe market for this coin on Hyperliquid" : `No ${coin} market on builder dex ${dex}`);
+  const context = venue.ctxs?.[index];
   const midPx = context?.midPx ?? context?.markPx;
-  if ((decimal(midPx) ?? 0n) <= 0n)
+  if ((decimal2(midPx) ?? 0n) <= 0n)
     throw new Error("No Hyperliquid price for this coin");
-  return { asset, midPx: String(midPx), ...order ? { order } : {} };
+  return { asset: venue.base + index, midPx: String(midPx), ...order ? { order } : {} };
 }
 function checkOrderMarket(action, intent, market) {
   const list = action.type === "modify" ? [action.order] : action.orders;
@@ -3837,8 +4650,8 @@ function checkOrderMarket(action, intent, market) {
     const requested = p.slippageBps;
     const slippage = typeof requested === "number" && Number.isInteger(requested) && requested > 0 ? requested : HYPERLIQUID_DEFAULT_SLIPPAGE_BPS;
     const bound = BigInt(slippage + HYPERLIQUID_MID_DRIFT_BPS);
-    const px = decimal(first.p) ?? 0n;
-    const mid = decimal(market.midPx) ?? 0n;
+    const px = decimal2(first.p) ?? 0n;
+    const mid = decimal2(market.midPx) ?? 0n;
     const within = first.b === true ? px * 10000n <= mid * (10000n + bound) : px * 10000n >= mid * (10000n - bound);
     if (mid <= 0n || !within)
       return "market order price is outside its slippage of Hyperliquid's mid";
@@ -3848,7 +4661,7 @@ function checkOrderMarket(action, intent, market) {
       return "no resting order on Hyperliquid to check the modify against";
     if (first.b !== market.order.isBuy)
       return "modify changes the resting order's side";
-    if (p.price == null && decimal(first.p) !== decimal(market.order.limitPx))
+    if (p.price == null && decimal2(first.p) !== decimal2(market.order.limitPx))
       return "modify changes the resting order's price";
     const requested = typeof p.cloid === "string" ? p.cloid.toLowerCase() : null;
     const byOid = market.order.oid !== undefined && action.oid === market.order.oid;
@@ -3859,7 +4672,7 @@ function checkOrderMarket(action, intent, market) {
       return "modify changes the resting order's reduce-only flag";
     if (first.t?.limit?.tif !== market.order.tif)
       return "modify changes the resting order's time in force";
-    if (p.size == null && (market.order.size === undefined || decimal(first.s) !== decimal(market.order.size)))
+    if (p.size == null && (market.order.size === undefined || decimal2(first.s) !== decimal2(market.order.size)))
       return "modify changes the resting order's size";
   }
   return null;
@@ -3888,7 +4701,7 @@ function verifyPerpsBuild(build, opts) {
       return { ok: false, reason: intentRefusal };
     if (opts.closeOrder) {
       const order = action.orders[0];
-      if (!order || order.a !== opts.closeOrder.asset || order.b !== opts.closeOrder.isBuy || decimal(order.s) !== decimal(opts.closeOrder.size) || order.r !== true)
+      if (!order || order.a !== opts.closeOrder.asset || order.b !== opts.closeOrder.isBuy || decimal2(order.s) !== decimal2(opts.closeOrder.size) || order.r !== true)
         return { ok: false, reason: "close side, asset or size does not match the requested position" };
     }
     if (opts.market) {
@@ -3960,12 +4773,20 @@ async function infoRead(fetcher, network, body) {
     throw new Error(`Hyperliquid returned an unreadable ${String(body.type)}`);
   }
 }
-async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.now) {
-  const user = address.toLowerCase();
+async function hyperliquidWalletSnapshot(fetcher, network, address2, now = Date.now, dex = "") {
+  const user = address2.toLowerCase();
+  const withDex = (body) => dex === "" ? body : { ...body, dex };
+  let assetBase = 0;
+  if (dex !== "") {
+    const found = parsePerpDexs(await infoRead(fetcher, network, { type: "perpDexs" })).find((d) => d.name === dex);
+    if (!found)
+      throw new Error(`Hyperliquid has no builder dex ${dex}`);
+    assetBase = perpsAssetId(found.index, 0);
+  }
   const [metaAndCtxs, state, open2] = await Promise.all([
-    infoRead(fetcher, network, { type: "metaAndAssetCtxs" }),
-    infoRead(fetcher, network, { type: "clearinghouseState", user }),
-    infoRead(fetcher, network, { type: "frontendOpenOrders", user })
+    infoRead(fetcher, network, withDex({ type: "metaAndAssetCtxs" })),
+    infoRead(fetcher, network, withDex({ type: "clearinghouseState", user })),
+    infoRead(fetcher, network, withDex({ type: "frontendOpenOrders", user }))
   ]);
   const readAt = now();
   if (!Array.isArray(metaAndCtxs) || metaAndCtxs.length < 2 || !Array.isArray(metaAndCtxs[1]))
@@ -3987,9 +4808,13 @@ async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.n
   const ctxs = metaAndCtxs[1];
   const marks = universe.map((_, i) => {
     const mark = ctxs[i]?.markPx;
-    return typeof mark === "string" && (decimal(mark) ?? 0n) > 0n ? mark : null;
+    return typeof mark === "string" && (decimal2(mark) ?? 0n) > 0n ? mark : null;
   });
-  const assetOf = (coin) => universe.findIndex((m) => m.name === coin);
+  const indexOf = (coin) => universe.findIndex((m) => m.name === coin);
+  const assetOf = (coin) => {
+    const index = indexOf(coin);
+    return index < 0 || index >= 1e4 ? -1 : assetBase + index;
+  };
   const unsupported = [];
   const positionsRaw = state?.assetPositions;
   if (!Array.isArray(positionsRaw))
@@ -4000,16 +4825,16 @@ async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.n
     const coin = p?.coin;
     const lev = p?.leverage;
     const szi = p?.szi;
-    if (typeof coin !== "string" || typeof szi !== "string" || decimal(szi) === null) {
+    if (typeof coin !== "string" || typeof szi !== "string" || decimal2(szi) === null) {
       unsupported.push(`an unreadable position (${JSON.stringify(coin ?? null)})`);
       continue;
     }
     const asset = assetOf(coin);
-    if (asset < 0 || asset >= 1e4 || lev?.type !== "cross" && lev?.type !== "isolated" || !Number.isInteger(lev.value)) {
+    if (asset < 0 || lev?.type !== "cross" && lev?.type !== "isolated" || !Number.isInteger(lev.value)) {
       unsupported.push(`position ${coin}`);
       continue;
     }
-    if (decimal(szi) === 0n)
+    if (decimal2(szi) === 0n)
       continue;
     positions.push({ coin, asset, szi, leverage: { type: lev.type, value: lev.value } });
   }
@@ -4025,7 +4850,7 @@ async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.n
     }
     const asset = assetOf(coin);
     const oid = o.oid;
-    if (asset < 0 || asset >= 1e4 || !Number.isSafeInteger(oid) || o.side !== "A" && o.side !== "B" || decimal(o.sz) === null || decimal(o.limitPx) === null) {
+    if (asset < 0 || !Number.isSafeInteger(oid) || o.side !== "A" && o.side !== "B" || decimal2(o.sz) === null || decimal2(o.limitPx) === null) {
       unsupported.push(`order ${coin}${Number.isSafeInteger(oid) ? ` ${oid}` : ""}`);
       continue;
     }
@@ -4052,7 +4877,15 @@ async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.n
   }
   orders.sort((a, b) => a.asset - b.asset || a.oid - b.oid);
   positions.sort((a, b) => a.asset - b.asset);
-  return { readAt, universe, marks, positions, orders, unsupported };
+  return {
+    readAt,
+    ...dex === "" ? {} : { dex, assetBase },
+    universe,
+    marks,
+    positions,
+    orders,
+    unsupported
+  };
 }
 function snapshotPosition(snapshot, coin) {
   const upper = coin.toUpperCase();
@@ -4062,25 +4895,29 @@ function hyperliquidTpslTarget(snapshot, coin) {
   const position = snapshotPosition(snapshot, coin);
   if (!position)
     throw new Error(`No ${coin} position on Hyperliquid to protect`);
-  const mark = snapshot.marks[position.asset];
-  const szDecimals = snapshot.universe[position.asset]?.szDecimals;
+  const index = position.asset - (snapshot.assetBase ?? 0);
+  const mark = snapshot.marks[index];
+  const szDecimals = snapshot.universe[index]?.szDecimals;
   if (!mark || szDecimals === undefined)
     throw new Error(`No Hyperliquid mark for ${position.coin}`);
   const held = position.szi.replace(/^-/, "");
   const size = hyperliquidFloorSize(held, szDecimals);
   return { asset: position.asset, isBuy: position.szi.startsWith("-"), size, markPx: mark };
 }
-async function venueEvidence(fetcher, network, address, intent, now) {
+async function venueEvidence(fetcher, network, address2, intent, now) {
   const p = intent.params;
+  const coinDex = p.coin === undefined ? "" : hyperliquidCoinDex(p.coin);
+  if (coinDex === null)
+    throw new Error("coin must be a market name such as BTC, or xyz:TSLA on a builder dex");
   switch (intent.method) {
     case "open":
     case "modify":
-      return { market: await hyperliquidOrderMarket(fetcher, network, address, intent.method, p) };
+      return { market: await hyperliquidOrderMarket(fetcher, network, address2, intent.method, p) };
     case "close":
-      return { closeOrder: await hyperliquidCloseOrder(fetcher, network, address, p) };
+      return { closeOrder: await hyperliquidCloseOrder(fetcher, network, address2, p) };
     case "cancel": {
       if (p.oid !== undefined) {
-        const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now);
+        const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address2, now, coinDex);
         const order = snapshot.orders.find((o) => o.oid === p.oid && (p.coin === undefined || o.coin.toUpperCase() === String(p.coin).toUpperCase()));
         if (!order)
           throw new Error("Hyperliquid shows no such open order on this wallet");
@@ -4088,28 +4925,32 @@ async function venueEvidence(fetcher, network, address, intent, now) {
       }
       const status = await infoRead(fetcher, network, {
         type: "orderStatus",
-        user: address.toLowerCase(),
+        user: address2.toLowerCase(),
         oid: p.cloid
       });
       const resting = status?.order?.order;
       if (!resting || typeof resting.coin !== "string" || !Number.isSafeInteger(resting.oid))
         throw new Error("Hyperliquid shows no order with this cloid on this wallet");
-      const meta = await infoRead(fetcher, network, { type: "meta" });
-      const asset = (meta.universe ?? []).findIndex((m) => m.name === resting.coin);
-      if (asset < 0 || asset >= 1e4)
-        throw new Error("The order is not on Hyperliquid's main perp exchange");
-      return { cancelTarget: { asset, oid: resting.oid } };
+      const restingDex = hyperliquidCoinDex(resting.coin);
+      if (restingDex === null)
+        throw new Error("The order is not on a Hyperliquid perp exchange");
+      const venue = await venueUniverse((body) => infoRead(fetcher, network, body), restingDex, false);
+      const index = venue.universe.findIndex((m) => m.name === resting.coin);
+      if (index < 0 || index >= 1e4)
+        throw new Error("The order is not on a Hyperliquid perp exchange");
+      return { cancelTarget: { asset: venue.base + index, oid: resting.oid } };
     }
     case "leverage": {
-      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now);
+      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address2, now, coinDex);
       const coin = String(p.coin ?? "").toUpperCase();
-      const asset = snapshot.universe.findIndex((m) => m.name.toUpperCase() === coin);
-      if (asset < 0)
-        throw new Error("No main-universe market for this coin on Hyperliquid");
-      const name = snapshot.universe[asset]?.name;
+      const index = snapshot.universe.findIndex((m) => m.name.toUpperCase() === coin);
+      if (index < 0 || index >= 1e4)
+        throw new Error("No perp market for this coin on Hyperliquid");
+      const asset = (snapshot.assetBase ?? 0) + index;
+      const name = snapshot.universe[index]?.name;
       const data = await infoRead(fetcher, network, {
         type: "activeAssetData",
-        user: address.toLowerCase(),
+        user: address2.toLowerCase(),
         coin: name
       });
       const lev = data?.leverage;
@@ -4119,14 +4960,14 @@ async function venueEvidence(fetcher, network, address, intent, now) {
       return { leverageTarget: { asset, leverage: lev.value, mode: lev.type, flat } };
     }
     case "margin": {
-      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now);
+      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address2, now, coinDex);
       const position = snapshotPosition(snapshot, String(p.coin ?? ""));
       if (!position || position.leverage.type !== "isolated")
         throw new Error("Hyperliquid shows no isolated position in this coin");
       return { marginTarget: { asset: position.asset } };
     }
     case "tpsl": {
-      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now);
+      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address2, now, coinDex);
       return { tpslTarget: hyperliquidTpslTarget(snapshot, String(p.coin ?? "")) };
     }
     case "scheduleCancel":
@@ -4219,7 +5060,7 @@ function errorCode(err) {
 function errorText(err) {
   return err instanceof Error ? err.message : String(err);
 }
-async function runStep(io, step, path, body, intent) {
+async function runStep(io, step, warnings, path, body, intent) {
   let build;
   try {
     build = await io.build(path, { walletId: io.walletId, ...body });
@@ -4227,6 +5068,12 @@ async function runStep(io, step, path, body, intent) {
     step.status = "rejected";
     step.detail = `${errorCode(err)}: ${errorText(err)}`;
     return false;
+  }
+  if (build.preview && typeof build.preview === "object" && !Array.isArray(build.preview)) {
+    step.preview = build.preview;
+    const warning = step.preview.terms?.feeWarning;
+    if (typeof warning === "string" && warning && !warnings.includes(warning))
+      warnings.push(warning);
   }
   if (build.replayed === true) {
     step.status = "skipped";
@@ -4254,6 +5101,13 @@ async function runStep(io, step, path, body, intent) {
   step.status = "built";
   if (io.mode === "no-submit")
     return false;
+  if (io.reviewBuild) {
+    if (!await io.reviewBuild(step, step.preview ?? {})) {
+      step.status = "skipped";
+      step.detail = "Declined at the market terms review. Nothing was signed.";
+      return false;
+    }
+  }
   let signature;
   try {
     signature = await io.sign(build.typedData);
@@ -4313,8 +5167,8 @@ function blankStep(n, kind, coin, extra = {}) {
 var DECIMAL_RE2 = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/;
 var CLOID_RE = /^0x[0-9a-f]{32}$/;
 function perpsTpslParamsProblem(p) {
-  if (typeof p.coin !== "string" || !/^[A-Za-z0-9]{1,20}$/.test(p.coin))
-    return "coin must be a market name";
+  if (hyperliquidCoinDex(p.coin) === null)
+    return "coin must be a market name such as BTC, or xyz:TSLA on a builder dex";
   for (const [field, value] of [
     ["takeProfit", p.takeProfit],
     ["stopLoss", p.stopLoss]
@@ -4351,13 +5205,14 @@ async function runPerpsTpsl(io, params) {
     throw new PerpsWorkflowError("VALIDATION_FAILED", problem);
   const coinQuery = encodeURIComponent(params.coin);
   const server = await io.read(`/api/v1/agent/perps/tpsl?walletId=${encodeURIComponent(io.walletId)}&coin=${coinQuery}`);
+  const dex = hyperliquidCoinDex(params.coin) ?? "";
   let snapshot;
   try {
-    snapshot = await hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now);
+    snapshot = await hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now, dex);
   } catch (err) {
     throw new PerpsWorkflowError("PERPS_UNAVAILABLE", `Cannot read the account from Hyperliquid: ${errorText(err)}`);
   }
-  const coin = typeof server.coin === "string" ? server.coin : params.coin.toUpperCase();
+  const coin = typeof server.coin === "string" ? server.coin : dex ? `${dex}:${params.coin.slice(params.coin.indexOf(":") + 1).toUpperCase()}` : params.coin.toUpperCase();
   const venueLegs = snapshot.orders.filter((o) => o.coin === coin && o.tpsl !== null);
   const tracked = [];
   for (const raw2 of Array.isArray(server.tracked) ? server.tracked : []) {
@@ -4443,7 +5298,7 @@ async function runPerpsTpsl(io, params) {
       break;
     if (plan.cancel) {
       const step = plan.cancel;
-      const ok = await runStep(io, step, "/api/v1/agent/perps/tpsl", {
+      const ok = await runStep(io, step, warnings, "/api/v1/agent/perps/tpsl", {
         coin,
         operation: "cancel",
         leg: plan.leg,
@@ -4456,7 +5311,7 @@ async function runPerpsTpsl(io, params) {
         break;
       }
       try {
-        const after = await hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now);
+        const after = await hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now, dex);
         result.readAt = after.readAt;
         if (after.orders.some((o) => o.oid === step.target?.oid)) {
           step.status = "unknown";
@@ -4476,7 +5331,7 @@ async function runPerpsTpsl(io, params) {
       }
     }
     if (plan.attach) {
-      const ok = await runStep(io, plan.attach, "/api/v1/agent/perps/tpsl", {
+      const ok = await runStep(io, plan.attach, warnings, "/api/v1/agent/perps/tpsl", {
         coin,
         operation: "attach",
         leg: plan.leg,
@@ -4547,10 +5402,10 @@ async function runPerpsFlatten(io) {
   if (io.mode !== "no-submit" && io.confirm && !await io.confirm({ steps, warnings }))
     throw new PerpsWorkflowError("CANCELLED", "Nothing was signed.");
   const workflowId = `flat-${io.cloid().slice(2, 18)}`;
-  const cancelStep = (step) => runStep(io, step, "/api/v1/agent/perps/flatten/cancel", { coin: step.coin, oid: step.target?.oid, workflowId, workflowStep: step.step }, { method: "cancel", params: { coin: step.coin, oid: step.target?.oid } });
+  const cancelStep = (step) => runStep(io, step, warnings, "/api/v1/agent/perps/flatten/cancel", { coin: step.coin, oid: step.target?.oid, workflowId, workflowStep: step.step }, { method: "cancel", params: { coin: step.coin, oid: step.target?.oid } });
   const closeStep = (step) => {
     const clientId = closeIds.get(step.coin);
-    return runStep(io, step, "/api/v1/agent/perps/close", { coin: step.coin, clientId, workflowId, workflowStep: step.step }, { method: "close", params: { coin: step.coin, clientId } });
+    return runStep(io, step, warnings, "/api/v1/agent/perps/close", { coin: step.coin, clientId, workflowId, workflowStep: step.step }, { method: "close", params: { coin: step.coin, clientId } });
   };
   if (io.mode !== "submit") {
     const first = steps[0];
@@ -4649,556 +5504,6 @@ async function runPerpsFlatten(io) {
   }
   result.complete = final !== null && final.positions.length === 0 && final.orders.length === 0 && final.unsupported.length === 0 && !stopped && steps.every((s) => s.status === "confirmed" || s.status === "skipped");
   return result;
-}
-
-// src/hyperliquid-markets.ts
-var INFO_URLS = {
-  mainnet: "https://api.hyperliquid.xyz/info",
-  testnet: "https://api.hyperliquid-testnet.xyz/info"
-};
-var ONE = 10n ** 18n;
-var DECIMAL = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?$/;
-
-class PerpsMarketError extends Error {
-  code;
-  retryable;
-  constructor(code, message) {
-    super(message);
-    this.code = code;
-    this.name = "PerpsMarketError";
-    this.retryable = code === "PERPS_UNAVAILABLE";
-  }
-}
-function unavailable() {
-  throw new PerpsMarketError("PERPS_UNAVAILABLE", "Hyperliquid market data is unavailable; retry shortly.");
-}
-function usage(message) {
-  throw new PerpsMarketError("PERPS_USAGE", message);
-}
-function object2(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-function decimal2(value) {
-  return typeof value === "string" && value.length <= 100 && DECIMAL.test(value) && (value.split(".")[1]?.length ?? 0) <= 18;
-}
-function scaled(value) {
-  const negative = value.startsWith("-");
-  const [whole = "0", fraction = ""] = (negative ? value.slice(1) : value).split(".");
-  const result = BigInt(whole) * ONE + BigInt(fraction.padEnd(18, "0"));
-  return negative ? -result : result;
-}
-function nonnegative(value) {
-  return decimal2(value) && !value.startsWith("-") ? scaled(value) : null;
-}
-function fixed(value, places) {
-  const negative = value < 0n;
-  const abs = negative ? -value : value;
-  const divisor = 10n ** BigInt(18 - places);
-  const rounded = (abs + divisor / 2n) / divisor;
-  const digits = rounded.toString().padStart(places + 1, "0");
-  return `${negative && rounded !== 0n ? "-" : ""}${places ? `${digits.slice(0, -places)}.${digits.slice(-places)}` : digits}`;
-}
-function at(values, index) {
-  const value = values[index];
-  if (value === undefined)
-    return unavailable();
-  return value;
-}
-function integer(value) {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-function parseMarkets(value) {
-  if (!Array.isArray(value) || value.length !== 2)
-    return unavailable();
-  const [meta, ctxs] = value;
-  if (!object2(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
-    return unavailable();
-  for (const row of meta.universe) {
-    if (!object2(row) || typeof row.name !== "string" || !integer(row.szDecimals) || row.szDecimals > 6 || !integer(row.maxLeverage))
-      return unavailable();
-    for (const key of ["isDelisted", "onlyIsolated"])
-      if (row[key] !== undefined && typeof row[key] !== "boolean")
-        return unavailable();
-    if (row.marginTableId !== undefined && !integer(row.marginTableId))
-      return unavailable();
-  }
-  for (const ctx of ctxs) {
-    if (!object2(ctx))
-      return unavailable();
-    for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
-      if (ctx[key] !== undefined && ctx[key] !== null && !decimal2(ctx[key]))
-        return unavailable();
-    }
-    if (ctx.impactPxs != null && (!Array.isArray(ctx.impactPxs) || ctx.impactPxs.length !== 2 || !ctx.impactPxs.every(decimal2)))
-      return unavailable();
-  }
-  const marginTables = new Map;
-  if (meta.marginTables !== undefined) {
-    if (!Array.isArray(meta.marginTables))
-      return unavailable();
-    for (const entry of meta.marginTables) {
-      if (!Array.isArray(entry) || !integer(entry[0]) || !object2(entry[1]) || !Array.isArray(entry[1].marginTiers))
-        return unavailable();
-      const tiers = [];
-      for (const tier of entry[1].marginTiers) {
-        if (!object2(tier) || nonnegative(tier.lowerBound) === null || !integer(tier.maxLeverage))
-          return unavailable();
-        tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
-      }
-      marginTables.set(entry[0], tiers);
-    }
-  }
-  return { universe: meta.universe, ctxs, marginTables };
-}
-async function info(fetcher, network, body) {
-  try {
-    const response = await fetcher(INFO_URLS[network], {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(5000),
-      redirect: "error"
-    });
-    if (!response.ok)
-      return unavailable();
-    return JSON.parse(await response.text());
-  } catch {
-    return unavailable();
-  }
-}
-async function readHyperliquidMarkets(fetcher, network) {
-  return parseMarkets(await info(fetcher, network, { type: "metaAndAssetCtxs" }));
-}
-function perpsMarketGate(meta, ctx, minOpenInterestUsd) {
-  if (meta.isDelisted === true)
-    return { tradeable: false, reason: "delisted" };
-  const mark = nonnegative(ctx.markPx);
-  const mid = nonnegative(typeof ctx.midPx === "string" ? ctx.midPx : ctx.markPx);
-  const oi = nonnegative(ctx.openInterest);
-  if (mark === null || mid === null || oi === null)
-    return { tradeable: false, reason: "noPrice" };
-  const divisor = 10n ** 30n;
-  const micros = (oi * mark + divisor - 1n) / divisor;
-  if (micros > BigInt(Number.MAX_SAFE_INTEGER))
-    return unavailable();
-  if (minOpenInterestUsd > 0 && micros < BigInt(minOpenInterestUsd) * 1000000n)
-    return { tradeable: false, reason: "minOpenInterest" };
-  return { tradeable: true, reason: null };
-}
-function resolve(snapshot, coin) {
-  if (/^[A-Za-z0-9]{1,20}$/.test(coin)) {
-    const exact = snapshot.universe.findIndex((row) => row.name === coin);
-    if (exact !== -1)
-      return exact;
-    const matches = snapshot.universe.map((row, i) => ({ row, i })).filter(({ row }) => row.name.toLowerCase() === coin.toLowerCase());
-    if (matches.length === 1)
-      return at(matches, 0).i;
-  }
-  throw new PerpsMarketError("PERPS_MARKET_NOT_FOUND", `${coin} is not a market on Hyperliquid's main perp exchange.`);
-}
-var PERPS_CANDLE_INTERVALS = [
-  "1m",
-  "3m",
-  "5m",
-  "15m",
-  "30m",
-  "1h",
-  "2h",
-  "4h",
-  "8h",
-  "12h",
-  "1d",
-  "3d",
-  "1w",
-  "1M"
-];
-var INTERVAL_MS = [
-  60000,
-  180000,
-  300000,
-  900000,
-  1800000,
-  3600000,
-  7200000,
-  14400000,
-  28800000,
-  43200000,
-  86400000,
-  259200000,
-  604800000,
-  2678400000
-];
-function perpsCandleWindow(opts, now) {
-  const interval = opts.interval ?? "1h";
-  const index = PERPS_CANDLE_INTERVALS.indexOf(interval);
-  if (index < 0)
-    return usage(`interval must be one of ${PERPS_CANDLE_INTERVALS.join(" ")}.`);
-  const count = bounded(opts.count, 100, 1, 5000, "count");
-  const raw2 = opts.end;
-  const endTime = raw2 === undefined ? now : epoch(raw2);
-  const startTime = endTime - count * at(INTERVAL_MS, index);
-  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
-    return usage("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
-  return { interval, count, startTime, endTime };
-}
-function epoch(raw2) {
-  return typeof raw2 === "number" || /^\d+$/.test(raw2) ? Number(raw2) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw2) ? Date.parse(raw2) : NaN;
-}
-var PERPS_FUNDING_HISTORY_MAX_MS = 30 * 86400000;
-var PERPS_FUNDING_HISTORY_MAX_ROWS = 500;
-function perpsFundingWindow(opts, now) {
-  const endTime = opts.end === undefined ? now : epoch(opts.end);
-  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now)
-    return usage("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
-  const startTime = opts.start === undefined ? endTime - 86400000 : epoch(opts.start);
-  if (!Number.isSafeInteger(startTime) || startTime < 0 || startTime > endTime)
-    return usage("start must be an ISO 8601 time or epoch milliseconds, no later than end.");
-  if (endTime - startTime > PERPS_FUNDING_HISTORY_MAX_MS)
-    return usage("start must be at most 30 days before end.");
-  return { startTime, endTime };
-}
-function bounded(value, fallback, min, max, name) {
-  const n = value ?? fallback;
-  if (!Number.isInteger(n) || n < min || n > max)
-    return usage(`${name} must be an integer from ${min} to ${max}.`);
-  return n;
-}
-function parsePerpsFundingHistory(value, coin, window) {
-  if (!Array.isArray(value))
-    return unavailable();
-  const funding = [];
-  for (const row of value) {
-    if (!object2(row) || row.coin !== coin || !integer(row.time) || !decimal2(row.fundingRate) || !decimal2(row.premium))
-      return unavailable();
-    if (row.time >= window.startTime && row.time <= window.endTime)
-      funding.push({
-        time: row.time,
-        fundingRate: row.fundingRate,
-        fundingAprPct: fixed(scaled(row.fundingRate) * 876000n, 2),
-        premium: row.premium
-      });
-  }
-  funding.sort((a, b) => a.time - b.time);
-  return {
-    funding: funding.slice(0, PERPS_FUNDING_HISTORY_MAX_ROWS),
-    truncated: funding.length > PERPS_FUNDING_HISTORY_MAX_ROWS
-  };
-}
-
-class PerpsMarketReader {
-  opts;
-  configPromise;
-  coreCache;
-  extrasCache;
-  corePending;
-  extrasPending;
-  now;
-  constructor(opts) {
-    this.opts = opts;
-    this.now = opts.now ?? Date.now;
-  }
-  key() {
-    if (!this.opts.apiKey?.trim())
-      throw new PerpsMarketError("PERPS_KEY_REQUIRED", "Configure a Candle agent key (any scope) to read perps markets.");
-  }
-  config() {
-    this.key();
-    this.configPromise ??= (async () => {
-      try {
-        const value = await this.opts.readConfig();
-        if (!object2(value) || !object2(value.limits) || !integer(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
-          throw new Error("config shape");
-        return {
-          minOpenInterestUsd: value.limits.minOpenInterestUsd,
-          source: "server",
-          network: value.network,
-          warnings: []
-        };
-      } catch {
-        return {
-          minOpenInterestUsd: 1e6,
-          source: "default",
-          warnings: ["Candle config unavailable; using the release's default OI floor."]
-        };
-      }
-    })();
-    return this.configPromise;
-  }
-  core() {
-    const ttl = this.opts.cacheMs ?? 5000;
-    if (this.coreCache && ttl > 0 && this.now() - this.coreCache.at < ttl)
-      return Promise.resolve(this.coreCache.value);
-    this.corePending ??= readHyperliquidMarkets(this.opts.fetcher, this.opts.network).then((value) => {
-      this.coreCache = { value, at: this.now() };
-      return value;
-    }).finally(() => {
-      this.corePending = undefined;
-    });
-    return this.corePending;
-  }
-  extras() {
-    const ttl = this.opts.cacheMs ?? 5000;
-    if (this.extrasCache && ttl > 0 && this.now() - this.extrasCache.at < ttl)
-      return Promise.resolve(this.extrasCache.value);
-    this.extrasPending ??= (async () => {
-      const warnings = [];
-      const [predicted, cap] = await Promise.all([
-        info(this.opts.fetcher, this.opts.network, { type: "predictedFundings" }).then((value2) => {
-          if (!Array.isArray(value2))
-            return unavailable();
-          const map = new Map;
-          for (const entry of value2) {
-            if (!Array.isArray(entry) || typeof entry[0] !== "string" || !Array.isArray(entry[1]))
-              return unavailable();
-            for (const venue of entry[1]) {
-              if (!Array.isArray(venue) || typeof venue[0] !== "string")
-                return unavailable();
-              if (venue[0] === "HlPerp" && venue[1] !== null) {
-                if (!object2(venue[1]) || !decimal2(venue[1].fundingRate) || !integer(venue[1].nextFundingTime))
-                  return unavailable();
-                map.set(entry[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
-              }
-            }
-          }
-          return map;
-        }).catch(() => {
-          warnings.push("Predicted funding unavailable.");
-          return null;
-        }),
-        info(this.opts.fetcher, this.opts.network, { type: "perpsAtOpenInterestCap" }).then((value2) => {
-          if (!Array.isArray(value2) || !value2.every((v) => typeof v === "string"))
-            return unavailable();
-          return new Set(value2);
-        }).catch(() => {
-          warnings.push("Open-interest caps unavailable.");
-          return null;
-        })
-      ]);
-      const value = { predicted, cap, warnings: warnings.sort() };
-      this.extrasCache = { value, at: this.now() };
-      return value;
-    })().finally(() => {
-      this.extrasPending = undefined;
-    });
-    return this.extrasPending;
-  }
-  envelope(config, warnings = [], readAt = this.now()) {
-    const mismatch = config.network !== undefined && config.network !== this.opts.network;
-    return {
-      success: true,
-      network: this.opts.network,
-      readAt,
-      gate: { minOpenInterestUsd: config.minOpenInterestUsd, source: config.source },
-      warnings: [
-        ...config.warnings,
-        ...warnings,
-        ...mismatch ? ["Candle and client networks differ; tradeability is unknown."] : []
-      ]
-    };
-  }
-  row(core, extras, config, asset) {
-    const meta = at(core.universe, asset);
-    const ctx = at(core.ctxs, asset);
-    const mark = ctx.markPx == null ? null : scaled(ctx.markPx);
-    const oi = ctx.openInterest == null ? null : scaled(ctx.openInterest);
-    const prev = ctx.prevDayPx == null ? null : scaled(ctx.prevDayPx);
-    const predicted = extras.predicted?.get(meta.name);
-    return {
-      coin: meta.name,
-      asset,
-      markPx: ctx.markPx ?? null,
-      oraclePx: ctx.oraclePx ?? null,
-      midPx: ctx.midPx ?? null,
-      fundingRate: ctx.funding ?? null,
-      fundingAprPct: ctx.funding == null ? null : fixed(scaled(ctx.funding) * 876000n, 2),
-      predictedFundingRate: predicted?.fundingRate ?? null,
-      nextFundingTime: predicted?.nextFundingTime ?? null,
-      openInterest: ctx.openInterest ?? null,
-      openInterestUsd: oi === null || mark === null ? null : fixed(oi * mark / ONE, 2),
-      dayNotionalVolumeUsd: ctx.dayNtlVlm ?? null,
-      prevDayPx: ctx.prevDayPx ?? null,
-      change24hPct: prev === null || prev === 0n || mark === null ? null : fixed((mark - prev) * 100n * ONE / prev, 1),
-      maxLeverage: meta.maxLeverage,
-      onlyIsolated: meta.onlyIsolated === true,
-      isDelisted: meta.isDelisted === true,
-      atOpenInterestCap: extras.cap?.has(meta.name) ?? null,
-      candle: config.network !== undefined && config.network !== this.opts.network ? { tradeable: null, reason: "networkMismatch" } : perpsMarketGate(meta, ctx, config.minOpenInterestUsd)
-    };
-  }
-  async markets(opts = {}) {
-    this.key();
-    const sort = opts.sort ?? "volume";
-    if (!["volume", "oi", "funding", "change", "name"].includes(sort))
-      return usage("sort must be volume, oi, funding, change or name.");
-    const limit = opts.limit === undefined ? undefined : bounded(opts.limit, 500, 1, 500, "limit");
-    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
-    const rows = core.universe.map((_, asset) => this.row(core, extras, config, asset)).filter((row) => opts.all || row.candle.tradeable !== false);
-    const field = {
-      volume: "dayNotionalVolumeUsd",
-      oi: "openInterestUsd",
-      funding: "fundingRate",
-      change: "change24hPct"
-    };
-    rows.sort((a, b) => {
-      if (sort !== "name") {
-        const av = a[field[sort]];
-        const bv = b[field[sort]];
-        if (av === null && bv !== null)
-          return 1;
-        if (bv === null && av !== null)
-          return -1;
-        if (av !== null && bv !== null) {
-          const diff = scaled(bv) - scaled(av);
-          if (diff !== 0n)
-            return diff > 0n ? 1 : -1;
-        }
-      }
-      return a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0;
-    });
-    return {
-      ...this.envelope(config, extras.warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
-      markets: limit === undefined ? rows : rows.slice(0, limit)
-    };
-  }
-  async market(coin) {
-    this.key();
-    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
-    const asset = resolve(core, coin);
-    const meta = at(core.universe, asset);
-    const ctx = at(core.ctxs, asset);
-    return {
-      ...this.envelope(config, extras.warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
-      market: {
-        ...this.row(core, extras, config, asset),
-        szDecimals: meta.szDecimals,
-        maxPriceDecimals: 6 - meta.szDecimals,
-        priceRule: "at most 5 significant figures",
-        minOrderUsd: 10,
-        impactBidPx: ctx.impactPxs?.[0] ?? null,
-        impactAskPx: ctx.impactPxs?.[1] ?? null,
-        premium: ctx.premium ?? null,
-        marginTiers: core.marginTables.get(meta.marginTableId ?? -1) ?? [
-          { lowerBoundUsd: "0", maxLeverage: meta.maxLeverage }
-        ]
-      }
-    };
-  }
-  async book(coin, opts = {}) {
-    this.key();
-    const depth = bounded(opts.depth, 20, 1, 20, "depth");
-    if (opts.sigFigs !== undefined)
-      bounded(opts.sigFigs, 5, 2, 5, "sigFigs");
-    const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical2 = at(core.universe, resolve(core, coin)).name;
-    const value = await info(this.opts.fetcher, this.opts.network, {
-      type: "l2Book",
-      coin: canonical2,
-      ...opts.sigFigs === undefined ? {} : { nSigFigs: opts.sigFigs }
-    });
-    if (!object2(value) || value.coin !== canonical2 || !integer(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
-      return unavailable();
-    const sides = [];
-    for (const side of value.levels) {
-      if (!Array.isArray(side))
-        return unavailable();
-      const levels = [];
-      for (const level of side) {
-        if (!object2(level) || nonnegative(level.px) === null || nonnegative(level.sz) === null || !integer(level.n))
-          return unavailable();
-        levels.push({ px: level.px, sz: level.sz, n: level.n });
-      }
-      sides.push(levels);
-    }
-    const bids = at(sides, 0).sort((a, b) => scaled(a.px) > scaled(b.px) ? -1 : scaled(a.px) < scaled(b.px) ? 1 : 0).slice(0, depth);
-    const asks = at(sides, 1).sort((a, b) => scaled(a.px) < scaled(b.px) ? -1 : scaled(a.px) > scaled(b.px) ? 1 : 0).slice(0, depth);
-    const bid = bids[0];
-    const ask = asks[0];
-    const spread = bid && ask ? scaled(ask.px) - scaled(bid.px) : null;
-    const mid = bid && ask ? (scaled(ask.px) + scaled(bid.px)) / 2n : null;
-    return {
-      ...this.envelope(config),
-      coin: canonical2,
-      time: value.time,
-      bids,
-      asks,
-      spreadPx: spread === null ? null : fixed(spread, 18).replace(/\.?0+$/, ""),
-      midPx: mid === null ? null : fixed(mid, 18).replace(/\.?0+$/, ""),
-      spreadBps: spread === null || mid === null || mid === 0n ? null : fixed(spread * 10000n * ONE / mid, 2)
-    };
-  }
-  async candles(coin, opts = {}) {
-    this.key();
-    const window = perpsCandleWindow(opts, this.now());
-    const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical2 = at(core.universe, resolve(core, coin)).name;
-    const value = await info(this.opts.fetcher, this.opts.network, {
-      type: "candleSnapshot",
-      req: { coin: canonical2, interval: window.interval, startTime: window.startTime, endTime: window.endTime }
-    });
-    if (!Array.isArray(value))
-      return unavailable();
-    const candles = [];
-    for (const c of value) {
-      if (!object2(c) || !integer(c.t) || !integer(c.T) || !integer(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative(v) !== null) || c.s !== canonical2 || c.i !== window.interval)
-        return unavailable();
-      if (c.t <= window.endTime && c.T >= window.startTime)
-        candles.push({
-          t: c.t,
-          T: c.T,
-          o: c.o,
-          h: c.h,
-          l: c.l,
-          c: c.c,
-          v: c.v,
-          n: c.n
-        });
-    }
-    candles.sort((a, b) => a.t - b.t);
-    return {
-      ...this.envelope(config),
-      coin: canonical2,
-      interval: window.interval,
-      candles: candles.slice(-window.count)
-    };
-  }
-  async fundingHistory(coin, opts = {}) {
-    this.key();
-    const window = perpsFundingWindow(opts, this.now());
-    const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical2 = at(core.universe, resolve(core, coin)).name;
-    const value = await info(this.opts.fetcher, this.opts.network, {
-      type: "fundingHistory",
-      coin: canonical2,
-      startTime: window.startTime,
-      endTime: window.endTime
-    });
-    return {
-      ...this.envelope(config),
-      coin: canonical2,
-      startTime: window.startTime,
-      endTime: window.endTime,
-      ...parsePerpsFundingHistory(value, canonical2, window)
-    };
-  }
-  async predictedFunding() {
-    this.key();
-    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
-    if (extras.predicted === null)
-      return unavailable();
-    const predicted = [];
-    for (const meta of core.universe) {
-      const row = extras.predicted.get(meta.name);
-      if (row)
-        predicted.push({
-          coin: meta.name,
-          fundingRate: row.fundingRate,
-          fundingAprPct: fixed(scaled(row.fundingRate) * 876000n, 2),
-          nextFundingTime: row.nextFundingTime
-        });
-    }
-    predicted.sort((a, b) => a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0);
-    return { ...this.envelope(config, extras.warnings, this.extrasCache?.at ?? this.now()), predicted };
-  }
 }
 
 // src/perps-history.ts
@@ -5353,8 +5658,8 @@ async function mainPerpCoins(req) {
 function resolveWindow(req) {
   const options = req.options ?? {};
   const kind = req.kind;
-  const address = req.address.toLowerCase();
-  if (!EVM_ADDRESS_RE2.test(address))
+  const address2 = req.address.toLowerCase();
+  if (!EVM_ADDRESS_RE2.test(address2))
     throw invalid2("wallet", "The wallet's Hyperliquid account is not an EVM address");
   for (const field of ["startTime", "endTime"]) {
     const value = options[field];
@@ -5372,7 +5677,7 @@ function resolveWindow(req) {
       throw invalid2("cursor", `This cursor pages ${state.k}, not ${kind}`);
     if (state.n !== req.network)
       throw invalid2("cursor", `This cursor pages ${state.n}, not ${req.network}`);
-    if (state.w !== address)
+    if (state.w !== address2)
       throw invalid2("cursor", "This cursor pages another wallet");
     if (options.startTime !== undefined && options.startTime !== state.s || options.endTime !== undefined && options.endTime !== state.e || options.limit !== undefined && options.limit !== state.l)
       throw invalid2("cursor", "The window or page size changed; start again without a cursor");
@@ -5389,7 +5694,7 @@ function resolveWindow(req) {
       v: 1,
       k: kind,
       n: req.network,
-      w: address,
+      w: address2,
       s: startTime,
       e: endTime,
       l: options.limit ?? PERPS_HISTORY_DEFAULT_LIMIT,
@@ -5628,11 +5933,11 @@ function hyperliquidMark(markets, coin) {
   const parsed = dec(mark);
   return parsed !== null && parsed > 0n ? mark : null;
 }
-async function readHyperliquidClearinghouse(fetcher, network, address, opts = {}) {
-  return parseClearinghouse(await hyperliquidInfo(fetcher, network, { type: "clearinghouseState", user: address.toLowerCase() }, opts));
+async function readHyperliquidClearinghouse(fetcher, network, address2, opts = {}) {
+  return parseClearinghouse(await hyperliquidInfo(fetcher, network, { type: "clearinghouseState", user: address2.toLowerCase() }, opts));
 }
-async function readHyperliquidAccountMode(fetcher, network, address, opts = {}) {
-  const body = await hyperliquidInfo(fetcher, network, { type: "userAbstraction", user: address.toLowerCase() }, opts);
+async function readHyperliquidAccountMode(fetcher, network, address2, opts = {}) {
+  const body = await hyperliquidInfo(fetcher, network, { type: "userAbstraction", user: address2.toLowerCase() }, opts);
   if (typeof body !== "string" || body === "")
     throw new HyperliquidReadError("Unexpected userAbstraction shape");
   return body;
@@ -5886,8 +6191,8 @@ var PERPS_RECENT_MAX_MS = 30 * 24 * 60 * 60 * 1000;
 function isMainPerpCoin(coin) {
   return typeof coin === "string" && coin !== "" && !coin.includes(":") && !coin.includes("/") && !coin.startsWith("@");
 }
-async function readPerpsRecent(fetcher, network, address, window, opts = {}) {
-  const user = address.toLowerCase();
+async function readPerpsRecent(fetcher, network, address2, window, opts = {}) {
+  const user = address2.toLowerCase();
   const [fills, funding] = await Promise.all([
     hyperliquidInfo(fetcher, network, { type: "userFillsByTime", user, startTime: window.startTime, endTime: window.endTime }, opts),
     hyperliquidInfo(fetcher, network, { type: "userFunding", user, startTime: window.startTime, endTime: window.endTime }, opts)
@@ -6300,7 +6605,7 @@ var perpsShapes = {
     targetTp: z7.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Which take-profit, when several match"),
     targetSl: z7.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Which stop-loss, when several match"),
     wallet: wallet2,
-    submit
+    submit: submit.describe("false: build and check only the first step (cancel for a replacement), returning steps[].preview.terms and fee warnings without signing or submitting")
   },
   candle_perps_schedule_cancel: {
     seconds: z7.number().int().min(5).optional().describe("Set the timer this many seconds from now (at least 5)"),
@@ -6918,9 +7223,12 @@ var perpsMarketShapes = {
   candle_perps_markets: {
     sort: z8.enum(["volume", "oi", "funding", "change", "name"]).optional(),
     limit: z8.number().int().min(1).max(500).optional(),
-    all: z8.boolean().optional()
+    all: z8.boolean().optional(),
+    dex: z8.string().regex(/^([A-Za-z0-9]{1,12}|all)$/).optional().describe("Builder-deployed (HIP-3) dex to list, such as xyz, or all; absent lists the main exchange")
   },
-  candle_perps_market: { coin: z8.string() },
+  candle_perps_market: {
+    coin: z8.string().describe("Market name: BTC on the main exchange, or dex:COIN on a builder dex, such as xyz:TSLA")
+  },
   candle_perps_book: {
     coin: z8.string(),
     depth: z8.number().int().min(1).max(20).optional(),
@@ -7542,7 +7850,7 @@ function isTokenPageTool(name) {
   return Object.hasOwn(tokenPageShapes, name);
 }
 function buildTokenPageRequest(name, args, cfg) {
-  const { chain, address, id, section: sectionName, cursor, limit, idempotencyKey, ...body } = args;
+  const { chain, address: address2, id, section: sectionName, cursor, limit, idempotencyKey, ...body } = args;
   const publicRead = name === "candle_token_page_updates" || name === "candle_token_page_comments" || name === "candle_token_page_about" || name === "candle_token_page_burns" || name === "candle_token_page_history";
   if (!publicRead && !cfg.apiKey)
     throw new Error("CANDLE_AGENT_API_KEY with token-pages scopes is required for this tool.");
@@ -7576,7 +7884,7 @@ function buildTokenPageRequest(name, args, cfg) {
   if (limit !== undefined)
     query2.set("limit", String(limit));
   return {
-    url: `${cfg.apiUrl.replace(/\/$/, "")}/api/v1/token-pages/${encodeURIComponent(String(chain))}/${encodeURIComponent(String(address))}${suffix[name]}${query2.size ? `?${query2}` : ""}`,
+    url: `${cfg.apiUrl.replace(/\/$/, "")}/api/v1/token-pages/${encodeURIComponent(String(chain))}/${encodeURIComponent(String(address2))}${suffix[name]}${query2.size ? `?${query2}` : ""}`,
     init: {
       method: name === "candle_token_page_post_delete" ? "DELETE" : read ? "GET" : name === "candle_token_page_section_set" ? "PUT" : "POST",
       headers: headers2,
@@ -9233,7 +9541,7 @@ function registerToolSubset(server, options) {
   for (const name of PERPS_MARKET_TOOL_NAMES) {
     register(name, {
       title: name.replace("candle_perps_", "Hyperliquid "),
-      description: "Read live market data directly from Hyperliquid's public API on this machine. Needs a Candle agent key of any scope, no signer. candle.tradeable is Candle's build gate at read time, not a promise; OI caps may still refuse an order. The hosted connector offers the same four reads at its Read level, read by Candle's server instead of this machine.",
+      description: "Read live market data directly from Hyperliquid's public API on this machine. Needs a Candle agent key of any scope, no signer. candle.tradeable is Candle's build gate at read time, not a promise; OI caps may still refuse an order. Builder-deployed (HIP-3) markets are named dex:COIN (xyz:TSLA); each market's terms give its dex, oracle source, deployer, margin mode and fee (feeWarning when above 2x the main exchange's), to show before an order. The hosted connector offers the same four reads at its Read level, read by Candle's server instead of this machine.",
       inputSchema: perpsMarketShapes[name],
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
     }, async (args) => {
@@ -9245,7 +9553,7 @@ function registerToolSubset(server, options) {
     const result2 = await executePerps(tool, args, getConfig(), env, doFetch);
     return { content: [{ type: "text", text: result2.text }], ...result2.isError ? { isError: true } : {} };
   };
-  const perpsWrite = " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the action within this key's limits " + "(USD window, maximum leverage, maximum position, slippage and price bands, main-exchange markets only); this " + "server recomputes its hash and checks the action type and Candle's builder before signing, then submits it to " + "Hyperliquid itself. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE for TEE signing. wallet=embedded uses the recorded server signature and requires no PEM; the embedded switch ships off. Embedded open/close generate client ids; repeat only the same id after an uncertain result. A refusal names the limit " + "that refused it (error.limit).";
+  const perpsWrite = " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the action within this key's limits " + "(USD window, maximum leverage, maximum position, slippage and price bands, including builder-dex perps); this " + "server recomputes its hash and checks the action type and Candle's builder before signing, then submits it to " + "Hyperliquid itself. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE for TEE signing. wallet=embedded uses the recorded server signature and requires no PEM; the embedded switch ships off. Embedded open/close generate client ids; repeat only the same id after an uncertain result. A refusal names the limit " + "that refused it (error.limit).";
   register("candle_perps_setup", {
     title: "Set up Hyperliquid perps",
     description: "Approve Candle's Hyperliquid builder fee (0.1%) once for the key's EVM TEE or embedded wallet, and report the " + "account's mode and balance. Idempotent: nothing is signed when the approval is already on Hyperliquid. " + "Refused (PERPS_ACCOUNT_MODE) unless Hyperliquid itself shows the account in standard mode." + perpsWrite,
@@ -9325,7 +9633,7 @@ function registerToolSubset(server, options) {
   }, perpsTool("candle_perps_margin"));
   register("candle_perps_tpsl", {
     title: "Perps take-profit / stop-loss",
-    description: "Attach, move or remove the position's take-profit and stop-loss, each a reduce-only market trigger sized to " + "the position now (it does not grow with later additions). Moving a leg cancels the old one first, so that side " + "is briefly unprotected. A leg not named is left alone. Legs Candle did not build are listed in unowned and never " + "touched; several matching legs need targetTp / targetSl. complete is false on any partial result." + perpsWrite,
+    description: "Attach, move or remove the position's take-profit and stop-loss, each a reduce-only market trigger sized to " + "the position now (it does not grow with later additions). Moving a leg cancels the old one first, so that side " + "is briefly unprotected. A leg not named is left alone. Legs Candle did not build are listed in unowned and never " + "touched; several matching legs need targetTp / targetSl. complete is false on any partial result. " + "Each built step retains preview.terms (dex, oracle, deployer, margin, collateral and venue fee); fee warnings " + "also appear in warnings. Use submit:false to inspect the first build before submission (the cancel when replacing)." + perpsWrite,
     inputSchema: perpsShapes.candle_perps_tpsl
   }, perpsTool("candle_perps_tpsl"));
   register("candle_perps_schedule_cancel", {

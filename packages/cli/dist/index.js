@@ -9096,6 +9096,779 @@ var init_sha3 = __esm(() => {
   keccak_256 = /* @__PURE__ */ (() => gen(1, 136, 256 / 8))();
 });
 
+// ../mcp/src/hyperliquid-markets.ts
+function unavailable() {
+  throw new PerpsMarketError("PERPS_UNAVAILABLE", "Hyperliquid market data is unavailable; retry shortly.");
+}
+function usage(message) {
+  throw new PerpsMarketError("PERPS_USAGE", message);
+}
+function object2(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function decimal(value) {
+  return typeof value === "string" && value.length <= 100 && DECIMAL.test(value) && (value.split(".")[1]?.length ?? 0) <= 18;
+}
+function scaled(value) {
+  const negative = value.startsWith("-");
+  const [whole = "0", fraction = ""] = (negative ? value.slice(1) : value).split(".");
+  const result2 = BigInt(whole) * ONE + BigInt(fraction.padEnd(18, "0"));
+  return negative ? -result2 : result2;
+}
+function nonnegative(value) {
+  return decimal(value) && !value.startsWith("-") ? scaled(value) : null;
+}
+function fixed(value, places) {
+  const negative = value < 0n;
+  const abs = negative ? -value : value;
+  const divisor = 10n ** BigInt(18 - places);
+  const rounded = (abs + divisor / 2n) / divisor;
+  const digits = rounded.toString().padStart(places + 1, "0");
+  return `${negative && rounded !== 0n ? "-" : ""}${places ? `${digits.slice(0, -places)}.${digits.slice(-places)}` : digits}`;
+}
+function parsePerpsCoin(coin) {
+  if (typeof coin !== "string")
+    return null;
+  if (MAIN_COIN.test(coin))
+    return { dex: "", coin };
+  const m = DEX_COIN.exec(coin);
+  if (!m || !m[1] || !m[2])
+    return null;
+  return { dex: m[1].toLowerCase(), coin: `${m[1].toLowerCase()}:${m[2]}` };
+}
+function parsePerpsDex(dex) {
+  if (dex === undefined || dex === null || dex === "")
+    return "";
+  if (typeof dex !== "string" || !/^[A-Za-z0-9]{1,12}$/.test(dex))
+    return null;
+  return dex.toLowerCase();
+}
+function perpsAssetId(dexIndex, indexInMeta) {
+  return dexIndex === 0 ? indexInMeta : 1e5 + dexIndex * 1e4 + indexInMeta;
+}
+function perpsMarginMode(meta) {
+  return meta.onlyIsolated === true || meta.marginMode === "noCross" || meta.marginMode === "strictIsolated" ? "isolated" : "cross";
+}
+function perpsCollateralName(token) {
+  return COLLATERAL_NAMES[token] ?? `spot token ${token}`;
+}
+function perpsFeeMultiplier(meta, dex) {
+  if (dex === "")
+    return "1";
+  const share = nonnegative(meta.deployerFeeScale ?? "0") ?? 0n;
+  let multiple = share <= ONE ? ONE + share : 2n * share;
+  if (meta.growthMode === "enabled")
+    multiple = multiple / 10n;
+  return trim(multiple);
+}
+function trim(value) {
+  return fixed(value, 18).replace(/\.?0+$/, "") || "0";
+}
+function perpsDexTerms(meta, dex, collateralToken) {
+  const name = dex?.name ?? "";
+  const multiplier = perpsFeeMultiplier(meta, name);
+  const scaledMultiplier = scaled(multiplier);
+  const pct = (base2) => trim(scaled(base2) * scaledMultiplier / ONE);
+  return {
+    dex: name,
+    dexName: dex?.fullName ?? null,
+    deployer: dex?.deployer ?? null,
+    oracleSource: dex ? "deployer" : "validators",
+    oracleSetters: dex?.oracleSetters ?? [],
+    marginMode: perpsMarginMode(meta),
+    collateral: perpsCollateralName(collateralToken),
+    feeMultiplier: multiplier,
+    takerFeePct: pct(PERPS_MAIN_TAKER_FEE_PCT),
+    makerFeePct: pct(PERPS_MAIN_MAKER_FEE_PCT),
+    feeWarning: scaledMultiplier > BigInt(PERPS_FEE_WARNING_MULTIPLIER) * ONE ? `${meta.name} charges ${multiplier}x the main exchange's fee (its deployer sets it), above Candle's ${PERPS_FEE_WARNING_MULTIPLIER}x warning line` : null
+  };
+}
+function address(value) {
+  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
+}
+function parsePerpDexs(value) {
+  if (!Array.isArray(value))
+    return unavailable();
+  const dexes = [];
+  for (const [index, entry] of value.entries()) {
+    if (index === 0 || entry === null)
+      continue;
+    if (!object2(entry) || typeof entry.name !== "string" || !/^[a-z0-9]{1,12}$/.test(entry.name) || !address(entry.deployer) || entry.oracleUpdater !== null && entry.oracleUpdater !== undefined && !address(entry.oracleUpdater))
+      return unavailable();
+    const setters = new Set;
+    if (address(entry.oracleUpdater))
+      setters.add(entry.oracleUpdater.toLowerCase());
+    if (Array.isArray(entry.subDeployers)) {
+      for (const pair of entry.subDeployers)
+        if (Array.isArray(pair) && pair[0] === "setOracle" && Array.isArray(pair[1])) {
+          for (const a of pair[1])
+            if (address(a))
+              setters.add(a.toLowerCase());
+        }
+    }
+    if (setters.size === 0)
+      setters.add(entry.deployer.toLowerCase());
+    dexes.push({
+      index,
+      name: entry.name,
+      fullName: typeof entry.fullName === "string" ? entry.fullName : entry.name,
+      deployer: entry.deployer.toLowerCase(),
+      oracleUpdater: address(entry.oracleUpdater) ? entry.oracleUpdater.toLowerCase() : null,
+      oracleSetters: [...setters].sort()
+    });
+  }
+  return dexes;
+}
+async function readHyperliquidPerpDexs(fetcher, network) {
+  return parsePerpDexs(await info(fetcher, network, { type: "perpDexs" }));
+}
+function at(values, index) {
+  const value = values[index];
+  if (value === undefined)
+    return unavailable();
+  return value;
+}
+function integer(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+function parseMarkets(value) {
+  if (!Array.isArray(value) || value.length !== 2)
+    return unavailable();
+  const [meta, ctxs] = value;
+  if (!object2(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
+    return unavailable();
+  for (const row of meta.universe) {
+    if (!object2(row) || typeof row.name !== "string" || !integer(row.szDecimals) || row.szDecimals > 6 || !integer(row.maxLeverage))
+      return unavailable();
+    for (const key of ["isDelisted", "onlyIsolated"])
+      if (row[key] !== undefined && typeof row[key] !== "boolean")
+        return unavailable();
+    if (row.marginTableId !== undefined && !integer(row.marginTableId))
+      return unavailable();
+    for (const key of ["marginMode", "growthMode"])
+      if (row[key] !== undefined && row[key] !== null && typeof row[key] !== "string")
+        return unavailable();
+    if (row.deployerFeeScale !== undefined && nonnegative(row.deployerFeeScale) === null)
+      return unavailable();
+  }
+  if (meta.collateralToken !== undefined && !integer(meta.collateralToken))
+    return unavailable();
+  for (const ctx of ctxs) {
+    if (!object2(ctx))
+      return unavailable();
+    for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
+      if (ctx[key] !== undefined && ctx[key] !== null && !decimal(ctx[key]))
+        return unavailable();
+    }
+    if (ctx.impactPxs != null && (!Array.isArray(ctx.impactPxs) || ctx.impactPxs.length !== 2 || !ctx.impactPxs.every(decimal)))
+      return unavailable();
+  }
+  const marginTables = new Map;
+  if (meta.marginTables !== undefined) {
+    if (!Array.isArray(meta.marginTables))
+      return unavailable();
+    for (const entry of meta.marginTables) {
+      if (!Array.isArray(entry) || !integer(entry[0]) || !object2(entry[1]) || !Array.isArray(entry[1].marginTiers))
+        return unavailable();
+      const tiers = [];
+      for (const tier of entry[1].marginTiers) {
+        if (!object2(tier) || nonnegative(tier.lowerBound) === null || !integer(tier.maxLeverage))
+          return unavailable();
+        tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
+      }
+      marginTables.set(entry[0], tiers);
+    }
+  }
+  return {
+    universe: meta.universe,
+    ctxs,
+    marginTables,
+    ...meta.collateralToken === undefined ? {} : { collateralToken: meta.collateralToken }
+  };
+}
+async function info(fetcher, network, body) {
+  try {
+    const response = await fetcher(INFO_URLS[network], {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000),
+      redirect: "error"
+    });
+    if (!response.ok)
+      return unavailable();
+    return JSON.parse(await response.text());
+  } catch {
+    return unavailable();
+  }
+}
+async function readHyperliquidMarkets(fetcher, network, dex = "") {
+  return parseMarkets(await info(fetcher, network, dex ? { type: "metaAndAssetCtxs", dex } : { type: "metaAndAssetCtxs" }));
+}
+function perpsMarketGate(meta, ctx, minOpenInterestUsd, dex = {
+  name: "",
+  collateralToken: 0,
+  opensRefused: []
+}) {
+  if (dex.name !== "" && dex.collateralToken !== 0)
+    return { tradeable: false, reason: "collateral" };
+  if (dex.name !== "" && dex.opensRefused.includes(dex.name))
+    return { tradeable: false, reason: "dexOpensRefused" };
+  if (meta.isDelisted === true)
+    return { tradeable: false, reason: "delisted" };
+  const mark = nonnegative(ctx.markPx);
+  const mid = nonnegative(typeof ctx.midPx === "string" ? ctx.midPx : ctx.markPx);
+  const oi = nonnegative(ctx.openInterest);
+  if (mark === null || mid === null || oi === null)
+    return { tradeable: false, reason: "noPrice" };
+  const divisor = 10n ** 30n;
+  const micros = (oi * mark + divisor - 1n) / divisor;
+  if (micros > BigInt(Number.MAX_SAFE_INTEGER))
+    return unavailable();
+  if (minOpenInterestUsd > 0 && micros < BigInt(minOpenInterestUsd) * 1000000n)
+    return { tradeable: false, reason: "minOpenInterest" };
+  return { tradeable: true, reason: null };
+}
+function resolve2(snapshot, coin) {
+  const exact = snapshot.universe.findIndex((row) => row.name === coin);
+  if (exact !== -1)
+    return exact;
+  const matches = snapshot.universe.map((row, i) => ({ row, i })).filter(({ row }) => row.name.toLowerCase() === coin.toLowerCase());
+  if (matches.length === 1)
+    return at(matches, 0).i;
+  return notFound(coin);
+}
+function notFound(coin) {
+  throw new PerpsMarketError("PERPS_MARKET_NOT_FOUND", coin.includes(":") ? `${coin} is not a market on that Hyperliquid builder dex.` : `${coin} is not a market on Hyperliquid's main perp exchange.`);
+}
+function perpsCandleWindow(opts, now) {
+  const interval = opts.interval ?? "1h";
+  const index = PERPS_CANDLE_INTERVALS.indexOf(interval);
+  if (index < 0)
+    return usage(`interval must be one of ${PERPS_CANDLE_INTERVALS.join(" ")}.`);
+  const count = bounded(opts.count, 100, 1, 5000, "count");
+  const raw2 = opts.end;
+  const endTime = raw2 === undefined ? now : epoch(raw2);
+  const startTime = endTime - count * at(INTERVAL_MS, index);
+  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
+    return usage("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
+  return { interval, count, startTime, endTime };
+}
+function epoch(raw2) {
+  return typeof raw2 === "number" || /^\d+$/.test(raw2) ? Number(raw2) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw2) ? Date.parse(raw2) : NaN;
+}
+function perpsFundingWindow(opts, now) {
+  const endTime = opts.end === undefined ? now : epoch(opts.end);
+  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now)
+    return usage("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
+  const startTime = opts.start === undefined ? endTime - 86400000 : epoch(opts.start);
+  if (!Number.isSafeInteger(startTime) || startTime < 0 || startTime > endTime)
+    return usage("start must be an ISO 8601 time or epoch milliseconds, no later than end.");
+  if (endTime - startTime > PERPS_FUNDING_HISTORY_MAX_MS)
+    return usage("start must be at most 30 days before end.");
+  return { startTime, endTime };
+}
+function bounded(value, fallback, min, max, name) {
+  const n = value ?? fallback;
+  if (!Number.isInteger(n) || n < min || n > max)
+    return usage(`${name} must be an integer from ${min} to ${max}.`);
+  return n;
+}
+function parsePerpsFundingHistory(value, coin, window) {
+  if (!Array.isArray(value))
+    return unavailable();
+  const funding = [];
+  for (const row of value) {
+    if (!object2(row) || row.coin !== coin || !integer(row.time) || !decimal(row.fundingRate) || !decimal(row.premium))
+      return unavailable();
+    if (row.time >= window.startTime && row.time <= window.endTime)
+      funding.push({
+        time: row.time,
+        fundingRate: row.fundingRate,
+        fundingAprPct: fixed(scaled(row.fundingRate) * 876000n, 2),
+        premium: row.premium
+      });
+  }
+  funding.sort((a, b) => a.time - b.time);
+  return {
+    funding: funding.slice(0, PERPS_FUNDING_HISTORY_MAX_ROWS),
+    truncated: funding.length > PERPS_FUNDING_HISTORY_MAX_ROWS
+  };
+}
+
+class PerpsMarketReader {
+  opts;
+  configPromise;
+  coreCache;
+  extrasCache;
+  corePending;
+  extrasPending;
+  dexCache = new Map;
+  dexPending = new Map;
+  dexesCache;
+  dexesPending;
+  now;
+  constructor(opts) {
+    this.opts = opts;
+    this.now = opts.now ?? Date.now;
+  }
+  key() {
+    if (!this.opts.apiKey?.trim())
+      throw new PerpsMarketError("PERPS_KEY_REQUIRED", "Configure a Candle agent key (any scope) to read perps markets.");
+  }
+  config() {
+    this.key();
+    this.configPromise ??= (async () => {
+      try {
+        const value = await this.opts.readConfig();
+        if (!object2(value) || !object2(value.limits) || !integer(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
+          throw new Error("config shape");
+        const refused = value.limits.dexOpensRefused;
+        return {
+          minOpenInterestUsd: value.limits.minOpenInterestUsd,
+          source: "server",
+          network: value.network,
+          dexOpensRefused: Array.isArray(refused) ? refused.filter((d) => typeof d === "string") : [],
+          warnings: []
+        };
+      } catch {
+        return {
+          minOpenInterestUsd: 1e6,
+          source: "default",
+          dexOpensRefused: [],
+          warnings: ["Candle config unavailable; using the release's default OI floor."]
+        };
+      }
+    })();
+    return this.configPromise;
+  }
+  core() {
+    const ttl = this.opts.cacheMs ?? 5000;
+    if (this.coreCache && ttl > 0 && this.now() - this.coreCache.at < ttl)
+      return Promise.resolve(this.coreCache.value);
+    this.corePending ??= readHyperliquidMarkets(this.opts.fetcher, this.opts.network).then((value) => {
+      this.coreCache = { value, at: this.now() };
+      return value;
+    }).finally(() => {
+      this.corePending = undefined;
+    });
+    return this.corePending;
+  }
+  dexCore(dex) {
+    const ttl = this.opts.cacheMs ?? 5000;
+    const hit = this.dexCache.get(dex);
+    if (hit && ttl > 0 && this.now() - hit.at < ttl)
+      return Promise.resolve(hit.value);
+    let pending = this.dexPending.get(dex);
+    if (!pending) {
+      pending = readHyperliquidMarkets(this.opts.fetcher, this.opts.network, dex).then((value) => {
+        this.dexCache.set(dex, { value, at: this.now() });
+        return value;
+      }).finally(() => {
+        this.dexPending.delete(dex);
+      });
+      this.dexPending.set(dex, pending);
+    }
+    return pending;
+  }
+  dexes() {
+    const ttl = this.opts.cacheMs ?? 5000;
+    if (this.dexesCache && ttl > 0 && this.now() - this.dexesCache.at < ttl)
+      return Promise.resolve(this.dexesCache.value);
+    this.dexesPending ??= readHyperliquidPerpDexs(this.opts.fetcher, this.opts.network).then((value) => {
+      this.dexesCache = { value, at: this.now() };
+      return value;
+    }).finally(() => {
+      this.dexesPending = undefined;
+    });
+    return this.dexesPending;
+  }
+  async dex(name) {
+    const found = (await this.dexes()).find((d) => d.name === name);
+    if (!found)
+      throw new PerpsMarketError("PERPS_MARKET_NOT_FOUND", `${name} is not a Hyperliquid builder dex.`);
+    return found;
+  }
+  async locate(coin) {
+    const parsed = parsePerpsCoin(coin);
+    if (!parsed)
+      return notFound(coin);
+    if (parsed.dex === "") {
+      const snapshot2 = await this.core();
+      return { snapshot: snapshot2, index: resolve2(snapshot2, parsed.coin), dex: null };
+    }
+    const dex = await this.dex(parsed.dex);
+    const snapshot = await this.dexCore(dex.name);
+    return { snapshot, index: resolve2(snapshot, parsed.coin), dex };
+  }
+  extras() {
+    const ttl = this.opts.cacheMs ?? 5000;
+    if (this.extrasCache && ttl > 0 && this.now() - this.extrasCache.at < ttl)
+      return Promise.resolve(this.extrasCache.value);
+    this.extrasPending ??= (async () => {
+      const warnings = [];
+      const [predicted, cap] = await Promise.all([
+        info(this.opts.fetcher, this.opts.network, { type: "predictedFundings" }).then((value2) => {
+          if (!Array.isArray(value2))
+            return unavailable();
+          const map = new Map;
+          for (const entry of value2) {
+            if (!Array.isArray(entry) || typeof entry[0] !== "string" || !Array.isArray(entry[1]))
+              return unavailable();
+            for (const venue of entry[1]) {
+              if (!Array.isArray(venue) || typeof venue[0] !== "string")
+                return unavailable();
+              if (venue[0] === "HlPerp" && venue[1] !== null) {
+                if (!object2(venue[1]) || !decimal(venue[1].fundingRate) || !integer(venue[1].nextFundingTime))
+                  return unavailable();
+                map.set(entry[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
+              }
+            }
+          }
+          return map;
+        }).catch(() => {
+          warnings.push("Predicted funding unavailable.");
+          return null;
+        }),
+        info(this.opts.fetcher, this.opts.network, { type: "perpsAtOpenInterestCap" }).then((value2) => {
+          if (!Array.isArray(value2) || !value2.every((v) => typeof v === "string"))
+            return unavailable();
+          return new Set(value2);
+        }).catch(() => {
+          warnings.push("Open-interest caps unavailable.");
+          return null;
+        })
+      ]);
+      const value = { predicted, cap, warnings: warnings.sort() };
+      this.extrasCache = { value, at: this.now() };
+      return value;
+    })().finally(() => {
+      this.extrasPending = undefined;
+    });
+    return this.extrasPending;
+  }
+  envelope(config, warnings = [], readAt = this.now()) {
+    const mismatch = config.network !== undefined && config.network !== this.opts.network;
+    return {
+      success: true,
+      network: this.opts.network,
+      readAt,
+      gate: {
+        minOpenInterestUsd: config.minOpenInterestUsd,
+        source: config.source,
+        ...config.dexOpensRefused.length > 0 ? { dexOpensRefused: config.dexOpensRefused } : {}
+      },
+      warnings: [
+        ...config.warnings,
+        ...warnings,
+        ...mismatch ? ["Candle and client networks differ; tradeability is unknown."] : []
+      ]
+    };
+  }
+  row(core, extras, config, asset, dex = null) {
+    const meta = at(core.universe, asset);
+    const ctx = at(core.ctxs, asset);
+    const collateralToken = core.collateralToken ?? 0;
+    const mark = ctx.markPx == null ? null : scaled(ctx.markPx);
+    const oi = ctx.openInterest == null ? null : scaled(ctx.openInterest);
+    const prev = ctx.prevDayPx == null ? null : scaled(ctx.prevDayPx);
+    const predicted = extras.predicted?.get(meta.name);
+    return {
+      coin: meta.name,
+      asset: perpsAssetId(dex?.index ?? 0, asset),
+      markPx: ctx.markPx ?? null,
+      oraclePx: ctx.oraclePx ?? null,
+      midPx: ctx.midPx ?? null,
+      fundingRate: ctx.funding ?? null,
+      fundingAprPct: ctx.funding == null ? null : fixed(scaled(ctx.funding) * 876000n, 2),
+      predictedFundingRate: predicted?.fundingRate ?? null,
+      nextFundingTime: predicted?.nextFundingTime ?? null,
+      openInterest: ctx.openInterest ?? null,
+      openInterestUsd: oi === null || mark === null ? null : fixed(oi * mark / ONE, 2),
+      dayNotionalVolumeUsd: ctx.dayNtlVlm ?? null,
+      prevDayPx: ctx.prevDayPx ?? null,
+      change24hPct: prev === null || prev === 0n || mark === null ? null : fixed((mark - prev) * 100n * ONE / prev, 1),
+      maxLeverage: meta.maxLeverage,
+      onlyIsolated: perpsMarginMode(meta) === "isolated",
+      isDelisted: meta.isDelisted === true,
+      atOpenInterestCap: dex ? null : extras.cap?.has(meta.name) ?? null,
+      candle: config.network !== undefined && config.network !== this.opts.network ? { tradeable: null, reason: "networkMismatch" } : perpsMarketGate(meta, ctx, config.minOpenInterestUsd, {
+        name: dex?.name ?? "",
+        collateralToken,
+        opensRefused: config.dexOpensRefused
+      }),
+      dex: dex?.name ?? "",
+      terms: perpsDexTerms(meta, dex, collateralToken)
+    };
+  }
+  async markets(opts = {}) {
+    this.key();
+    const sort = opts.sort ?? "volume";
+    if (!["volume", "oi", "funding", "change", "name"].includes(sort))
+      return usage("sort must be volume, oi, funding, change or name.");
+    const limit = opts.limit === undefined ? undefined : bounded(opts.limit, 500, 1, 500, "limit");
+    const dexFilter = opts.dex === "all" ? "all" : parsePerpsDex(opts.dex);
+    if (dexFilter === null)
+      return usage("dex must be a builder dex name such as xyz, or all.");
+    const main = dexFilter === "" || dexFilter === "all";
+    const [config, core, extras] = await Promise.all([this.config(), main ? this.core() : null, this.extras()]);
+    const listed = [];
+    let dexes = null;
+    const skipped = [];
+    if (core)
+      listed.push({ snapshot: core, dex: null });
+    if (dexFilter !== "") {
+      dexes = await this.dexes();
+      const wanted = dexFilter === "all" ? dexes : [await this.dex(dexFilter)];
+      const settled = await Promise.allSettled(wanted.map((d) => this.dexCore(d.name)));
+      for (const [i, d] of wanted.entries()) {
+        const result2 = at(settled, i);
+        if (result2.status === "fulfilled")
+          listed.push({ snapshot: result2.value, dex: d });
+        else if (dexFilter === "all")
+          skipped.push(d.name);
+        else
+          throw result2.reason;
+      }
+    }
+    const rows = listed.flatMap(({ snapshot, dex }) => snapshot.universe.map((_, asset) => this.row(snapshot, extras, config, asset, dex))).filter((row) => opts.all || row.candle.tradeable !== false);
+    const field = {
+      volume: "dayNotionalVolumeUsd",
+      oi: "openInterestUsd",
+      funding: "fundingRate",
+      change: "change24hPct"
+    };
+    rows.sort((a, b) => {
+      if (sort !== "name") {
+        const av = a[field[sort]];
+        const bv = b[field[sort]];
+        if (av === null && bv !== null)
+          return 1;
+        if (bv === null && av !== null)
+          return -1;
+        if (av !== null && bv !== null) {
+          const diff = scaled(bv) - scaled(av);
+          if (diff !== 0n)
+            return diff > 0n ? 1 : -1;
+        }
+      }
+      return a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0;
+    });
+    const dexRows = dexes === null ? undefined : await Promise.all((dexFilter === "all" ? dexes : dexes.filter((d) => d.name === dexFilter)).map(async (d) => {
+      if (skipped.includes(d.name))
+        return { ...d, collateral: null, tradeable: null };
+      const token = (await this.dexCore(d.name)).collateralToken ?? 0;
+      return {
+        ...d,
+        collateral: perpsCollateralName(token),
+        tradeable: token === 0 && !config.dexOpensRefused.includes(d.name)
+      };
+    }));
+    const warnings = [...extras.warnings, ...skipped.map((d) => `Builder dex ${d} markets unavailable.`)];
+    return {
+      ...this.envelope(config, warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
+      markets: limit === undefined ? rows : rows.slice(0, limit),
+      ...dexRows ? { dexes: dexRows } : {}
+    };
+  }
+  async market(coin) {
+    this.key();
+    const [config, located, extras] = await Promise.all([this.config(), this.locate(coin), this.extras()]);
+    const core = located.snapshot;
+    const asset = located.index;
+    const meta = at(core.universe, asset);
+    const ctx = at(core.ctxs, asset);
+    const readAt = located.dex ? this.dexCache.get(located.dex.name)?.at ?? 0 : this.coreCache?.at ?? 0;
+    return {
+      ...this.envelope(config, extras.warnings, Math.max(readAt, this.extrasCache?.at ?? 0)),
+      market: {
+        ...this.row(core, extras, config, asset, located.dex),
+        szDecimals: meta.szDecimals,
+        maxPriceDecimals: 6 - meta.szDecimals,
+        priceRule: "at most 5 significant figures",
+        minOrderUsd: 10,
+        impactBidPx: ctx.impactPxs?.[0] ?? null,
+        impactAskPx: ctx.impactPxs?.[1] ?? null,
+        premium: ctx.premium ?? null,
+        marginTiers: core.marginTables.get(meta.marginTableId ?? -1) ?? [
+          { lowerBoundUsd: "0", maxLeverage: meta.maxLeverage }
+        ]
+      }
+    };
+  }
+  async book(coin, opts = {}) {
+    this.key();
+    const depth = bounded(opts.depth, 20, 1, 20, "depth");
+    if (opts.sigFigs !== undefined)
+      bounded(opts.sigFigs, 5, 2, 5, "sigFigs");
+    const [config, located] = await Promise.all([this.config(), this.locate(coin)]);
+    const canonical = at(located.snapshot.universe, located.index).name;
+    const value = await info(this.opts.fetcher, this.opts.network, {
+      type: "l2Book",
+      coin: canonical,
+      ...opts.sigFigs === undefined ? {} : { nSigFigs: opts.sigFigs }
+    });
+    if (!object2(value) || value.coin !== canonical || !integer(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
+      return unavailable();
+    const sides = [];
+    for (const side of value.levels) {
+      if (!Array.isArray(side))
+        return unavailable();
+      const levels = [];
+      for (const level of side) {
+        if (!object2(level) || nonnegative(level.px) === null || nonnegative(level.sz) === null || !integer(level.n))
+          return unavailable();
+        levels.push({ px: level.px, sz: level.sz, n: level.n });
+      }
+      sides.push(levels);
+    }
+    const bids = at(sides, 0).sort((a, b) => scaled(a.px) > scaled(b.px) ? -1 : scaled(a.px) < scaled(b.px) ? 1 : 0).slice(0, depth);
+    const asks = at(sides, 1).sort((a, b) => scaled(a.px) < scaled(b.px) ? -1 : scaled(a.px) > scaled(b.px) ? 1 : 0).slice(0, depth);
+    const bid = bids[0];
+    const ask = asks[0];
+    const spread = bid && ask ? scaled(ask.px) - scaled(bid.px) : null;
+    const mid = bid && ask ? (scaled(ask.px) + scaled(bid.px)) / 2n : null;
+    return {
+      ...this.envelope(config),
+      coin: canonical,
+      time: value.time,
+      bids,
+      asks,
+      spreadPx: spread === null ? null : fixed(spread, 18).replace(/\.?0+$/, ""),
+      midPx: mid === null ? null : fixed(mid, 18).replace(/\.?0+$/, ""),
+      spreadBps: spread === null || mid === null || mid === 0n ? null : fixed(spread * 10000n * ONE / mid, 2)
+    };
+  }
+  async candles(coin, opts = {}) {
+    this.key();
+    const window = perpsCandleWindow(opts, this.now());
+    const [config, located] = await Promise.all([this.config(), this.locate(coin)]);
+    const canonical = at(located.snapshot.universe, located.index).name;
+    const value = await info(this.opts.fetcher, this.opts.network, {
+      type: "candleSnapshot",
+      req: { coin: canonical, interval: window.interval, startTime: window.startTime, endTime: window.endTime }
+    });
+    if (!Array.isArray(value))
+      return unavailable();
+    const candles = [];
+    for (const c of value) {
+      if (!object2(c) || !integer(c.t) || !integer(c.T) || !integer(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative(v) !== null) || c.s !== canonical || c.i !== window.interval)
+        return unavailable();
+      if (c.t <= window.endTime && c.T >= window.startTime)
+        candles.push({
+          t: c.t,
+          T: c.T,
+          o: c.o,
+          h: c.h,
+          l: c.l,
+          c: c.c,
+          v: c.v,
+          n: c.n
+        });
+    }
+    candles.sort((a, b) => a.t - b.t);
+    return {
+      ...this.envelope(config),
+      coin: canonical,
+      interval: window.interval,
+      candles: candles.slice(-window.count)
+    };
+  }
+  async fundingHistory(coin, opts = {}) {
+    this.key();
+    const window = perpsFundingWindow(opts, this.now());
+    const [config, located] = await Promise.all([this.config(), this.locate(coin)]);
+    const canonical = at(located.snapshot.universe, located.index).name;
+    const value = await info(this.opts.fetcher, this.opts.network, {
+      type: "fundingHistory",
+      coin: canonical,
+      startTime: window.startTime,
+      endTime: window.endTime
+    });
+    return {
+      ...this.envelope(config),
+      coin: canonical,
+      startTime: window.startTime,
+      endTime: window.endTime,
+      ...parsePerpsFundingHistory(value, canonical, window)
+    };
+  }
+  async predictedFunding() {
+    this.key();
+    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
+    if (extras.predicted === null)
+      return unavailable();
+    const predicted = [];
+    for (const meta of core.universe) {
+      const row = extras.predicted.get(meta.name);
+      if (row)
+        predicted.push({
+          coin: meta.name,
+          fundingRate: row.fundingRate,
+          fundingAprPct: fixed(scaled(row.fundingRate) * 876000n, 2),
+          nextFundingTime: row.nextFundingTime
+        });
+    }
+    predicted.sort((a, b) => a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0);
+    return { ...this.envelope(config, extras.warnings, this.extrasCache?.at ?? this.now()), predicted };
+  }
+}
+var INFO_URLS, ONE, DECIMAL, PerpsMarketError, DEX_COIN, MAIN_COIN, COLLATERAL_NAMES, PERPS_MAIN_TAKER_FEE_PCT = "0.045", PERPS_MAIN_MAKER_FEE_PCT = "0.015", PERPS_FEE_WARNING_MULTIPLIER = 2, PERPS_CANDLE_INTERVALS, INTERVAL_MS, PERPS_FUNDING_HISTORY_MAX_MS, PERPS_FUNDING_HISTORY_MAX_ROWS = 500;
+var init_hyperliquid_markets = __esm(() => {
+  INFO_URLS = {
+    mainnet: "https://api.hyperliquid.xyz/info",
+    testnet: "https://api.hyperliquid-testnet.xyz/info"
+  };
+  ONE = 10n ** 18n;
+  DECIMAL = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?$/;
+  PerpsMarketError = class PerpsMarketError extends Error {
+    code;
+    retryable;
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+      this.name = "PerpsMarketError";
+      this.retryable = code === "PERPS_UNAVAILABLE";
+    }
+  };
+  DEX_COIN = /^([A-Za-z0-9]{1,12}):([A-Za-z0-9]{1,20})$/;
+  MAIN_COIN = /^[A-Za-z0-9]{1,20}$/;
+  COLLATERAL_NAMES = { 0: "USDC", 235: "USDE", 268: "USDT0", 360: "USDH" };
+  PERPS_CANDLE_INTERVALS = [
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "8h",
+    "12h",
+    "1d",
+    "3d",
+    "1w",
+    "1M"
+  ];
+  INTERVAL_MS = [
+    60000,
+    180000,
+    300000,
+    900000,
+    1800000,
+    3600000,
+    7200000,
+    14400000,
+    28800000,
+    43200000,
+    86400000,
+    259200000,
+    604800000,
+    2678400000
+  ];
+  PERPS_FUNDING_HISTORY_MAX_MS = 30 * 86400000;
+});
+
 // ../mcp/src/hyperliquid.ts
 function resolveHyperliquidBuilder(override, releasePin = CANDLE_HYPERLIQUID_BUILDER_ADDRESS) {
   const builder = override === undefined ? releasePin : override;
@@ -9267,11 +10040,11 @@ function canonical(value) {
 function sameValue(a, b) {
   return canonical(a) === canonical(b);
 }
-async function hyperliquidAccountMode(fetcher, network, address) {
+async function hyperliquidAccountMode(fetcher, network, address2) {
   const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ type: "userAbstraction", user: address.toLowerCase() })
+    body: JSON.stringify({ type: "userAbstraction", user: address2.toLowerCase() })
   });
   if (!res.ok)
     throw new Error("Cannot read the account mode from Hyperliquid");
@@ -9316,7 +10089,7 @@ function checkBuilderField(action, builder) {
   }
   return null;
 }
-function decimal(value) {
+function decimal2(value) {
   if (typeof value !== "string" || !/^-?(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/.test(value))
     return null;
   const negative = value.startsWith("-");
@@ -9371,13 +10144,39 @@ function actionShapeProblem(action) {
     return "the scheduled cancel carries an invalid time";
   return null;
 }
+function hyperliquidPerpAsset(a) {
+  return typeof a === "number" && Number.isSafeInteger(a) && a >= 0 && (a < 1e4 || a >= 110000 && a < 1e8);
+}
+function hyperliquidCoinDex(coin) {
+  return parsePerpsCoin(coin)?.dex ?? null;
+}
+async function venueUniverse(read, dex, withCtxs) {
+  let base2 = 0;
+  if (dex !== "") {
+    const found = parsePerpDexs(await read({ type: "perpDexs" })).find((d) => d.name === dex);
+    if (!found)
+      throw new Error(`Hyperliquid has no builder dex ${dex}`);
+    base2 = perpsAssetId(found.index, 0);
+  }
+  const body = withCtxs ? { type: "metaAndAssetCtxs" } : { type: "meta" };
+  const answer = await read(dex === "" ? body : { ...body, dex });
+  const meta = withCtxs && Array.isArray(answer) ? answer[0] : answer;
+  if (!meta || !Array.isArray(meta.universe))
+    throw new Error("Hyperliquid returned an unreadable market list");
+  const ctxs = withCtxs && Array.isArray(answer) && Array.isArray(answer[1]) ? answer[1] : null;
+  return { dex, base: base2, universe: meta.universe, ctxs };
+}
+function venueIndex(venue, coin) {
+  const upper = coin.toUpperCase();
+  return venue.universe.findIndex((m) => typeof m?.name === "string" && m.name.toUpperCase() === upper);
+}
 function withinBps(px, reference, isBuy, bps) {
   const bound = BigInt(bps);
   return isBuy ? px * 10000n <= reference * (10000n + bound) : px * 10000n >= reference * (10000n - bound);
 }
 function checkActionIntent(action, opts) {
   const intent = opts.intent;
-  const mainAsset = (a) => typeof a === "number" && Number.isInteger(a) && a >= 0 && a < 1e4;
+  const perpAsset = hyperliquidPerpAsset;
   const orderList = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : [];
   if (!Array.isArray(orderList))
     return "invalid orders";
@@ -9385,18 +10184,18 @@ function checkActionIntent(action, opts) {
     if (!raw2 || typeof raw2 !== "object")
       return "invalid order";
     const o = raw2;
-    if (!mainAsset(o.a))
-      return "order asset is outside the main perp universe";
-    if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal(o.s) ?? 0n) <= 0n || (decimal(o.p) ?? 0n) <= 0n)
+    if (!perpAsset(o.a))
+      return "order asset is not a Hyperliquid perp market (spot and outcome markets are refused)";
+    if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal2(o.s) ?? 0n) <= 0n || (decimal2(o.p) ?? 0n) <= 0n)
       return "invalid order side, size, price or reduce-only flag";
     if (opts.keyReduceOnly === true && o.r !== true)
       return "this key is reduce-only and the build is not reducing";
   }
   if (action.type === "cancel") {
-    if (!Array.isArray(action.cancels) || action.cancels.length !== 1 || !mainAsset(action.cancels[0]?.a))
+    if (!Array.isArray(action.cancels) || action.cancels.length !== 1 || !perpAsset(action.cancels[0]?.a))
       return "invalid cancel asset";
   }
-  if ((action.type === "updateLeverage" || action.type === "updateIsolatedMargin") && !mainAsset(action.asset))
+  if ((action.type === "updateLeverage" || action.type === "updateIsolatedMargin") && !perpAsset(action.asset))
     return "invalid action asset";
   if (!intent)
     return null;
@@ -9438,7 +10237,7 @@ function checkActionIntent(action, opts) {
     }
   }
   if (method === "margin") {
-    const amount = decimal(p.amount);
+    const amount = decimal2(p.amount);
     if (amount === null || amount % 10n ** 12n !== 0n || !Number.isSafeInteger(action.ntli) || BigInt(action.ntli) !== amount / 10n ** 12n || action.isBuy !== true)
       return "isolated margin amount does not match the request";
     if (opts.marginTarget && action.asset !== opts.marginTarget.asset)
@@ -9472,18 +10271,18 @@ function checkActionIntent(action, opts) {
     if (list.length !== 1 || !leg || action.grouping !== "positionTpsl")
       return "a take-profit / stop-loss attach is one positionTpsl order";
     const trigger = leg.t?.trigger;
-    if (!trigger || leg.r !== true || trigger.isMarket !== true || trigger.tpsl !== p.leg || decimal(trigger.triggerPx) !== decimal(p.triggerPx))
+    if (!trigger || leg.r !== true || trigger.isMarket !== true || trigger.tpsl !== p.leg || decimal2(trigger.triggerPx) !== decimal2(p.triggerPx))
       return "trigger leg, reduce-only flag or price does not match the request";
     if (typeof leg.c !== "string" || !HYPERLIQUID_CLOID_RE.test(leg.c))
       return "the trigger leg carries no client order id";
-    const triggerPx = decimal(trigger.triggerPx) ?? 0n;
-    if (triggerPx <= 0n || !withinBps(decimal(leg.p) ?? 0n, triggerPx, leg.b === true, HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS))
+    const triggerPx = decimal2(trigger.triggerPx) ?? 0n;
+    if (triggerPx <= 0n || !withinBps(decimal2(leg.p) ?? 0n, triggerPx, leg.b === true, HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS))
       return "trigger order price is outside its slippage of the trigger price";
     const target = opts.tpslTarget;
     if (target) {
-      if (leg.a !== target.asset || leg.b !== target.isBuy || decimal(leg.s) !== decimal(target.size))
+      if (leg.a !== target.asset || leg.b !== target.isBuy || decimal2(leg.s) !== decimal2(target.size))
         return "trigger side, asset or size does not match the position Hyperliquid shows";
-      const mark = decimal(target.markPx) ?? 0n;
+      const mark = decimal2(target.markPx) ?? 0n;
       const above = triggerPx > mark;
       const ok = p.leg === "tp" === !target.isBuy ? above : triggerPx < mark;
       if (mark <= 0n || !ok)
@@ -9508,7 +10307,7 @@ function checkActionIntent(action, opts) {
       return "requested order is not a limit/IOC order";
     if (method === "open") {
       const buy = p.side === "long" || p.side === "buy";
-      if (first.b !== buy || first.r !== false || decimal(first.s) !== decimal(p.size))
+      if (first.b !== buy || first.r !== false || decimal2(first.s) !== decimal2(p.size))
         return "order side, size or reduce-only flag does not match the request";
       const tif = (p.type ?? (p.price === undefined ? "market" : "limit")) === "market" ? "Ioc" : p.tif ?? "Gtc";
       if (typ.limit.tif !== tif)
@@ -9525,10 +10324,10 @@ function checkActionIntent(action, opts) {
         if (!leg)
           return "missing trigger order";
         const trigger = leg.t?.trigger;
-        if (leg.a !== first.a || leg.b !== !buy || leg.r !== true || decimal(leg.s) !== decimal(p.size) || trigger?.tpsl !== kind || trigger.isMarket !== true || decimal(trigger.triggerPx) !== decimal(p[field]))
+        if (leg.a !== first.a || leg.b !== !buy || leg.r !== true || decimal2(leg.s) !== decimal2(p.size) || trigger?.tpsl !== kind || trigger.isMarket !== true || decimal2(trigger.triggerPx) !== decimal2(p[field]))
           return "trigger side, size, reduce-only flag or price does not match the request";
-        const px = decimal(leg.p) ?? 0n;
-        const triggerPx = decimal(trigger.triggerPx) ?? 0n;
+        const px = decimal2(leg.p) ?? 0n;
+        const triggerPx = decimal2(trigger.triggerPx) ?? 0n;
         if (triggerPx <= 0n || !withinBps(px, triggerPx, leg.b === true, HYPERLIQUID_TPSL_SLIPPAGE_BPS + HYPERLIQUID_MID_DRIFT_BPS))
           return "trigger order price is outside its slippage of the trigger price";
       }
@@ -9537,12 +10336,12 @@ function checkActionIntent(action, opts) {
         return "unexpected extra orders";
       if (method === "close" && p.pct != null && p.size != null)
         return "a close takes a size or a percentage, not both";
-      if (method === "close" && (first.r !== true || typ.limit.tif !== "Ioc" || action.grouping !== "na" || p.size != null && (decimal(first.s) ?? 0n) > (decimal(p.size) ?? 0n)))
+      if (method === "close" && (first.r !== true || typ.limit.tif !== "Ioc" || action.grouping !== "na" || p.size != null && (decimal2(first.s) ?? 0n) > (decimal2(p.size) ?? 0n)))
         return "close size or reduce-only flag does not match the request";
-      if (method === "modify" && p.size != null && decimal(first.s) !== decimal(p.size))
+      if (method === "modify" && p.size != null && decimal2(first.s) !== decimal2(p.size))
         return "replacement size does not match the request";
     }
-    if (p.price != null && decimal(first.p) !== decimal(p.price))
+    if (p.price != null && decimal2(first.p) !== decimal2(p.price))
       return "order price does not match the request";
   }
   return null;
@@ -9555,19 +10354,19 @@ function hyperliquidClosePct(value) {
   return millionths > 0n && millionths <= 1000000n ? millionths : null;
 }
 function hyperliquidPctSize(held, pct, szDecimals) {
-  const scaled = decimal(held);
-  if (scaled === null || scaled < 0n)
+  const scaled2 = decimal2(held);
+  if (scaled2 === null || scaled2 < 0n)
     throw new Error("Invalid held size");
   if (pct === 1000000n)
     return held;
-  return hyperliquidFloorSize(formatScaled(scaled * pct / 1000000n), szDecimals);
+  return hyperliquidFloorSize(formatScaled(scaled2 * pct / 1000000n), szDecimals);
 }
 function hyperliquidFloorSize(value, szDecimals) {
-  const scaled = decimal(value);
-  if (scaled === null || scaled < 0n)
+  const scaled2 = decimal2(value);
+  if (scaled2 === null || scaled2 < 0n)
     throw new Error("Invalid size");
   const unit = 10n ** BigInt(18 - Math.max(0, Math.min(18, szDecimals)));
-  return formatScaled(scaled / unit * unit);
+  return formatScaled(scaled2 / unit * unit);
 }
 function formatScaled(value) {
   const negative = value < 0n;
@@ -9576,7 +10375,7 @@ function formatScaled(value) {
   const frac = (abs % 10n ** 18n).toString().padStart(18, "0").replace(/0+$/, "");
   return `${negative ? "-" : ""}${whole}${frac ? `.${frac}` : ""}`;
 }
-async function hyperliquidCloseOrder(fetcher, network, address, params) {
+async function hyperliquidCloseOrder(fetcher, network, address2, params) {
   const read = async (body) => {
     const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
       method: "POST",
@@ -9587,37 +10386,44 @@ async function hyperliquidCloseOrder(fetcher, network, address, params) {
       throw new Error("Cannot read the close position from Hyperliquid");
     return JSON.parse(await res.text());
   };
-  const [meta, state] = await Promise.all([read({ type: "meta" }), read({ type: "clearinghouseState", user: address })]);
+  const dex = hyperliquidCoinDex(params.coin);
+  if (dex === null)
+    throw new Error("coin must be a market name such as BTC, or xyz:TSLA on a builder dex");
+  const [venue, state] = await Promise.all([
+    venueUniverse(read, dex, false),
+    read(dex === "" ? { type: "clearinghouseState", user: address2 } : { type: "clearinghouseState", user: address2, dex })
+  ]);
   const coin = String(params.coin).toUpperCase();
-  const universe = meta.universe;
-  const asset = universe.findIndex((m) => m.name.toUpperCase() === coin);
+  const universe = venue.universe;
+  const index = venueIndex(venue, coin);
   const szi = state.assetPositions.find((p) => p.position.coin.toUpperCase() === coin)?.position.szi;
-  const signed = decimal(szi);
-  if (asset < 0 || asset >= 1e4 || signed === null || signed === 0n)
-    throw new Error("No main-universe position to close");
+  const signed = decimal2(szi);
+  if (index < 0 || index >= 1e4 || signed === null || signed === 0n)
+    throw new Error(dex === "" ? "No main-universe position to close" : `No position to close on builder dex ${dex}`);
+  const asset = venue.base + index;
   const held = signed < 0n ? -signed : signed;
   const heldSz = String(szi).replace(/^-/, "");
   if (params.pct != null) {
     if (params.size != null)
       throw new Error("A close takes a size or a percentage, not both");
     const pct = hyperliquidClosePct(params.pct);
-    const szDecimals = universe[asset]?.szDecimals;
+    const szDecimals = universe[index]?.szDecimals;
     if (pct === null)
       throw new Error("pct must be above 0 and at most 100, with at most 4 decimals");
     if (!Number.isInteger(szDecimals))
       throw new Error("Hyperliquid did not report this market's size precision");
     const size2 = hyperliquidPctSize(heldSz, pct, szDecimals);
-    if ((decimal(size2) ?? 0n) <= 0n)
+    if ((decimal2(size2) ?? 0n) <= 0n)
       throw new Error("This percentage of the position rounds to zero at the market's size step");
     return { asset, isBuy: signed < 0n, size: size2 };
   }
-  const asked = params.size == null ? held : decimal(params.size);
+  const asked = params.size == null ? held : decimal2(params.size);
   if (asked === null || asked <= 0n)
     throw new Error("Invalid close size");
   const size = asked < held ? String(params.size) : heldSz;
   return { asset, isBuy: signed < 0n, size };
 }
-async function hyperliquidOrderMarket(fetcher, network, address, method, params) {
+async function hyperliquidOrderMarket(fetcher, network, address2, method, params) {
   const read = async (body) => {
     const res = await fetcher(HYPERLIQUID_INFO_URLS[network], {
       method: "POST",
@@ -9631,9 +10437,9 @@ async function hyperliquidOrderMarket(fetcher, network, address, method, params)
   let coin = String(params.coin ?? "").toUpperCase();
   let order;
   if (method === "modify") {
-    const status = await read({ type: "orderStatus", user: address, oid: params.cloid });
+    const status = await read({ type: "orderStatus", user: address2, oid: params.cloid });
     const resting = status?.order?.order ?? null;
-    if (!resting || typeof resting.coin !== "string" || decimal(resting.limitPx) === null)
+    if (!resting || typeof resting.coin !== "string" || decimal2(resting.limitPx) === null)
       throw new Error("No resting order with this cloid on Hyperliquid");
     if (resting.isTrigger === true)
       throw new Error("A take-profit or stop-loss leg cannot be modified; cancel it instead");
@@ -9642,21 +10448,24 @@ async function hyperliquidOrderMarket(fetcher, network, address, method, params)
     order = {
       isBuy: resting.side === "B",
       limitPx: String(resting.limitPx),
-      ...decimal(resting.sz) !== null ? { size: String(resting.sz) } : {},
+      ...decimal2(resting.sz) !== null ? { size: String(resting.sz) } : {},
       reduceOnly: resting.reduceOnly === true,
       tif,
       ...Number.isSafeInteger(resting.oid) ? { oid: resting.oid } : {}
     };
   }
-  const [meta, contexts] = await read({ type: "metaAndAssetCtxs" });
-  const asset = meta.universe.findIndex((m) => m.name.toUpperCase() === coin);
-  if (asset < 0 || asset >= 1e4)
-    throw new Error("No main-universe market for this coin on Hyperliquid");
-  const context = contexts[asset];
+  const dex = hyperliquidCoinDex(coin);
+  if (dex === null)
+    throw new Error("No perp market for this coin on Hyperliquid (spot and outcome markets are refused)");
+  const venue = await venueUniverse(read, dex, true);
+  const index = venueIndex(venue, coin);
+  if (index < 0 || index >= 1e4)
+    throw new Error(dex === "" ? "No main-universe market for this coin on Hyperliquid" : `No ${coin} market on builder dex ${dex}`);
+  const context = venue.ctxs?.[index];
   const midPx = context?.midPx ?? context?.markPx;
-  if ((decimal(midPx) ?? 0n) <= 0n)
+  if ((decimal2(midPx) ?? 0n) <= 0n)
     throw new Error("No Hyperliquid price for this coin");
-  return { asset, midPx: String(midPx), ...order ? { order } : {} };
+  return { asset: venue.base + index, midPx: String(midPx), ...order ? { order } : {} };
 }
 function checkOrderMarket(action, intent, market) {
   const list = action.type === "modify" ? [action.order] : action.orders;
@@ -9670,8 +10479,8 @@ function checkOrderMarket(action, intent, market) {
     const requested = p.slippageBps;
     const slippage = typeof requested === "number" && Number.isInteger(requested) && requested > 0 ? requested : HYPERLIQUID_DEFAULT_SLIPPAGE_BPS;
     const bound = BigInt(slippage + HYPERLIQUID_MID_DRIFT_BPS);
-    const px = decimal(first.p) ?? 0n;
-    const mid = decimal(market.midPx) ?? 0n;
+    const px = decimal2(first.p) ?? 0n;
+    const mid = decimal2(market.midPx) ?? 0n;
     const within = first.b === true ? px * 10000n <= mid * (10000n + bound) : px * 10000n >= mid * (10000n - bound);
     if (mid <= 0n || !within)
       return "market order price is outside its slippage of Hyperliquid's mid";
@@ -9681,7 +10490,7 @@ function checkOrderMarket(action, intent, market) {
       return "no resting order on Hyperliquid to check the modify against";
     if (first.b !== market.order.isBuy)
       return "modify changes the resting order's side";
-    if (p.price == null && decimal(first.p) !== decimal(market.order.limitPx))
+    if (p.price == null && decimal2(first.p) !== decimal2(market.order.limitPx))
       return "modify changes the resting order's price";
     const requested = typeof p.cloid === "string" ? p.cloid.toLowerCase() : null;
     const byOid = market.order.oid !== undefined && action.oid === market.order.oid;
@@ -9692,7 +10501,7 @@ function checkOrderMarket(action, intent, market) {
       return "modify changes the resting order's reduce-only flag";
     if (first.t?.limit?.tif !== market.order.tif)
       return "modify changes the resting order's time in force";
-    if (p.size == null && (market.order.size === undefined || decimal(first.s) !== decimal(market.order.size)))
+    if (p.size == null && (market.order.size === undefined || decimal2(first.s) !== decimal2(market.order.size)))
       return "modify changes the resting order's size";
   }
   return null;
@@ -9721,7 +10530,7 @@ function verifyPerpsBuild(build, opts) {
       return { ok: false, reason: intentRefusal };
     if (opts.closeOrder) {
       const order = action.orders[0];
-      if (!order || order.a !== opts.closeOrder.asset || order.b !== opts.closeOrder.isBuy || decimal(order.s) !== decimal(opts.closeOrder.size) || order.r !== true)
+      if (!order || order.a !== opts.closeOrder.asset || order.b !== opts.closeOrder.isBuy || decimal2(order.s) !== decimal2(opts.closeOrder.size) || order.r !== true)
         return { ok: false, reason: "close side, asset or size does not match the requested position" };
     }
     if (opts.market) {
@@ -9791,12 +10600,20 @@ async function infoRead(fetcher, network, body) {
     throw new Error(`Hyperliquid returned an unreadable ${String(body.type)}`);
   }
 }
-async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.now) {
-  const user = address.toLowerCase();
+async function hyperliquidWalletSnapshot(fetcher, network, address2, now = Date.now, dex = "") {
+  const user = address2.toLowerCase();
+  const withDex = (body) => dex === "" ? body : { ...body, dex };
+  let assetBase = 0;
+  if (dex !== "") {
+    const found = parsePerpDexs(await infoRead(fetcher, network, { type: "perpDexs" })).find((d) => d.name === dex);
+    if (!found)
+      throw new Error(`Hyperliquid has no builder dex ${dex}`);
+    assetBase = perpsAssetId(found.index, 0);
+  }
   const [metaAndCtxs, state, open2] = await Promise.all([
-    infoRead(fetcher, network, { type: "metaAndAssetCtxs" }),
-    infoRead(fetcher, network, { type: "clearinghouseState", user }),
-    infoRead(fetcher, network, { type: "frontendOpenOrders", user })
+    infoRead(fetcher, network, withDex({ type: "metaAndAssetCtxs" })),
+    infoRead(fetcher, network, withDex({ type: "clearinghouseState", user })),
+    infoRead(fetcher, network, withDex({ type: "frontendOpenOrders", user }))
   ]);
   const readAt = now();
   if (!Array.isArray(metaAndCtxs) || metaAndCtxs.length < 2 || !Array.isArray(metaAndCtxs[1]))
@@ -9818,9 +10635,13 @@ async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.n
   const ctxs = metaAndCtxs[1];
   const marks = universe.map((_, i) => {
     const mark = ctxs[i]?.markPx;
-    return typeof mark === "string" && (decimal(mark) ?? 0n) > 0n ? mark : null;
+    return typeof mark === "string" && (decimal2(mark) ?? 0n) > 0n ? mark : null;
   });
-  const assetOf = (coin) => universe.findIndex((m) => m.name === coin);
+  const indexOf = (coin) => universe.findIndex((m) => m.name === coin);
+  const assetOf = (coin) => {
+    const index = indexOf(coin);
+    return index < 0 || index >= 1e4 ? -1 : assetBase + index;
+  };
   const unsupported = [];
   const positionsRaw = state?.assetPositions;
   if (!Array.isArray(positionsRaw))
@@ -9831,16 +10652,16 @@ async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.n
     const coin = p?.coin;
     const lev = p?.leverage;
     const szi = p?.szi;
-    if (typeof coin !== "string" || typeof szi !== "string" || decimal(szi) === null) {
+    if (typeof coin !== "string" || typeof szi !== "string" || decimal2(szi) === null) {
       unsupported.push(`an unreadable position (${JSON.stringify(coin ?? null)})`);
       continue;
     }
     const asset = assetOf(coin);
-    if (asset < 0 || asset >= 1e4 || lev?.type !== "cross" && lev?.type !== "isolated" || !Number.isInteger(lev.value)) {
+    if (asset < 0 || lev?.type !== "cross" && lev?.type !== "isolated" || !Number.isInteger(lev.value)) {
       unsupported.push(`position ${coin}`);
       continue;
     }
-    if (decimal(szi) === 0n)
+    if (decimal2(szi) === 0n)
       continue;
     positions.push({ coin, asset, szi, leverage: { type: lev.type, value: lev.value } });
   }
@@ -9856,7 +10677,7 @@ async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.n
     }
     const asset = assetOf(coin);
     const oid = o.oid;
-    if (asset < 0 || asset >= 1e4 || !Number.isSafeInteger(oid) || o.side !== "A" && o.side !== "B" || decimal(o.sz) === null || decimal(o.limitPx) === null) {
+    if (asset < 0 || !Number.isSafeInteger(oid) || o.side !== "A" && o.side !== "B" || decimal2(o.sz) === null || decimal2(o.limitPx) === null) {
       unsupported.push(`order ${coin}${Number.isSafeInteger(oid) ? ` ${oid}` : ""}`);
       continue;
     }
@@ -9883,7 +10704,15 @@ async function hyperliquidWalletSnapshot(fetcher, network, address, now = Date.n
   }
   orders.sort((a, b) => a.asset - b.asset || a.oid - b.oid);
   positions.sort((a, b) => a.asset - b.asset);
-  return { readAt, universe, marks, positions, orders, unsupported };
+  return {
+    readAt,
+    ...dex === "" ? {} : { dex, assetBase },
+    universe,
+    marks,
+    positions,
+    orders,
+    unsupported
+  };
 }
 function snapshotPosition(snapshot, coin) {
   const upper = coin.toUpperCase();
@@ -9893,25 +10722,29 @@ function hyperliquidTpslTarget(snapshot, coin) {
   const position = snapshotPosition(snapshot, coin);
   if (!position)
     throw new Error(`No ${coin} position on Hyperliquid to protect`);
-  const mark = snapshot.marks[position.asset];
-  const szDecimals = snapshot.universe[position.asset]?.szDecimals;
+  const index = position.asset - (snapshot.assetBase ?? 0);
+  const mark = snapshot.marks[index];
+  const szDecimals = snapshot.universe[index]?.szDecimals;
   if (!mark || szDecimals === undefined)
     throw new Error(`No Hyperliquid mark for ${position.coin}`);
   const held = position.szi.replace(/^-/, "");
   const size = hyperliquidFloorSize(held, szDecimals);
   return { asset: position.asset, isBuy: position.szi.startsWith("-"), size, markPx: mark };
 }
-async function venueEvidence(fetcher, network, address, intent, now) {
+async function venueEvidence(fetcher, network, address2, intent, now) {
   const p = intent.params;
+  const coinDex = p.coin === undefined ? "" : hyperliquidCoinDex(p.coin);
+  if (coinDex === null)
+    throw new Error("coin must be a market name such as BTC, or xyz:TSLA on a builder dex");
   switch (intent.method) {
     case "open":
     case "modify":
-      return { market: await hyperliquidOrderMarket(fetcher, network, address, intent.method, p) };
+      return { market: await hyperliquidOrderMarket(fetcher, network, address2, intent.method, p) };
     case "close":
-      return { closeOrder: await hyperliquidCloseOrder(fetcher, network, address, p) };
+      return { closeOrder: await hyperliquidCloseOrder(fetcher, network, address2, p) };
     case "cancel": {
       if (p.oid !== undefined) {
-        const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now);
+        const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address2, now, coinDex);
         const order = snapshot.orders.find((o) => o.oid === p.oid && (p.coin === undefined || o.coin.toUpperCase() === String(p.coin).toUpperCase()));
         if (!order)
           throw new Error("Hyperliquid shows no such open order on this wallet");
@@ -9919,28 +10752,32 @@ async function venueEvidence(fetcher, network, address, intent, now) {
       }
       const status = await infoRead(fetcher, network, {
         type: "orderStatus",
-        user: address.toLowerCase(),
+        user: address2.toLowerCase(),
         oid: p.cloid
       });
       const resting = status?.order?.order;
       if (!resting || typeof resting.coin !== "string" || !Number.isSafeInteger(resting.oid))
         throw new Error("Hyperliquid shows no order with this cloid on this wallet");
-      const meta = await infoRead(fetcher, network, { type: "meta" });
-      const asset = (meta.universe ?? []).findIndex((m) => m.name === resting.coin);
-      if (asset < 0 || asset >= 1e4)
-        throw new Error("The order is not on Hyperliquid's main perp exchange");
-      return { cancelTarget: { asset, oid: resting.oid } };
+      const restingDex = hyperliquidCoinDex(resting.coin);
+      if (restingDex === null)
+        throw new Error("The order is not on a Hyperliquid perp exchange");
+      const venue = await venueUniverse((body) => infoRead(fetcher, network, body), restingDex, false);
+      const index = venue.universe.findIndex((m) => m.name === resting.coin);
+      if (index < 0 || index >= 1e4)
+        throw new Error("The order is not on a Hyperliquid perp exchange");
+      return { cancelTarget: { asset: venue.base + index, oid: resting.oid } };
     }
     case "leverage": {
-      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now);
+      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address2, now, coinDex);
       const coin = String(p.coin ?? "").toUpperCase();
-      const asset = snapshot.universe.findIndex((m) => m.name.toUpperCase() === coin);
-      if (asset < 0)
-        throw new Error("No main-universe market for this coin on Hyperliquid");
-      const name = snapshot.universe[asset]?.name;
+      const index = snapshot.universe.findIndex((m) => m.name.toUpperCase() === coin);
+      if (index < 0 || index >= 1e4)
+        throw new Error("No perp market for this coin on Hyperliquid");
+      const asset = (snapshot.assetBase ?? 0) + index;
+      const name = snapshot.universe[index]?.name;
       const data = await infoRead(fetcher, network, {
         type: "activeAssetData",
-        user: address.toLowerCase(),
+        user: address2.toLowerCase(),
         coin: name
       });
       const lev = data?.leverage;
@@ -9950,14 +10787,14 @@ async function venueEvidence(fetcher, network, address, intent, now) {
       return { leverageTarget: { asset, leverage: lev.value, mode: lev.type, flat } };
     }
     case "margin": {
-      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now);
+      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address2, now, coinDex);
       const position = snapshotPosition(snapshot, String(p.coin ?? ""));
       if (!position || position.leverage.type !== "isolated")
         throw new Error("Hyperliquid shows no isolated position in this coin");
       return { marginTarget: { asset: position.asset } };
     }
     case "tpsl": {
-      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address, now);
+      const snapshot = await hyperliquidWalletSnapshot(fetcher, network, address2, now, coinDex);
       return { tpslTarget: hyperliquidTpslTarget(snapshot, String(p.coin ?? "")) };
     }
     case "scheduleCancel":
@@ -10033,6 +10870,7 @@ function hyperliquidSignatureHex(value) {
 var HYPERLIQUID_ALLOWED_ACTION_TYPES, HYPERLIQUID_EXCHANGE_URLS, HYPERLIQUID_INFO_URLS, CANDLE_HYPERLIQUID_BUILDER_ADDRESS = "0xc43ff1f6ad9f93fc94558e07c2071b8458e7470b", HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS = 100, HYPERLIQUID_MAX_BUILDER_FEE_RATE = "0.1%", HYPERLIQUID_SIGNATURE_CHAIN_ID = "0xa4b1", ZERO_ADDRESS = "0x0000000000000000000000000000000000000000", UINT64_MAX, INT64_MIN, EVM_ADDRESS_RE, HYPERLIQUID_CLOID_RE, HYPERLIQUID_STANDARD_ACCOUNT_MODES, ACTION_KEYS, HYPERLIQUID_DEFAULT_SLIPPAGE_BPS = 100, HYPERLIQUID_MID_DRIFT_BPS = 100, HYPERLIQUID_TPSL_SLIPPAGE_BPS = 500, HYPERLIQUID_SCHEDULE_CANCEL_MIN_LEAD_MS = 5000, HYPERLIQUID_SCHEDULE_CANCEL_DRIFT_MS = 60000;
 var init_hyperliquid = __esm(() => {
   init_sha3();
+  init_hyperliquid_markets();
   HYPERLIQUID_ALLOWED_ACTION_TYPES = [
     "order",
     "cancel",
@@ -10072,7 +10910,7 @@ function errorCode2(err) {
 function errorText(err) {
   return err instanceof Error ? err.message : String(err);
 }
-async function runStep(io, step, path, body, intent) {
+async function runStep(io, step, warnings, path, body, intent) {
   let build;
   try {
     build = await io.build(path, { walletId: io.walletId, ...body });
@@ -10080,6 +10918,12 @@ async function runStep(io, step, path, body, intent) {
     step.status = "rejected";
     step.detail = `${errorCode2(err)}: ${errorText(err)}`;
     return false;
+  }
+  if (build.preview && typeof build.preview === "object" && !Array.isArray(build.preview)) {
+    step.preview = build.preview;
+    const warning = step.preview.terms?.feeWarning;
+    if (typeof warning === "string" && warning && !warnings.includes(warning))
+      warnings.push(warning);
   }
   if (build.replayed === true) {
     step.status = "skipped";
@@ -10107,6 +10951,13 @@ async function runStep(io, step, path, body, intent) {
   step.status = "built";
   if (io.mode === "no-submit")
     return false;
+  if (io.reviewBuild) {
+    if (!await io.reviewBuild(step, step.preview ?? {})) {
+      step.status = "skipped";
+      step.detail = "Declined at the market terms review. Nothing was signed.";
+      return false;
+    }
+  }
   let signature;
   try {
     signature = await io.sign(build.typedData);
@@ -10164,8 +11015,8 @@ function blankStep(n, kind, coin, extra = {}) {
   };
 }
 function perpsTpslParamsProblem(p) {
-  if (typeof p.coin !== "string" || !/^[A-Za-z0-9]{1,20}$/.test(p.coin))
-    return "coin must be a market name";
+  if (hyperliquidCoinDex(p.coin) === null)
+    return "coin must be a market name such as BTC, or xyz:TSLA on a builder dex";
   for (const [field, value] of [
     ["takeProfit", p.takeProfit],
     ["stopLoss", p.stopLoss]
@@ -10202,13 +11053,14 @@ async function runPerpsTpsl(io, params) {
     throw new PerpsWorkflowError("VALIDATION_FAILED", problem);
   const coinQuery = encodeURIComponent(params.coin);
   const server = await io.read(`/api/v1/agent/perps/tpsl?walletId=${encodeURIComponent(io.walletId)}&coin=${coinQuery}`);
+  const dex = hyperliquidCoinDex(params.coin) ?? "";
   let snapshot;
   try {
-    snapshot = await hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now);
+    snapshot = await hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now, dex);
   } catch (err) {
     throw new PerpsWorkflowError("PERPS_UNAVAILABLE", `Cannot read the account from Hyperliquid: ${errorText(err)}`);
   }
-  const coin = typeof server.coin === "string" ? server.coin : params.coin.toUpperCase();
+  const coin = typeof server.coin === "string" ? server.coin : dex ? `${dex}:${params.coin.slice(params.coin.indexOf(":") + 1).toUpperCase()}` : params.coin.toUpperCase();
   const venueLegs = snapshot.orders.filter((o) => o.coin === coin && o.tpsl !== null);
   const tracked = [];
   for (const raw2 of Array.isArray(server.tracked) ? server.tracked : []) {
@@ -10294,7 +11146,7 @@ async function runPerpsTpsl(io, params) {
       break;
     if (plan.cancel) {
       const step = plan.cancel;
-      const ok = await runStep(io, step, "/api/v1/agent/perps/tpsl", {
+      const ok = await runStep(io, step, warnings, "/api/v1/agent/perps/tpsl", {
         coin,
         operation: "cancel",
         leg: plan.leg,
@@ -10307,7 +11159,7 @@ async function runPerpsTpsl(io, params) {
         break;
       }
       try {
-        const after = await hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now);
+        const after = await hyperliquidWalletSnapshot(io.fetcher, io.network, io.address, io.now, dex);
         result2.readAt = after.readAt;
         if (after.orders.some((o) => o.oid === step.target?.oid)) {
           step.status = "unknown";
@@ -10327,7 +11179,7 @@ async function runPerpsTpsl(io, params) {
       }
     }
     if (plan.attach) {
-      const ok = await runStep(io, plan.attach, "/api/v1/agent/perps/tpsl", {
+      const ok = await runStep(io, plan.attach, warnings, "/api/v1/agent/perps/tpsl", {
         coin,
         operation: "attach",
         leg: plan.leg,
@@ -10398,10 +11250,10 @@ async function runPerpsFlatten(io) {
   if (io.mode !== "no-submit" && io.confirm && !await io.confirm({ steps, warnings }))
     throw new PerpsWorkflowError("CANCELLED", "Nothing was signed.");
   const workflowId = `flat-${io.cloid().slice(2, 18)}`;
-  const cancelStep = (step) => runStep(io, step, "/api/v1/agent/perps/flatten/cancel", { coin: step.coin, oid: step.target?.oid, workflowId, workflowStep: step.step }, { method: "cancel", params: { coin: step.coin, oid: step.target?.oid } });
+  const cancelStep = (step) => runStep(io, step, warnings, "/api/v1/agent/perps/flatten/cancel", { coin: step.coin, oid: step.target?.oid, workflowId, workflowStep: step.step }, { method: "cancel", params: { coin: step.coin, oid: step.target?.oid } });
   const closeStep = (step) => {
     const clientId = closeIds.get(step.coin);
-    return runStep(io, step, "/api/v1/agent/perps/close", { coin: step.coin, clientId, workflowId, workflowStep: step.step }, { method: "close", params: { coin: step.coin, clientId } });
+    return runStep(io, step, warnings, "/api/v1/agent/perps/close", { coin: step.coin, clientId, workflowId, workflowStep: step.step }, { method: "close", params: { coin: step.coin, clientId } });
   };
   if (io.mode !== "submit") {
     const first = steps[0];
@@ -10515,557 +11367,6 @@ var init_hyperliquid_manage = __esm(() => {
   };
   DECIMAL_RE2 = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/;
   CLOID_RE = /^0x[0-9a-f]{32}$/;
-});
-
-// ../mcp/src/hyperliquid-markets.ts
-function unavailable() {
-  throw new PerpsMarketError("PERPS_UNAVAILABLE", "Hyperliquid market data is unavailable; retry shortly.");
-}
-function usage(message) {
-  throw new PerpsMarketError("PERPS_USAGE", message);
-}
-function object2(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-function decimal2(value) {
-  return typeof value === "string" && value.length <= 100 && DECIMAL.test(value) && (value.split(".")[1]?.length ?? 0) <= 18;
-}
-function scaled(value) {
-  const negative = value.startsWith("-");
-  const [whole = "0", fraction = ""] = (negative ? value.slice(1) : value).split(".");
-  const result2 = BigInt(whole) * ONE + BigInt(fraction.padEnd(18, "0"));
-  return negative ? -result2 : result2;
-}
-function nonnegative(value) {
-  return decimal2(value) && !value.startsWith("-") ? scaled(value) : null;
-}
-function fixed(value, places) {
-  const negative = value < 0n;
-  const abs = negative ? -value : value;
-  const divisor = 10n ** BigInt(18 - places);
-  const rounded = (abs + divisor / 2n) / divisor;
-  const digits = rounded.toString().padStart(places + 1, "0");
-  return `${negative && rounded !== 0n ? "-" : ""}${places ? `${digits.slice(0, -places)}.${digits.slice(-places)}` : digits}`;
-}
-function at(values, index) {
-  const value = values[index];
-  if (value === undefined)
-    return unavailable();
-  return value;
-}
-function integer(value) {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-function parseMarkets(value) {
-  if (!Array.isArray(value) || value.length !== 2)
-    return unavailable();
-  const [meta, ctxs] = value;
-  if (!object2(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
-    return unavailable();
-  for (const row of meta.universe) {
-    if (!object2(row) || typeof row.name !== "string" || !integer(row.szDecimals) || row.szDecimals > 6 || !integer(row.maxLeverage))
-      return unavailable();
-    for (const key of ["isDelisted", "onlyIsolated"])
-      if (row[key] !== undefined && typeof row[key] !== "boolean")
-        return unavailable();
-    if (row.marginTableId !== undefined && !integer(row.marginTableId))
-      return unavailable();
-  }
-  for (const ctx of ctxs) {
-    if (!object2(ctx))
-      return unavailable();
-    for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
-      if (ctx[key] !== undefined && ctx[key] !== null && !decimal2(ctx[key]))
-        return unavailable();
-    }
-    if (ctx.impactPxs != null && (!Array.isArray(ctx.impactPxs) || ctx.impactPxs.length !== 2 || !ctx.impactPxs.every(decimal2)))
-      return unavailable();
-  }
-  const marginTables = new Map;
-  if (meta.marginTables !== undefined) {
-    if (!Array.isArray(meta.marginTables))
-      return unavailable();
-    for (const entry of meta.marginTables) {
-      if (!Array.isArray(entry) || !integer(entry[0]) || !object2(entry[1]) || !Array.isArray(entry[1].marginTiers))
-        return unavailable();
-      const tiers = [];
-      for (const tier of entry[1].marginTiers) {
-        if (!object2(tier) || nonnegative(tier.lowerBound) === null || !integer(tier.maxLeverage))
-          return unavailable();
-        tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
-      }
-      marginTables.set(entry[0], tiers);
-    }
-  }
-  return { universe: meta.universe, ctxs, marginTables };
-}
-async function info(fetcher, network, body) {
-  try {
-    const response = await fetcher(INFO_URLS[network], {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(5000),
-      redirect: "error"
-    });
-    if (!response.ok)
-      return unavailable();
-    return JSON.parse(await response.text());
-  } catch {
-    return unavailable();
-  }
-}
-async function readHyperliquidMarkets(fetcher, network) {
-  return parseMarkets(await info(fetcher, network, { type: "metaAndAssetCtxs" }));
-}
-function perpsMarketGate(meta, ctx, minOpenInterestUsd) {
-  if (meta.isDelisted === true)
-    return { tradeable: false, reason: "delisted" };
-  const mark = nonnegative(ctx.markPx);
-  const mid = nonnegative(typeof ctx.midPx === "string" ? ctx.midPx : ctx.markPx);
-  const oi = nonnegative(ctx.openInterest);
-  if (mark === null || mid === null || oi === null)
-    return { tradeable: false, reason: "noPrice" };
-  const divisor = 10n ** 30n;
-  const micros = (oi * mark + divisor - 1n) / divisor;
-  if (micros > BigInt(Number.MAX_SAFE_INTEGER))
-    return unavailable();
-  if (minOpenInterestUsd > 0 && micros < BigInt(minOpenInterestUsd) * 1000000n)
-    return { tradeable: false, reason: "minOpenInterest" };
-  return { tradeable: true, reason: null };
-}
-function resolve2(snapshot, coin) {
-  if (/^[A-Za-z0-9]{1,20}$/.test(coin)) {
-    const exact = snapshot.universe.findIndex((row) => row.name === coin);
-    if (exact !== -1)
-      return exact;
-    const matches = snapshot.universe.map((row, i) => ({ row, i })).filter(({ row }) => row.name.toLowerCase() === coin.toLowerCase());
-    if (matches.length === 1)
-      return at(matches, 0).i;
-  }
-  throw new PerpsMarketError("PERPS_MARKET_NOT_FOUND", `${coin} is not a market on Hyperliquid's main perp exchange.`);
-}
-function perpsCandleWindow(opts, now) {
-  const interval = opts.interval ?? "1h";
-  const index = PERPS_CANDLE_INTERVALS.indexOf(interval);
-  if (index < 0)
-    return usage(`interval must be one of ${PERPS_CANDLE_INTERVALS.join(" ")}.`);
-  const count = bounded(opts.count, 100, 1, 5000, "count");
-  const raw2 = opts.end;
-  const endTime = raw2 === undefined ? now : epoch(raw2);
-  const startTime = endTime - count * at(INTERVAL_MS, index);
-  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
-    return usage("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
-  return { interval, count, startTime, endTime };
-}
-function epoch(raw2) {
-  return typeof raw2 === "number" || /^\d+$/.test(raw2) ? Number(raw2) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw2) ? Date.parse(raw2) : NaN;
-}
-function perpsFundingWindow(opts, now) {
-  const endTime = opts.end === undefined ? now : epoch(opts.end);
-  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now)
-    return usage("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
-  const startTime = opts.start === undefined ? endTime - 86400000 : epoch(opts.start);
-  if (!Number.isSafeInteger(startTime) || startTime < 0 || startTime > endTime)
-    return usage("start must be an ISO 8601 time or epoch milliseconds, no later than end.");
-  if (endTime - startTime > PERPS_FUNDING_HISTORY_MAX_MS)
-    return usage("start must be at most 30 days before end.");
-  return { startTime, endTime };
-}
-function bounded(value, fallback, min, max, name) {
-  const n = value ?? fallback;
-  if (!Number.isInteger(n) || n < min || n > max)
-    return usage(`${name} must be an integer from ${min} to ${max}.`);
-  return n;
-}
-function parsePerpsFundingHistory(value, coin, window) {
-  if (!Array.isArray(value))
-    return unavailable();
-  const funding = [];
-  for (const row of value) {
-    if (!object2(row) || row.coin !== coin || !integer(row.time) || !decimal2(row.fundingRate) || !decimal2(row.premium))
-      return unavailable();
-    if (row.time >= window.startTime && row.time <= window.endTime)
-      funding.push({
-        time: row.time,
-        fundingRate: row.fundingRate,
-        fundingAprPct: fixed(scaled(row.fundingRate) * 876000n, 2),
-        premium: row.premium
-      });
-  }
-  funding.sort((a, b) => a.time - b.time);
-  return {
-    funding: funding.slice(0, PERPS_FUNDING_HISTORY_MAX_ROWS),
-    truncated: funding.length > PERPS_FUNDING_HISTORY_MAX_ROWS
-  };
-}
-
-class PerpsMarketReader {
-  opts;
-  configPromise;
-  coreCache;
-  extrasCache;
-  corePending;
-  extrasPending;
-  now;
-  constructor(opts) {
-    this.opts = opts;
-    this.now = opts.now ?? Date.now;
-  }
-  key() {
-    if (!this.opts.apiKey?.trim())
-      throw new PerpsMarketError("PERPS_KEY_REQUIRED", "Configure a Candle agent key (any scope) to read perps markets.");
-  }
-  config() {
-    this.key();
-    this.configPromise ??= (async () => {
-      try {
-        const value = await this.opts.readConfig();
-        if (!object2(value) || !object2(value.limits) || !integer(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
-          throw new Error("config shape");
-        return {
-          minOpenInterestUsd: value.limits.minOpenInterestUsd,
-          source: "server",
-          network: value.network,
-          warnings: []
-        };
-      } catch {
-        return {
-          minOpenInterestUsd: 1e6,
-          source: "default",
-          warnings: ["Candle config unavailable; using the release's default OI floor."]
-        };
-      }
-    })();
-    return this.configPromise;
-  }
-  core() {
-    const ttl = this.opts.cacheMs ?? 5000;
-    if (this.coreCache && ttl > 0 && this.now() - this.coreCache.at < ttl)
-      return Promise.resolve(this.coreCache.value);
-    this.corePending ??= readHyperliquidMarkets(this.opts.fetcher, this.opts.network).then((value) => {
-      this.coreCache = { value, at: this.now() };
-      return value;
-    }).finally(() => {
-      this.corePending = undefined;
-    });
-    return this.corePending;
-  }
-  extras() {
-    const ttl = this.opts.cacheMs ?? 5000;
-    if (this.extrasCache && ttl > 0 && this.now() - this.extrasCache.at < ttl)
-      return Promise.resolve(this.extrasCache.value);
-    this.extrasPending ??= (async () => {
-      const warnings = [];
-      const [predicted, cap] = await Promise.all([
-        info(this.opts.fetcher, this.opts.network, { type: "predictedFundings" }).then((value2) => {
-          if (!Array.isArray(value2))
-            return unavailable();
-          const map = new Map;
-          for (const entry of value2) {
-            if (!Array.isArray(entry) || typeof entry[0] !== "string" || !Array.isArray(entry[1]))
-              return unavailable();
-            for (const venue of entry[1]) {
-              if (!Array.isArray(venue) || typeof venue[0] !== "string")
-                return unavailable();
-              if (venue[0] === "HlPerp" && venue[1] !== null) {
-                if (!object2(venue[1]) || !decimal2(venue[1].fundingRate) || !integer(venue[1].nextFundingTime))
-                  return unavailable();
-                map.set(entry[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
-              }
-            }
-          }
-          return map;
-        }).catch(() => {
-          warnings.push("Predicted funding unavailable.");
-          return null;
-        }),
-        info(this.opts.fetcher, this.opts.network, { type: "perpsAtOpenInterestCap" }).then((value2) => {
-          if (!Array.isArray(value2) || !value2.every((v) => typeof v === "string"))
-            return unavailable();
-          return new Set(value2);
-        }).catch(() => {
-          warnings.push("Open-interest caps unavailable.");
-          return null;
-        })
-      ]);
-      const value = { predicted, cap, warnings: warnings.sort() };
-      this.extrasCache = { value, at: this.now() };
-      return value;
-    })().finally(() => {
-      this.extrasPending = undefined;
-    });
-    return this.extrasPending;
-  }
-  envelope(config, warnings = [], readAt = this.now()) {
-    const mismatch = config.network !== undefined && config.network !== this.opts.network;
-    return {
-      success: true,
-      network: this.opts.network,
-      readAt,
-      gate: { minOpenInterestUsd: config.minOpenInterestUsd, source: config.source },
-      warnings: [
-        ...config.warnings,
-        ...warnings,
-        ...mismatch ? ["Candle and client networks differ; tradeability is unknown."] : []
-      ]
-    };
-  }
-  row(core, extras, config, asset) {
-    const meta = at(core.universe, asset);
-    const ctx = at(core.ctxs, asset);
-    const mark = ctx.markPx == null ? null : scaled(ctx.markPx);
-    const oi = ctx.openInterest == null ? null : scaled(ctx.openInterest);
-    const prev = ctx.prevDayPx == null ? null : scaled(ctx.prevDayPx);
-    const predicted = extras.predicted?.get(meta.name);
-    return {
-      coin: meta.name,
-      asset,
-      markPx: ctx.markPx ?? null,
-      oraclePx: ctx.oraclePx ?? null,
-      midPx: ctx.midPx ?? null,
-      fundingRate: ctx.funding ?? null,
-      fundingAprPct: ctx.funding == null ? null : fixed(scaled(ctx.funding) * 876000n, 2),
-      predictedFundingRate: predicted?.fundingRate ?? null,
-      nextFundingTime: predicted?.nextFundingTime ?? null,
-      openInterest: ctx.openInterest ?? null,
-      openInterestUsd: oi === null || mark === null ? null : fixed(oi * mark / ONE, 2),
-      dayNotionalVolumeUsd: ctx.dayNtlVlm ?? null,
-      prevDayPx: ctx.prevDayPx ?? null,
-      change24hPct: prev === null || prev === 0n || mark === null ? null : fixed((mark - prev) * 100n * ONE / prev, 1),
-      maxLeverage: meta.maxLeverage,
-      onlyIsolated: meta.onlyIsolated === true,
-      isDelisted: meta.isDelisted === true,
-      atOpenInterestCap: extras.cap?.has(meta.name) ?? null,
-      candle: config.network !== undefined && config.network !== this.opts.network ? { tradeable: null, reason: "networkMismatch" } : perpsMarketGate(meta, ctx, config.minOpenInterestUsd)
-    };
-  }
-  async markets(opts = {}) {
-    this.key();
-    const sort = opts.sort ?? "volume";
-    if (!["volume", "oi", "funding", "change", "name"].includes(sort))
-      return usage("sort must be volume, oi, funding, change or name.");
-    const limit = opts.limit === undefined ? undefined : bounded(opts.limit, 500, 1, 500, "limit");
-    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
-    const rows = core.universe.map((_, asset) => this.row(core, extras, config, asset)).filter((row) => opts.all || row.candle.tradeable !== false);
-    const field = {
-      volume: "dayNotionalVolumeUsd",
-      oi: "openInterestUsd",
-      funding: "fundingRate",
-      change: "change24hPct"
-    };
-    rows.sort((a, b) => {
-      if (sort !== "name") {
-        const av = a[field[sort]];
-        const bv = b[field[sort]];
-        if (av === null && bv !== null)
-          return 1;
-        if (bv === null && av !== null)
-          return -1;
-        if (av !== null && bv !== null) {
-          const diff = scaled(bv) - scaled(av);
-          if (diff !== 0n)
-            return diff > 0n ? 1 : -1;
-        }
-      }
-      return a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0;
-    });
-    return {
-      ...this.envelope(config, extras.warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
-      markets: limit === undefined ? rows : rows.slice(0, limit)
-    };
-  }
-  async market(coin) {
-    this.key();
-    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
-    const asset = resolve2(core, coin);
-    const meta = at(core.universe, asset);
-    const ctx = at(core.ctxs, asset);
-    return {
-      ...this.envelope(config, extras.warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
-      market: {
-        ...this.row(core, extras, config, asset),
-        szDecimals: meta.szDecimals,
-        maxPriceDecimals: 6 - meta.szDecimals,
-        priceRule: "at most 5 significant figures",
-        minOrderUsd: 10,
-        impactBidPx: ctx.impactPxs?.[0] ?? null,
-        impactAskPx: ctx.impactPxs?.[1] ?? null,
-        premium: ctx.premium ?? null,
-        marginTiers: core.marginTables.get(meta.marginTableId ?? -1) ?? [
-          { lowerBoundUsd: "0", maxLeverage: meta.maxLeverage }
-        ]
-      }
-    };
-  }
-  async book(coin, opts = {}) {
-    this.key();
-    const depth = bounded(opts.depth, 20, 1, 20, "depth");
-    if (opts.sigFigs !== undefined)
-      bounded(opts.sigFigs, 5, 2, 5, "sigFigs");
-    const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical2 = at(core.universe, resolve2(core, coin)).name;
-    const value = await info(this.opts.fetcher, this.opts.network, {
-      type: "l2Book",
-      coin: canonical2,
-      ...opts.sigFigs === undefined ? {} : { nSigFigs: opts.sigFigs }
-    });
-    if (!object2(value) || value.coin !== canonical2 || !integer(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
-      return unavailable();
-    const sides = [];
-    for (const side of value.levels) {
-      if (!Array.isArray(side))
-        return unavailable();
-      const levels = [];
-      for (const level of side) {
-        if (!object2(level) || nonnegative(level.px) === null || nonnegative(level.sz) === null || !integer(level.n))
-          return unavailable();
-        levels.push({ px: level.px, sz: level.sz, n: level.n });
-      }
-      sides.push(levels);
-    }
-    const bids = at(sides, 0).sort((a, b) => scaled(a.px) > scaled(b.px) ? -1 : scaled(a.px) < scaled(b.px) ? 1 : 0).slice(0, depth);
-    const asks = at(sides, 1).sort((a, b) => scaled(a.px) < scaled(b.px) ? -1 : scaled(a.px) > scaled(b.px) ? 1 : 0).slice(0, depth);
-    const bid = bids[0];
-    const ask = asks[0];
-    const spread = bid && ask ? scaled(ask.px) - scaled(bid.px) : null;
-    const mid = bid && ask ? (scaled(ask.px) + scaled(bid.px)) / 2n : null;
-    return {
-      ...this.envelope(config),
-      coin: canonical2,
-      time: value.time,
-      bids,
-      asks,
-      spreadPx: spread === null ? null : fixed(spread, 18).replace(/\.?0+$/, ""),
-      midPx: mid === null ? null : fixed(mid, 18).replace(/\.?0+$/, ""),
-      spreadBps: spread === null || mid === null || mid === 0n ? null : fixed(spread * 10000n * ONE / mid, 2)
-    };
-  }
-  async candles(coin, opts = {}) {
-    this.key();
-    const window = perpsCandleWindow(opts, this.now());
-    const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical2 = at(core.universe, resolve2(core, coin)).name;
-    const value = await info(this.opts.fetcher, this.opts.network, {
-      type: "candleSnapshot",
-      req: { coin: canonical2, interval: window.interval, startTime: window.startTime, endTime: window.endTime }
-    });
-    if (!Array.isArray(value))
-      return unavailable();
-    const candles = [];
-    for (const c of value) {
-      if (!object2(c) || !integer(c.t) || !integer(c.T) || !integer(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative(v) !== null) || c.s !== canonical2 || c.i !== window.interval)
-        return unavailable();
-      if (c.t <= window.endTime && c.T >= window.startTime)
-        candles.push({
-          t: c.t,
-          T: c.T,
-          o: c.o,
-          h: c.h,
-          l: c.l,
-          c: c.c,
-          v: c.v,
-          n: c.n
-        });
-    }
-    candles.sort((a, b) => a.t - b.t);
-    return {
-      ...this.envelope(config),
-      coin: canonical2,
-      interval: window.interval,
-      candles: candles.slice(-window.count)
-    };
-  }
-  async fundingHistory(coin, opts = {}) {
-    this.key();
-    const window = perpsFundingWindow(opts, this.now());
-    const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical2 = at(core.universe, resolve2(core, coin)).name;
-    const value = await info(this.opts.fetcher, this.opts.network, {
-      type: "fundingHistory",
-      coin: canonical2,
-      startTime: window.startTime,
-      endTime: window.endTime
-    });
-    return {
-      ...this.envelope(config),
-      coin: canonical2,
-      startTime: window.startTime,
-      endTime: window.endTime,
-      ...parsePerpsFundingHistory(value, canonical2, window)
-    };
-  }
-  async predictedFunding() {
-    this.key();
-    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
-    if (extras.predicted === null)
-      return unavailable();
-    const predicted = [];
-    for (const meta of core.universe) {
-      const row = extras.predicted.get(meta.name);
-      if (row)
-        predicted.push({
-          coin: meta.name,
-          fundingRate: row.fundingRate,
-          fundingAprPct: fixed(scaled(row.fundingRate) * 876000n, 2),
-          nextFundingTime: row.nextFundingTime
-        });
-    }
-    predicted.sort((a, b) => a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0);
-    return { ...this.envelope(config, extras.warnings, this.extrasCache?.at ?? this.now()), predicted };
-  }
-}
-var INFO_URLS, ONE, DECIMAL, PerpsMarketError, PERPS_CANDLE_INTERVALS, INTERVAL_MS, PERPS_FUNDING_HISTORY_MAX_MS, PERPS_FUNDING_HISTORY_MAX_ROWS = 500;
-var init_hyperliquid_markets = __esm(() => {
-  INFO_URLS = {
-    mainnet: "https://api.hyperliquid.xyz/info",
-    testnet: "https://api.hyperliquid-testnet.xyz/info"
-  };
-  ONE = 10n ** 18n;
-  DECIMAL = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?$/;
-  PerpsMarketError = class PerpsMarketError extends Error {
-    code;
-    retryable;
-    constructor(code, message) {
-      super(message);
-      this.code = code;
-      this.name = "PerpsMarketError";
-      this.retryable = code === "PERPS_UNAVAILABLE";
-    }
-  };
-  PERPS_CANDLE_INTERVALS = [
-    "1m",
-    "3m",
-    "5m",
-    "15m",
-    "30m",
-    "1h",
-    "2h",
-    "4h",
-    "8h",
-    "12h",
-    "1d",
-    "3d",
-    "1w",
-    "1M"
-  ];
-  INTERVAL_MS = [
-    60000,
-    180000,
-    300000,
-    900000,
-    1800000,
-    3600000,
-    7200000,
-    14400000,
-    28800000,
-    43200000,
-    86400000,
-    259200000,
-    604800000,
-    2678400000
-  ];
-  PERPS_FUNDING_HISTORY_MAX_MS = 30 * 86400000;
 });
 
 // ../mcp/src/perps-history.ts
@@ -11196,8 +11497,8 @@ async function mainPerpCoins(req) {
 function resolveWindow(req) {
   const options = req.options ?? {};
   const kind = req.kind;
-  const address = req.address.toLowerCase();
-  if (!EVM_ADDRESS_RE2.test(address))
+  const address2 = req.address.toLowerCase();
+  if (!EVM_ADDRESS_RE2.test(address2))
     throw invalid2("wallet", "The wallet's Hyperliquid account is not an EVM address");
   for (const field of ["startTime", "endTime"]) {
     const value = options[field];
@@ -11215,7 +11516,7 @@ function resolveWindow(req) {
       throw invalid2("cursor", `This cursor pages ${state.k}, not ${kind}`);
     if (state.n !== req.network)
       throw invalid2("cursor", `This cursor pages ${state.n}, not ${req.network}`);
-    if (state.w !== address)
+    if (state.w !== address2)
       throw invalid2("cursor", "This cursor pages another wallet");
     if (options.startTime !== undefined && options.startTime !== state.s || options.endTime !== undefined && options.endTime !== state.e || options.limit !== undefined && options.limit !== state.l)
       throw invalid2("cursor", "The window or page size changed; start again without a cursor");
@@ -11232,7 +11533,7 @@ function resolveWindow(req) {
       v: 1,
       k: kind,
       n: req.network,
-      w: address,
+      w: address2,
       s: startTime,
       e: endTime,
       l: options.limit ?? PERPS_HISTORY_DEFAULT_LIMIT,
@@ -11459,11 +11760,11 @@ function hyperliquidMark(markets, coin) {
   const parsed = dec(mark);
   return parsed !== null && parsed > 0n ? mark : null;
 }
-async function readHyperliquidClearinghouse(fetcher, network, address, opts = {}) {
-  return parseClearinghouse(await hyperliquidInfo(fetcher, network, { type: "clearinghouseState", user: address.toLowerCase() }, opts));
+async function readHyperliquidClearinghouse(fetcher, network, address2, opts = {}) {
+  return parseClearinghouse(await hyperliquidInfo(fetcher, network, { type: "clearinghouseState", user: address2.toLowerCase() }, opts));
 }
-async function readHyperliquidAccountMode(fetcher, network, address, opts = {}) {
-  const body = await hyperliquidInfo(fetcher, network, { type: "userAbstraction", user: address.toLowerCase() }, opts);
+async function readHyperliquidAccountMode(fetcher, network, address2, opts = {}) {
+  const body = await hyperliquidInfo(fetcher, network, { type: "userAbstraction", user: address2.toLowerCase() }, opts);
   if (typeof body !== "string" || body === "")
     throw new HyperliquidReadError("Unexpected userAbstraction shape");
   return body;
@@ -11710,8 +12011,8 @@ async function readPerpsRisk(opts) {
 function isMainPerpCoin(coin) {
   return typeof coin === "string" && coin !== "" && !coin.includes(":") && !coin.includes("/") && !coin.startsWith("@");
 }
-async function readPerpsRecent(fetcher, network, address, window, opts = {}) {
-  const user = address.toLowerCase();
+async function readPerpsRecent(fetcher, network, address2, window, opts = {}) {
+  const user = address2.toLowerCase();
   const [fills, funding] = await Promise.all([
     hyperliquidInfo(fetcher, network, { type: "userFillsByTime", user, startTime: window.startTime, endTime: window.endTime }, opts),
     hyperliquidInfo(fetcher, network, { type: "userFunding", user, startTime: window.startTime, endTime: window.endTime }, opts)
@@ -12715,7 +13016,7 @@ var init_perps = __esm(() => {
       targetTp: exports_external.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Which take-profit, when several match"),
       targetSl: exports_external.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Which stop-loss, when several match"),
       wallet: wallet2,
-      submit
+      submit: submit.describe("false: build and check only the first step (cancel for a replacement), returning steps[].preview.terms and fee warnings without signing or submitting")
     },
     candle_perps_schedule_cancel: {
       seconds: exports_external.number().int().min(5).optional().describe("Set the timer this many seconds from now (at least 5)"),
@@ -12835,9 +13136,12 @@ var init_perps_markets = __esm(() => {
     candle_perps_markets: {
       sort: exports_external.enum(["volume", "oi", "funding", "change", "name"]).optional(),
       limit: exports_external.number().int().min(1).max(500).optional(),
-      all: exports_external.boolean().optional()
+      all: exports_external.boolean().optional(),
+      dex: exports_external.string().regex(/^([A-Za-z0-9]{1,12}|all)$/).optional().describe("Builder-deployed (HIP-3) dex to list, such as xyz, or all; absent lists the main exchange")
     },
-    candle_perps_market: { coin: exports_external.string() },
+    candle_perps_market: {
+      coin: exports_external.string().describe("Market name: BTC on the main exchange, or dex:COIN on a builder dex, such as xyz:TSLA")
+    },
     candle_perps_book: {
       coin: exports_external.string(),
       depth: exports_external.number().int().min(1).max(20).optional(),
@@ -13229,7 +13533,7 @@ function isTokenPageTool(name) {
   return Object.hasOwn(tokenPageShapes, name);
 }
 function buildTokenPageRequest(name, args, cfg) {
-  const { chain, address, id, section: sectionName, cursor, limit, idempotencyKey, ...body } = args;
+  const { chain, address: address2, id, section: sectionName, cursor, limit, idempotencyKey, ...body } = args;
   const publicRead = name === "candle_token_page_updates" || name === "candle_token_page_comments" || name === "candle_token_page_about" || name === "candle_token_page_burns" || name === "candle_token_page_history";
   if (!publicRead && !cfg.apiKey)
     throw new Error("CANDLE_AGENT_API_KEY with token-pages scopes is required for this tool.");
@@ -13263,7 +13567,7 @@ function buildTokenPageRequest(name, args, cfg) {
   if (limit !== undefined)
     query2.set("limit", String(limit));
   return {
-    url: `${cfg.apiUrl.replace(/\/$/, "")}/api/v1/token-pages/${encodeURIComponent(String(chain))}/${encodeURIComponent(String(address))}${suffix[name]}${query2.size ? `?${query2}` : ""}`,
+    url: `${cfg.apiUrl.replace(/\/$/, "")}/api/v1/token-pages/${encodeURIComponent(String(chain))}/${encodeURIComponent(String(address2))}${suffix[name]}${query2.size ? `?${query2}` : ""}`,
     init: {
       method: name === "candle_token_page_post_delete" ? "DELETE" : read ? "GET" : name === "candle_token_page_section_set" ? "PUT" : "POST",
       headers: headers2,
@@ -14638,7 +14942,7 @@ function registerToolSubset(server, options) {
   for (const name of PERPS_MARKET_TOOL_NAMES) {
     register(name, {
       title: name.replace("candle_perps_", "Hyperliquid "),
-      description: "Read live market data directly from Hyperliquid's public API on this machine. Needs a Candle agent key of any scope, no signer. candle.tradeable is Candle's build gate at read time, not a promise; OI caps may still refuse an order. The hosted connector offers the same four reads at its Read level, read by Candle's server instead of this machine.",
+      description: "Read live market data directly from Hyperliquid's public API on this machine. Needs a Candle agent key of any scope, no signer. candle.tradeable is Candle's build gate at read time, not a promise; OI caps may still refuse an order. Builder-deployed (HIP-3) markets are named dex:COIN (xyz:TSLA); each market's terms give its dex, oracle source, deployer, margin mode and fee (feeWarning when above 2x the main exchange's), to show before an order. The hosted connector offers the same four reads at its Read level, read by Candle's server instead of this machine.",
       inputSchema: perpsMarketShapes[name],
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
     }, async (args) => {
@@ -14650,7 +14954,7 @@ function registerToolSubset(server, options) {
     const result2 = await executePerps(tool, args, getConfig(), env, doFetch);
     return { content: [{ type: "text", text: result2.text }], ...result2.isError ? { isError: true } : {} };
   };
-  const perpsWrite = " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the action within this key's limits " + "(USD window, maximum leverage, maximum position, slippage and price bands, main-exchange markets only); this " + "server recomputes its hash and checks the action type and Candle's builder before signing, then submits it to " + "Hyperliquid itself. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE for TEE signing. wallet=embedded uses the recorded server signature and requires no PEM; the embedded switch ships off. Embedded open/close generate client ids; repeat only the same id after an uncertain result. A refusal names the limit " + "that refused it (error.limit).";
+  const perpsWrite = " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the action within this key's limits " + "(USD window, maximum leverage, maximum position, slippage and price bands, including builder-dex perps); this " + "server recomputes its hash and checks the action type and Candle's builder before signing, then submits it to " + "Hyperliquid itself. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE for TEE signing. wallet=embedded uses the recorded server signature and requires no PEM; the embedded switch ships off. Embedded open/close generate client ids; repeat only the same id after an uncertain result. A refusal names the limit " + "that refused it (error.limit).";
   register("candle_perps_setup", {
     title: "Set up Hyperliquid perps",
     description: "Approve Candle's Hyperliquid builder fee (0.1%) once for the key's EVM TEE or embedded wallet, and report the " + "account's mode and balance. Idempotent: nothing is signed when the approval is already on Hyperliquid. " + "Refused (PERPS_ACCOUNT_MODE) unless Hyperliquid itself shows the account in standard mode." + perpsWrite,
@@ -14730,7 +15034,7 @@ function registerToolSubset(server, options) {
   }, perpsTool("candle_perps_margin"));
   register("candle_perps_tpsl", {
     title: "Perps take-profit / stop-loss",
-    description: "Attach, move or remove the position's take-profit and stop-loss, each a reduce-only market trigger sized to " + "the position now (it does not grow with later additions). Moving a leg cancels the old one first, so that side " + "is briefly unprotected. A leg not named is left alone. Legs Candle did not build are listed in unowned and never " + "touched; several matching legs need targetTp / targetSl. complete is false on any partial result." + perpsWrite,
+    description: "Attach, move or remove the position's take-profit and stop-loss, each a reduce-only market trigger sized to " + "the position now (it does not grow with later additions). Moving a leg cancels the old one first, so that side " + "is briefly unprotected. A leg not named is left alone. Legs Candle did not build are listed in unowned and never " + "touched; several matching legs need targetTp / targetSl. complete is false on any partial result. " + "Each built step retains preview.terms (dex, oracle, deployer, margin, collateral and venue fee); fee warnings " + "also appear in warnings. Use submit:false to inspect the first build before submission (the cancel when replacing)." + perpsWrite,
     inputSchema: perpsShapes.candle_perps_tpsl
   }, perpsTool("candle_perps_tpsl"));
   register("candle_perps_schedule_cancel", {
@@ -18504,10 +18808,10 @@ function rlpEncode(item) {
   const body = concat(...item.map(rlpEncode));
   return concat(rlpLength(body.length, 192), body);
 }
-function toChecksumAddress(address) {
-  const lower = (address.startsWith("0x") ? address.slice(2) : address).toLowerCase();
+function toChecksumAddress(address2) {
+  const lower = (address2.startsWith("0x") ? address2.slice(2) : address2).toLowerCase();
   if (!/^[0-9a-f]{40}$/.test(lower))
-    throw new Error(`not an EVM address: ${address}`);
+    throw new Error(`not an EVM address: ${address2}`);
   const digest = bytesToHex2(keccak_256(new TextEncoder().encode(lower))).slice(2);
   let out = "0x";
   for (let i = 0;i < lower.length; i++) {
@@ -18579,9 +18883,9 @@ function abiWord(value) {
   out.set(uintToMinimalBytes(value), 32 - uintToMinimalBytes(value).length);
   return out;
 }
-function abiAddress(address) {
+function abiAddress(address2) {
   const out = new Uint8Array(32);
-  out.set(hexToBytes2(address), 12);
+  out.set(hexToBytes2(address2), 12);
   return out;
 }
 function encodeErc20Transfer(recipient, amount) {
@@ -18684,8 +18988,8 @@ function parseUnits(decimal4, decimals) {
     return { ok: false, reason: "zero" };
   return { ok: true, raw: raw2 };
 }
-function addressTopic(address) {
-  return `0x${"0".repeat(24)}${address.toLowerCase().replace(/^0x/, "")}`;
+function addressTopic(address2) {
+  return `0x${"0".repeat(24)}${address2.toLowerCase().replace(/^0x/, "")}`;
 }
 function decodeAbiString(bytes) {
   if (bytes.length === 0)
@@ -18744,8 +19048,8 @@ function createEvmRpc(url, fetchFn) {
     async chainId() {
       return asQuantity(await call2("eth_chainId", []), "eth_chainId");
     },
-    async getTransactionCount(address, tag) {
-      return asQuantity(await call2("eth_getTransactionCount", [address, tag]), "eth_getTransactionCount");
+    async getTransactionCount(address2, tag) {
+      return asQuantity(await call2("eth_getTransactionCount", [address2, tag]), "eth_getTransactionCount");
     },
     async estimateGas(input) {
       return asQuantity(await call2("eth_estimateGas", [
@@ -18774,8 +19078,8 @@ function createEvmRpc(url, fetchFn) {
     async maxPriorityFeePerGas() {
       return asQuantity(await call2("eth_maxPriorityFeePerGas", []), "eth_maxPriorityFeePerGas");
     },
-    async getBalance(address) {
-      return asQuantity(await call2("eth_getBalance", [address, "latest"]), "eth_getBalance");
+    async getBalance(address2) {
+      return asQuantity(await call2("eth_getBalance", [address2, "latest"]), "eth_getBalance");
     },
     async call(input) {
       const r = await call2("eth_call", [{ to: input.to, data: bytesToHex2(input.data) }, "latest"]);
@@ -19810,15 +20114,15 @@ var init_sha256 = __esm(() => {
 });
 
 // src/solana-lite.ts
-function decodePubkey(address) {
+function decodePubkey(address2) {
   let bytes;
   try {
-    bytes = base58.decode(address);
+    bytes = base58.decode(address2);
   } catch {
-    throw new Error(`Not a base58 address: ${address}`);
+    throw new Error(`Not a base58 address: ${address2}`);
   }
   if (bytes.length !== 32)
-    throw new Error(`Not a 32-byte Solana address: ${address}`);
+    throw new Error(`Not a 32-byte Solana address: ${address2}`);
   return bytes;
 }
 function encodePubkey(bytes) {
@@ -20123,13 +20427,13 @@ function readProgramAccounts(method, entries2, sliced) {
     return { pubkey: pubkeys[i], data: new Uint8Array(Buffer.from(encoded, "base64")) };
   });
 }
-function rawAccountView(value, address) {
+function rawAccountView(value, address2) {
   if (!value)
     return null;
   const owner = value.owner;
   const encoded = value.data?.[0];
   if (typeof owner !== "string" || typeof encoded !== "string") {
-    throw new Error(`RPC answered without a base64 owner/data pair for ${address}`);
+    throw new Error(`RPC answered without a base64 owner/data pair for ${address2}`);
   }
   return { owner, lamports: BigInt(value.lamports ?? 0), data: new Uint8Array(Buffer.from(encoded, "base64")) };
 }
@@ -20223,8 +20527,8 @@ function createSolanaRpc(url, fetchFn, sleep) {
       const r = await read("getLatestBlockhash", [withMinContextSlot({ commitment: "finalized" }, opts)], opts);
       return r.value.blockhash;
     },
-    async getBalance(address, opts) {
-      const r = await read("getBalance", [address, withMinContextSlot({ commitment: "finalized" }, opts)], opts);
+    async getBalance(address2, opts) {
+      const r = await read("getBalance", [address2, withMinContextSlot({ commitment: "finalized" }, opts)], opts);
       return BigInt(r.value);
     },
     async getTokenAccountsByOwner(owner, programId, opts) {
@@ -20248,15 +20552,15 @@ function createSolanaRpc(url, fetchFn, sleep) {
         throw new Error("Invalid rent exemption quote");
       return BigInt(rent);
     },
-    async getAccountInfo(address, opts) {
-      const r = await read("getAccountInfo", [address, withMinContextSlot({ encoding: "base64", commitment: "finalized" }, opts)], opts);
+    async getAccountInfo(address2, opts) {
+      const r = await read("getAccountInfo", [address2, withMinContextSlot({ encoding: "base64", commitment: "finalized" }, opts)], opts);
       const value = r.value;
       if (!value)
         return null;
       const owner = value.owner;
       const encoded = value.data?.[0];
       if (typeof owner !== "string" || typeof encoded !== "string") {
-        throw new Error(`RPC getAccountInfo answered without a base64 owner/data pair for ${address}`);
+        throw new Error(`RPC getAccountInfo answered without a base64 owner/data pair for ${address2}`);
       }
       return {
         owner,
@@ -20331,8 +20635,8 @@ function createSolanaRpc(url, fetchFn, sleep) {
       const { slot, ...rest } = status;
       return Number.isSafeInteger(slot) ? { ...rest, slot } : rest;
     },
-    async hasSignatureHistory(address) {
-      const r = await call2("getSignaturesForAddress", [address, { limit: 1 }]);
+    async hasSignatureHistory(address2) {
+      const r = await call2("getSignaturesForAddress", [address2, { limit: 1 }]);
       return Array.isArray(r) && r.length > 0;
     },
     async isBlockhashValid(blockhash, commitment = "finalized", opts) {
@@ -20434,9 +20738,9 @@ function withContextFloor(rpc, floor) {
   };
   return {
     getLatestBlockhash: (opts) => rpc.getLatestBlockhash(finalized(opts)),
-    getBalance: (address, opts) => rpc.getBalance(address, finalized(opts)),
+    getBalance: (address2, opts) => rpc.getBalance(address2, finalized(opts)),
     getTokenAccountsByOwner: (owner, programId, opts) => rpc.getTokenAccountsByOwner(owner, programId, finalized(opts)),
-    getAccountInfo: (address, opts) => rpc.getAccountInfo(address, finalized(opts)),
+    getAccountInfo: (address2, opts) => rpc.getAccountInfo(address2, finalized(opts)),
     getEpoch: (opts) => rpc.getEpoch(finalized(opts)),
     getMultipleAccounts: (addresses, opts) => rpc.getMultipleAccounts(addresses, finalized(opts)),
     simulateTransaction: (txBase64, addresses, opts) => rpc.simulateTransaction(txBase64, addresses, finalized(opts)),
@@ -20446,7 +20750,7 @@ function withContextFloor(rpc, floor) {
     getSignatureStatus: (signature) => rpc.getSignatureStatus(signature),
     getMinimumBalanceForRentExemption: (size) => rpc.getMinimumBalanceForRentExemption(size),
     getTokenSupply: (mint) => rpc.getTokenSupply(mint),
-    hasSignatureHistory: (address) => rpc.hasSignatureHistory(address),
+    hasSignatureHistory: (address2) => rpc.hasSignatureHistory(address2),
     getProgramAccounts: (...args) => Reflect.apply(rpc.getProgramAccounts, rpc, args),
     getProgramAccountsV2: (...args) => Reflect.apply(rpc.getProgramAccountsV2, rpc, args)
   };
@@ -20707,11 +21011,11 @@ async function resolveCompiledKeys(message, rpc) {
     for (const [i, lookup] of message.lookups.entries()) {
       const addresses = parseLookupTableAddresses(accounts[i] ?? null, lookup.table);
       const lookupAddress = (index) => {
-        const address = addresses[index];
-        if (address === undefined) {
+        const address2 = addresses[index];
+        if (address2 === undefined) {
           throw new LookupTableError(`lookup table ${lookup.table} has ${addresses.length} address(es) and the message indexes ${index}`);
         }
-        return address;
+        return address2;
       };
       for (const index of lookup.writableIndexes)
         loadedWritable.push(lookupAddress(index));
@@ -20737,8 +21041,8 @@ async function simulateWithSnapshots(rpc, txBase64, compiled) {
   const result2 = await rpc.simulateTransaction(txBase64, writable);
   return {
     result: result2,
-    snapshots: writable.map((address, i) => ({
-      address,
+    snapshots: writable.map((address2, i) => ({
+      address: address2,
       before: before[i] ?? null,
       after: result2.accounts[i] ?? null
     }))
@@ -20806,14 +21110,14 @@ function computeDeltas(snapshots) {
 }
 function controlChanges(snapshots, controlled) {
   const changes = [];
-  for (const { address, before, after } of snapshots) {
+  for (const { address: address2, before, after } of snapshots) {
     if (after === null)
       continue;
-    if (controlled(address) && before !== null && before.owner === SYSTEM_PROGRAM_ID) {
+    if (controlled(address2) && before !== null && before.owner === SYSTEM_PROGRAM_ID) {
       if (after.owner !== before.owner || after.data.length !== before.data.length)
         changes.push({
-          account: address,
-          controller: address,
+          account: address2,
+          controller: address2,
           what: "program owner",
           from: before.owner,
           to: after.data.length !== before.data.length ? `${after.owner} with ${after.data.length} data bytes` : after.owner
@@ -20825,7 +21129,7 @@ function controlChanges(snapshots, controlled) {
     const post = tokenBalanceOf(after);
     const postAuth = tokenAuthoritiesOf(after);
     if (pre !== undefined && preAuth !== undefined && controlled(pre.owner)) {
-      const base2 = { account: address, controller: pre.owner, mint: pre.mint };
+      const base2 = { account: address2, controller: pre.owner, mint: pre.mint };
       if (post === undefined || postAuth === undefined) {
         changes.push({ ...base2, what: "owner", from: pre.owner, to: `${after.owner} (no longer a token account)` });
         continue;
@@ -20844,7 +21148,7 @@ function controlChanges(snapshots, controlled) {
       continue;
     }
     if (pre === undefined && post !== undefined && postAuth !== undefined && controlled(post.owner)) {
-      const base2 = { account: address, controller: post.owner, mint: post.mint };
+      const base2 = { account: address2, controller: post.owner, mint: post.mint };
       if (postAuth.delegate !== null && postAuth.delegate !== post.owner)
         changes.push({
           ...base2,
@@ -21055,8 +21359,8 @@ function identityLine(profile, account, apiUrl, overrides, username, options = {
   profile = profile === undefined ? undefined : escapeTerminalText(profile);
   username = username === undefined ? undefined : escapeTerminalText(username);
   overrides = overrides?.map(escapeTerminalText);
-  const address = account === undefined ? undefined : escapeTerminalText(shortId(account, options.full));
-  const shown = overrides?.length ? address ? `${address} (${overrides.join(", ")} override)` : `unknown (${overrides.join(", ")} override)` : username && address ? `${username} (${address})` : address ?? "unknown";
+  const address2 = account === undefined ? undefined : escapeTerminalText(shortId(account, options.full));
+  const shown = overrides?.length ? address2 ? `${address2} (${overrides.join(", ")} override)` : `unknown (${overrides.join(", ")} override)` : username && address2 ? `${username} (${address2})` : address2 ?? "unknown";
   const name = profile ?? "none";
   const host = escapeTerminalText(apiUrl).replace(/^https:\/\//i, "").replace(/\/+$/, "");
   const sep2 = options.style ? symbols(options.style).note : "·";
@@ -22036,19 +22340,19 @@ function argon2Output(B, p, laneLen, dkLen) {
   clean(B_final);
   return res;
 }
-function processBlock(B, address, l, r, s, index, laneLen, segmentLen, lanes, offset, prev, dataIndependent, needXor) {
+function processBlock(B, address2, l, r, s, index, laneLen, segmentLen, lanes, offset, prev, dataIndependent, needXor) {
   if (offset % laneLen)
     prev = offset - 1;
   let randL, randH;
   if (dataIndependent) {
     let i128 = index % 128;
     if (i128 === 0) {
-      address[256 + 12]++;
-      block(address, 256, 2 * 256, 0, false);
-      block(address, 0, 2 * 256, 0, false);
+      address2[256 + 12]++;
+      block(address2, 256, 2 * 256, 0, false);
+      block(address2, 0, 2 * 256, 0, false);
     }
-    randL = address[2 * i128];
-    randH = address[2 * i128 + 1];
+    randL = address2[2 * i128];
+    randH = address2[2 * i128 + 1];
   } else {
     const T = 256 * prev;
     randL = B[T];
@@ -22061,34 +22365,34 @@ function processBlock(B, address, l, r, s, index, laneLen, segmentLen, lanes, of
 }
 async function argon2Async(type, password, salt, opts) {
   const { mP, p, t, version, B, laneLen, lanes, segmentLen, dkLen, perBlock, asyncTick } = argon2Init(password, salt, type, opts);
-  const address = new Uint32Array(3 * 256);
-  address[256 + 6] = mP;
-  address[256 + 8] = t;
-  address[256 + 10] = type;
+  const address2 = new Uint32Array(3 * 256);
+  address2[256 + 6] = mP;
+  address2[256 + 8] = t;
+  address2[256 + 10] = type;
   let ts = Date.now();
   for (let r = 0;r < t; r++) {
     const needXor = r !== 0 && version === 19;
-    address[256 + 0] = r;
+    address2[256 + 0] = r;
     for (let s = 0;s < ARGON2_SYNC_POINTS; s++) {
-      address[256 + 4] = s;
+      address2[256 + 4] = s;
       const dataIndependent = type == AT.Argon2i || type == AT.Argon2id && r === 0 && s < 2;
       for (let l = 0;l < p; l++) {
-        address[256 + 2] = l;
-        address[256 + 12] = 0;
+        address2[256 + 2] = l;
+        address2[256 + 12] = 0;
         let startPos = 0;
         if (r === 0 && s === 0) {
           startPos = 2;
           if (dataIndependent) {
-            address[256 + 12]++;
-            block(address, 256, 2 * 256, 0, false);
-            block(address, 0, 2 * 256, 0, false);
+            address2[256 + 12]++;
+            block(address2, 256, 2 * 256, 0, false);
+            block(address2, 0, 2 * 256, 0, false);
           }
         }
         let offset = l * laneLen + s * segmentLen + startPos;
         let prev = offset % laneLen ? offset - 1 : offset + laneLen - 1;
         for (let index = startPos;index < segmentLen; index++, offset++, prev++) {
           perBlock();
-          processBlock(B, address, l, r, s, index, laneLen, segmentLen, lanes, offset, prev, dataIndependent, needXor);
+          processBlock(B, address2, l, r, s, index, laneLen, segmentLen, lanes, offset, prev, dataIndependent, needXor);
           const diff = Date.now() - ts;
           if (!(diff >= 0 && diff < asyncTick)) {
             await nextTick();
@@ -22098,7 +22402,7 @@ async function argon2Async(type, password, salt, opts) {
       }
     }
   }
-  clean(address);
+  clean(address2);
   return argon2Output(B, p, laneLen, dkLen);
 }
 var AT, ARGON2_SYNC_POINTS = 4, abytesOrZero = (buf) => {
@@ -24226,8 +24530,8 @@ import { dirname as dirname6, join as join5 } from "node:path";
 function walletSignerRef(walletId) {
   return `wallet_signer_${walletId}`;
 }
-function importPendingSignerRef(chain2, address) {
-  return `import_pending_${chain2}_${address}`;
+function importPendingSignerRef(chain2, address2) {
+  return `import_pending_${chain2}_${address2}`;
 }
 function pemToStoredSigner(pem) {
   return pem.replace(/-----BEGIN PRIVATE KEY-----/, "").replace(/-----END PRIVATE KEY-----/, "").replace(/\s+/g, "");
@@ -25234,17 +25538,17 @@ async function selectTradingPayer(ctx, key, name, listing, chain2 = "solana") {
     if (deniedAddress !== undefined && sameAddress(deniedAddress, name))
       throw deniedError();
     for (const other of Object.keys(embeddedOn)) {
-      const address = embeddedOn[other];
-      if (other !== chain2 && address !== undefined && sameAddress(address, name))
-        throw chainMismatch(`The embedded wallet ${address}`, other, chain2);
+      const address2 = embeddedOn[other];
+      if (other !== chain2 && address2 !== undefined && sameAddress(address2, name))
+        throw chainMismatch(`The embedded wallet ${address2}`, other, chain2);
     }
   }
   throw new TradingError("TEE_WALLET_REQUIRED", matches.length > 1 ? `"${name}" matches ${matches.length} TEE wallets on this key: ${teeWalletList(matches)}. Name one by id or address.` : options.length === 0 ? `"${name}" is not a wallet this account can pay from, and it has none on ${chainName(chain2)}: enrol a TEE wallet, or create an embedded wallet in the app.` : `"${name}" is not a wallet this account can pay from. On ${chainName(chain2)} it can pay from: ${options}.`);
 }
-function embeddedWalletNotPermitted(address, keyPrefix, chain2, teeWallets) {
+function embeddedWalletNotPermitted(address2, keyPrefix, chain2, teeWallets) {
   const prefix = keyPrefix ?? "<prefix>";
   const instead = teeWallets.length > 0 ? `Name one of its ${chainName(chain2)} TEE wallets with --wallet instead: ${teeWallets.join("; ")}.` : `It has no ${chainName(chain2)} TEE wallet to pay from instead.`;
-  return new TradingError("EMBEDDED_WALLET_NOT_PERMITTED", `This key may not use the account's embedded wallet (${address}). ${instead}`, {
+  return new TradingError("EMBEDDED_WALLET_NOT_PERMITTED", `This key may not use the account's embedded wallet (${address2}). ${instead}`, {
     suggestion: `Trade a TEE wallet bound to this key, or have the owner allow the embedded wallet: candle keys update ${prefix} --embedded-wallet allow (device token), or in the web key manager.`
   });
 }
@@ -25944,17 +26248,17 @@ function walletBridgesOf(body) {
 function direction(bridge) {
   return bridge.role === "recipient" ? "into" : "out of";
 }
-function bridgeSweepGate(address, bridges) {
+function bridgeSweepGate(address2, bridges) {
   const warnings = [];
   if (bridges === null)
-    warnings.push(`Warning: Candle could not say whether a bridge into or out of ${address} is open. If one is, its fill or refund lands after this sweep and needs a second sweep.`);
+    warnings.push(`Warning: Candle could not say whether a bridge into or out of ${address2} is open. If one is, its fill or refund lands after this sweep and needs a second sweep.`);
   const open5 = (bridges ?? []).find((bridge) => bridge.state === "open");
   if (open5) {
     const until = open5.blockingUntil !== undefined ? new Date(open5.blockingUntil).toISOString() : "two hours after it opened";
     return {
       refusal: {
         code: "BRIDGE_IN_FLIGHT",
-        message: `A bridge ${direction(open5)} ${address} is still open (${safeText(open5.clientTradeId)}); its fill or refund may still land here.`,
+        message: `A bridge ${direction(open5)} ${address2} is still open (${safeText(open5.clientTradeId)}); its fill or refund may still land here.`,
         suggestion: `Nothing was signed. Check it with candle swap status ${safeText(open5.clientTradeId)} and sweep once it closes. From ${until} it is a warning and the sweep goes ahead.`,
         details: { bridges }
       },
@@ -25962,11 +26266,11 @@ function bridgeSweepGate(address, bridges) {
     };
   }
   for (const bridge of bridges ?? [])
-    warnings.push(`Warning: bridge ${safeText(bridge.clientTradeId)} ${direction(bridge)} ${address} has had no result for over two hours. The sweep goes ahead; if its fill or refund lands later, sweep this wallet again.`);
+    warnings.push(`Warning: bridge ${safeText(bridge.clientTradeId)} ${direction(bridge)} ${address2} has had no result for over two hours. The sweep goes ahead; if its fill or refund lands later, sweep this wallet again.`);
   return { warnings };
 }
-function bridgeDisableWarnings(address, body) {
-  return (walletBridgesOf(body) ?? []).map((bridge) => `Bridge ${safeText(bridge.clientTradeId)} ${direction(bridge)} ${address} is ${bridge.state === "open" ? "still open" : "unresolved after two hours"}: its fill or refund still lands in this wallet. Check it with candle swap status ${safeText(bridge.clientTradeId)}; if it lands after the sweep, sweep again.`);
+function bridgeDisableWarnings(address2, body) {
+  return (walletBridgesOf(body) ?? []).map((bridge) => `Bridge ${safeText(bridge.clientTradeId)} ${direction(bridge)} ${address2} is ${bridge.state === "open" ? "still open" : "unresolved after two hours"}: its fill or refund still lands in this wallet. Check it with candle swap status ${safeText(bridge.clientTradeId)}; if it lands after the sweep, sweep again.`);
 }
 function describeBridgeJob(job, facts) {
   const settlement = jobSettlementSchema.safeParse(job.settlement);
@@ -26075,8 +26379,8 @@ function wordAddress2(w) {
 function isDecimal(value) {
   return /^\d+$/.test(value);
 }
-function among(address, list) {
-  return list.some((known) => sameEvmAddress(address, known));
+function among(address2, list) {
+  return list.some((known) => sameEvmAddress(address2, known));
 }
 function decodeApprove(data) {
   if (data.length !== 68 || selectorOf(data) !== ERC20_APPROVE_SELECTOR)
@@ -26123,10 +26427,10 @@ function decodeAbiStatic(data, position, type) {
     return decodeAbiTuple(data, position, type.tuple);
   const w = readWord(data, position);
   if (type === "address") {
-    const address = wordAddress2(w);
-    if (address === undefined)
+    const address2 = wordAddress2(w);
+    if (address2 === undefined)
       throw new Error("abi: dirty address");
-    return address;
+    return address2;
   }
   if (type === "bool")
     return BigInt(bytesToHex2(w)) === 1n;
@@ -26709,10 +27013,10 @@ function instructionProblem(tx, compiled, wallet3, expect) {
 function holdings(views, wallet3) {
   const out = new Map;
   const add2 = (asset, amount) => out.set(asset, (out.get(asset) ?? 0n) + amount);
-  for (const { address, view } of views) {
+  for (const { address: address2, view } of views) {
     if (view === null)
       continue;
-    if (address === wallet3) {
+    if (address2 === wallet3) {
       add2("SOL", view.lamports);
       continue;
     }
@@ -26736,14 +27040,14 @@ function walletDeltas(simulation, wallet3) {
   return deltas;
 }
 function transferProblem(simulation, wallet3, expect) {
-  const allowed = (address) => address === wallet3 || address === expect.recipient;
-  for (const { address, before, after } of simulation.snapshots) {
+  const allowed = (address2) => address2 === wallet3 || address2 === expect.recipient;
+  for (const { address: address2, before, after } of simulation.snapshots) {
     const lamportsBefore = before?.lamports ?? 0n;
     const lamportsAfter = after?.lamports ?? 0n;
     const tokenAfter = tokenBalanceOf(after);
     const tokenBefore = tokenBalanceOf(before);
-    if (lamportsAfter > lamportsBefore && !allowed(address) && !allowed(tokenAfter?.owner))
-      return `${address} would receive ${lamportsAfter - lamportsBefore} lamports, and only ${expect.recipient} may`;
+    if (lamportsAfter > lamportsBefore && !allowed(address2) && !allowed(tokenAfter?.owner))
+      return `${address2} would receive ${lamportsAfter - lamportsBefore} lamports, and only ${expect.recipient} may`;
     const amountBefore = tokenBefore?.amount ?? 0n;
     const amountAfter = tokenAfter?.amount ?? 0n;
     if (tokenAfter !== undefined && amountAfter > amountBefore && !allowed(tokenAfter.owner))
@@ -26838,7 +27142,7 @@ async function solanaSpendProblem(transactionBase64, wallet3, rpc, expect) {
   }
   if (simulation.result.err !== null && simulation.result.err !== undefined)
     return `the simulation failed: ${JSON.stringify(simulation.result.err)}`;
-  const control = controlChanges(simulation.snapshots, (address) => address === wallet3);
+  const control = controlChanges(simulation.snapshots, (address2) => address2 === wallet3);
   if (control[0] !== undefined)
     return describeControlChange(control[0]);
   return expect.kind === "transfer" ? transferProblem(simulation, wallet3, expect) : swapProblem(simulation, wallet3, expect);
@@ -28486,18 +28790,18 @@ async function swapCancel(args, ctx) {
     return tradingFailure(ctx, error);
   }
 }
-async function bridgeOriginBalance(ctx, from, address, solana, evm) {
+async function bridgeOriginBalance(ctx, from, address2, solana, evm) {
   if (from === "ETH")
-    return evmRead("the ETH balance", () => evm().getBalance(address));
+    return evmRead("the ETH balance", () => evm().getBalance(address2));
   if (from === "USDG")
-    return evmRead("the USDG balance", () => evm().erc20BalanceOf(HOOD_USDG_ADDRESS, address));
+    return evmRead("the USDG balance", () => evm().erc20BalanceOf(HOOD_USDG_ADDRESS, address2));
   const reader = await solana();
   if (from === "SOL")
-    return tradingRead(ctx, reader, () => reader.rpc.getBalance(address));
+    return tradingRead(ctx, reader, () => reader.rpc.getBalance(address2));
   const mint = BASES.USDC?.mint;
   const accounts = (await tradingRead(ctx, reader, () => Promise.all([
-    reader.rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
-    reader.rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
+    reader.rpc.getTokenAccountsByOwner(address2, TOKEN_PROGRAM_ID),
+    reader.rpc.getTokenAccountsByOwner(address2, TOKEN_2022_PROGRAM_ID)
   ]))).flat();
   return accounts.filter((account) => account.mint === mint).reduce((sum, account) => sum + BigInt(account.amountRaw), 0n);
 }
@@ -29150,7 +29454,7 @@ async function readSignerRoles(rpc, addresses, opts) {
   const timeoutMs = opts.timeoutMs ?? 20000;
   const maxPages = Math.max(1, opts.maxPages ?? MAX_V2_PAGES);
   const tasks = [];
-  const keys = addresses.map((address) => ({ address, bytes: decodePubkey(address) }));
+  const keys = addresses.map((address2) => ({ address: address2, bytes: decodePubkey(address2) }));
   for (const group of ROLE_GROUPS) {
     for (const key of keys) {
       for (const filters of group.shapes(key.bytes))
@@ -29377,8 +29681,8 @@ function findingText(finding) {
 function findingLine(finding) {
   return `${findingText(finding)} (${PROGRAM_LABELS[finding.program]})`;
 }
-function authorityCell(address, result2) {
-  const own = result2.found.filter((finding) => finding.address === address);
+function authorityCell(address2, result2) {
+  const own = result2.found.filter((finding) => finding.address === address2);
   if (own.length > 0)
     return own.map(findingText).join("; ");
   return result2.notChecked.length === 0 ? "none" : "?";
@@ -29459,7 +29763,7 @@ function authoritiesJson(result2) {
   return {
     checked: result2.checked,
     notChecked: result2.notChecked,
-    found: result2.found.map(({ address, role, target, program }) => ({ address, role, target, program }))
+    found: result2.found.map(({ address: address2, role, target, program }) => ({ address: address2, role, target, program }))
   };
 }
 var BPF_UPGRADEABLE_LOADER_ID = "BPFLoaderUpgradeab1e11111111111111111111111", STAKE_PROGRAM_ID = "Stake11111111111111111111111111111111111111", ROLE_GROUP_IDS, PAGINATED_TOKEN_GROUPS, RPC_PAGINATION_REQUIRED = -32600, MAX_V2_PAGES = 10, RPC_METHOD_NOT_FOUND = -32601, REQUESTS_PER_KEY = 9, b642 = (bytes) => base64.encode(bytes), concat4 = (...parts) => {
@@ -29810,8 +30114,8 @@ async function confirmPromotion(ctx, n) {
     throw new VaultError("PROMOTE_NOT_ACKNOWLEDGED", `The acknowledgement is the word ${CONFIRM_WORD}; nothing was promoted, and nothing was written.`, { suggestion: `Run the command again and type ${CONFIRM_WORD} at the prompt.` });
   }
 }
-function shortAddress2(address) {
-  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+function shortAddress2(address2) {
+  return `${address2.slice(0, 6)}…${address2.slice(-4)}`;
 }
 function withToKey(controlledBy, toKey) {
   return { ...controlledBy, toKey };
@@ -30019,7 +30323,7 @@ function allZero(bytes) {
 async function verifyCloseArtifact(input) {
   const { artifact, rpc, tee, vault, nftMint, nftAccount } = input;
   const refuse2 = (reason) => ({ ok: false, reason });
-  const allowedOwner = (address) => address === tee || address === vault;
+  const allowedOwner = (address2) => address2 === tee || address2 === vault;
   let tx;
   try {
     tx = decodeTransaction(decodeStrictBase64(artifact.transaction));
@@ -30114,23 +30418,23 @@ async function verifyCloseArtifact(input) {
   const nftAfter = tokenBalanceOf(nftSnapshot.after);
   if (nftAfter !== undefined && nftAfter.amount !== 0n)
     return refuse2(`the position NFT account ${nftAccount} still holds ${nftAfter.amount} after the simulation`);
-  for (const { address, before, after } of simulation.snapshots) {
-    if (allowedOwner(address)) {
+  for (const { address: address2, before, after } of simulation.snapshots) {
+    if (allowedOwner(address2)) {
       if (after === null || after.owner !== SYSTEM_PROGRAM_ID || after.data.length !== 0)
-        return refuse2(`${address === tee ? "the TEE wallet" : "the vault"} would no longer be a plain System account after this transaction`);
+        return refuse2(`${address2 === tee ? "the TEE wallet" : "the vault"} would no longer be a plain System account after this transaction`);
     }
     if (after === null)
       continue;
     if (before !== null && after.owner !== before.owner)
-      return refuse2(`writable account ${address} would change owner from ${before.owner} to ${after.owner}`);
+      return refuse2(`writable account ${address2} would change owner from ${before.owner} to ${after.owner}`);
     if (before !== null) {
       const controlled = tokenBalanceOf(before);
       if (controlled !== undefined && allowedOwner(controlled.owner)) {
         if (after.data.length < TOKEN_ACCOUNT_SIZE)
-          return refuse2(`token account ${address} would no longer decode as a token account`);
+          return refuse2(`token account ${address2} would no longer decode as a token account`);
         for (const [start, end, what] of TOKEN_CONTROL_RANGES) {
           if (!bytesEqual2(before.data.subarray(start, end), after.data.subarray(start, end)))
-            return refuse2(`token account ${address} would change its ${what}, which a close never does`);
+            return refuse2(`token account ${address2} would change its ${what}, which a close never does`);
         }
         continue;
       }
@@ -30138,16 +30442,16 @@ async function verifyCloseArtifact(input) {
     const created = before === null ? tokenBalanceOf(after) : undefined;
     if (created !== undefined) {
       if (!allowedOwner(created.owner))
-        return refuse2(`created token account ${address} would be controlled by ${created.owner}`);
+        return refuse2(`created token account ${address2} would be controlled by ${created.owner}`);
       if (!allZero(after.data.subarray(72, 108)) || after.data[108] !== TOKEN_ACCOUNT_STATE_INITIALIZED || !allZero(after.data.subarray(121, 129)) || !allZero(after.data.subarray(129, 165)))
-        return refuse2(`created token account ${address} would start with a delegate, a close authority, or a frozen state`);
+        return refuse2(`created token account ${address2} would start with a delegate, a close authority, or a frozen state`);
     }
   }
   const infos = new Map;
-  const infoOf = async (address) => {
-    if (!infos.has(address))
-      infos.set(address, await rpc.getAccountInfo(address));
-    return infos.get(address) ?? null;
+  const infoOf = async (address2) => {
+    if (!infos.has(address2))
+      infos.set(address2, await rpc.getAccountInfo(address2));
+    return infos.get(address2) ?? null;
   };
   const canonical3 = new Set;
   for (const key of compiled.keys) {
@@ -30209,13 +30513,13 @@ function describeClose(input) {
   for (const program of programs)
     lines.push(`program     ${program === DAMM_V2_PROGRAM_ID ? `Meteora DAMM v2 (${program})` : programNameOf(program)}`);
   const deltas = computeDeltas(simulation.snapshots);
-  const who = (address) => address === tee ? "wallet" : address === vault ? "vault" : address;
-  for (const address of [tee, vault]) {
-    const sol = deltas.sol.find((delta) => delta.address === address);
+  const who = (address2) => address2 === tee ? "wallet" : address2 === vault ? "vault" : address2;
+  for (const address2 of [tee, vault]) {
+    const sol = deltas.sol.find((delta) => delta.address === address2);
     if (sol && sol.after !== sol.before)
-      lines.push(`${who(address).padEnd(11)} ${formatSol(sol.before)} -> ${formatSol(sol.after)} (${sol.after >= sol.before ? "+" : ""}${formatSol(sol.after - sol.before)})`);
-    for (const token2 of deltas.tokens.filter((delta) => delta.owner === address && delta.after !== delta.before)) {
-      lines.push(`${who(address).padEnd(11)} ${token2.mint}: ${token2.before} -> ${token2.after} raw (${token2.after >= token2.before ? "+" : ""}${token2.after - token2.before}) in ${token2.account}${token2.account === nftAccount ? " (position NFT, burned)" : ""}`);
+      lines.push(`${who(address2).padEnd(11)} ${formatSol(sol.before)} -> ${formatSol(sol.after)} (${sol.after >= sol.before ? "+" : ""}${formatSol(sol.after - sol.before)})`);
+    for (const token2 of deltas.tokens.filter((delta) => delta.owner === address2 && delta.after !== delta.before)) {
+      lines.push(`${who(address2).padEnd(11)} ${token2.mint}: ${token2.before} -> ${token2.after} raw (${token2.after >= token2.before ? "+" : ""}${token2.after - token2.before}) in ${token2.account}${token2.account === nftAccount ? " (position NFT, burned)" : ""}`);
     }
   }
   const nft = simulation.snapshots.find((snapshot) => snapshot.address === nftAccount);
@@ -40718,9 +41022,9 @@ async function assertNotOlderCopy(ctx, path, raw2, accept) {
   notice(ctx.deps, "stderr", "note", `Opening an older copy: generation ${String(generation)} against the ${sidecar.lastGeneration} this machine last saw.${detail}
 `.trim());
 }
-function groupAddress(address) {
-  const prefix = address.startsWith("0x") ? "0x" : "";
-  const body = address.slice(prefix.length);
+function groupAddress(address2) {
+  const prefix = address2.startsWith("0x") ? "0x" : "";
+  const body = address2.slice(prefix.length);
   const groups = body.match(/.{1,4}/g) ?? [];
   return [...prefix ? [prefix] : [], ...groups].join(" ");
 }
@@ -40735,17 +41039,17 @@ async function confirmSend(ctx, send) {
     exitCode: CANCELLED_EXIT
   });
 }
-async function confirmAddress(ctx, label, address, action) {
-  if (await typedConfirm(ctx, label, address, action))
+async function confirmAddress(ctx, label, address2, action) {
+  if (await typedConfirm(ctx, label, address2, action))
     return;
   throw new VaultError("DESTINATION_NOT_CONFIRMED", "That was not confirmed; nothing was done.", {
     suggestion: "Nothing was signed or written. Run it again and type confirm at the prompt.",
     exitCode: CANCELLED_EXIT
   });
 }
-async function typedConfirm(io, label, address, action) {
+async function typedConfirm(io, label, address2, action) {
   const display = io.json ? io.deps.stderr : io.deps.stdout;
-  display.write(`${label.padEnd(4)} ${groupAddress(address)}
+  display.write(`${label.padEnd(4)} ${groupAddress(address2)}
 `);
   const typed = await io.deps.promptLine(`Type confirm to ${action}: `);
   return typed.trim().toLowerCase() === "confirm";
@@ -41160,7 +41464,7 @@ __export(exports_tee_lookup, {
   vaultOwnsTeeAddress: () => vaultOwnsTeeAddress,
   findTeeInVault: () => findTeeInVault
 });
-async function findTeeInVault(ctx, address, opts = {}) {
+async function findTeeInVault(ctx, address2, opts = {}) {
   let path;
   if (opts.vaultPath !== undefined) {
     path = opts.vaultPath;
@@ -41176,20 +41480,20 @@ async function findTeeInVault(ctx, address, opts = {}) {
   const opened = await unlockInteractively(ctx, path, raw2, { acceptOlderCopy: true });
   const vault = opened.vault;
   try {
-    assertNotEvmEntry(vault.index, address, "this command");
+    assertNotEvmEntry(vault.index, address2, "this command");
   } catch (error) {
     closeVault(vault);
     throw error;
   }
-  const entry2 = vault.index.entries.find((candidate) => candidate.address === address && candidate.role === "tee-wallet");
+  const entry2 = vault.index.entries.find((candidate) => candidate.address === address2 && candidate.role === "tee-wallet");
   if (entry2 === undefined) {
     closeVault(vault);
     return { hit: false };
   }
   return { hit: true, vault, entry: entry2, reopen: opened.reopen };
 }
-function vaultOwnsTeeAddress(vault, address) {
-  return vault.index.entries.some((entry2) => entry2.address === address && entry2.role === "tee-wallet");
+function vaultOwnsTeeAddress(vault, address2) {
+  return vault.index.entries.some((entry2) => entry2.address === address2 && entry2.role === "tee-wallet");
 }
 var init_tee_lookup = __esm(() => {
   init_args();
@@ -41199,9 +41503,9 @@ var init_tee_lookup = __esm(() => {
 });
 
 // src/vault/tee-resolve.ts
-async function resolveTeeAddress(ctx, _parsed, address, openLegacy, access4 = "read") {
+async function resolveTeeAddress(ctx, _parsed, address2, openLegacy, access4 = "read") {
   try {
-    const hit = await findTeeInVault(ctx, address);
+    const hit = await findTeeInVault(ctx, address2);
     if (hit.hit) {
       let privateKeyBase58 = null;
       try {
@@ -41210,7 +41514,7 @@ async function resolveTeeAddress(ctx, _parsed, address, openLegacy, access4 = "r
           if (addressFromSecret64(secret) !== hit.entry.address) {
             writeLocalFailure(ctx.deps, {
               code: "VAULT_VERIFY_FAILED",
-              message: `${address} in the vault does not re-derive from its stored secret.`
+              message: `${address2} in the vault does not re-derive from its stored secret.`
             }, ctx.json);
             closeVault(hit.vault);
             return { ok: false, code: 1 };
@@ -41250,11 +41554,11 @@ async function resolveTeeAddress(ctx, _parsed, address, openLegacy, access4 = "r
   const opened = await openLegacy();
   if (!opened.ok)
     return opened;
-  const entry2 = opened.store.entries.find((candidate) => candidate.address === address);
+  const entry2 = opened.store.entries.find((candidate) => candidate.address === address2);
   if (entry2 === undefined) {
     writeLocalFailure(ctx.deps, {
       code: "TEE_WALLET_UNKNOWN",
-      message: `${address} is not a TEE wallet in ${opened.path}.`,
+      message: `${address2} is not a TEE wallet in ${opened.path}.`,
       suggestion: "Run: candle tee new"
     }, ctx.json);
     return { ok: false, code: 1 };
@@ -41289,10 +41593,10 @@ function releaseResolvedTee(resolved) {
   if (resolved.source === "vault")
     closeVault(resolved.vault);
 }
-function refuseLegacyWriteForVaultAddress(ctx, address) {
+function refuseLegacyWriteForVaultAddress(ctx, address2) {
   writeLocalFailure(ctx.deps, {
     code: "TEE_STORE_CHANGED",
-    message: `${address} lives in the vault; this CLI will not write it back to tee-wallets.enc.`,
+    message: `${address2} lives in the vault; this CLI will not write it back to tee-wallets.enc.`,
     suggestion: "Operate on the vault entry; do not rewrite the Phase 1 store for a migrated address."
   }, ctx.json);
   return 1;
@@ -44035,11 +44339,11 @@ var init_wallet_import = __esm(() => {
 
 // src/wallet-import-flow.ts
 async function runImportFlow(params) {
-  const { chain: chain2, address, privateKey, label, apiKey, apiUrl, deps, profile, vaultDestination, keySigner } = params;
+  const { chain: chain2, address: address2, privateKey, label, apiKey, apiUrl, deps, profile, vaultDestination, keySigner } = params;
   const credentials = { apiKey };
   const init = await apiRequest("/api/v1/agent/wallets/import/init", {
     method: "POST",
-    body: { chain: chain2, address },
+    body: { chain: chain2, address: address2 },
     auth: "key",
     credentials,
     apiUrl,
@@ -44056,7 +44360,7 @@ async function runImportFlow(params) {
       method: "POST",
       body: {
         chain: chain2,
-        address,
+        address: address2,
         ciphertext,
         encapsulatedKey,
         keySigner: true,
@@ -44077,7 +44381,7 @@ async function runImportFlow(params) {
   }
   const signer = await generateSignerKeypair();
   const storedSigner = pemToStoredSigner(signer.privateKeyPem);
-  const pendingRef = importPendingSignerRef(chain2, address);
+  const pendingRef = importPendingSignerRef(chain2, address2);
   try {
     await deps.store.set(pendingRef, storedSigner);
   } catch (error) {
@@ -44087,7 +44391,7 @@ async function runImportFlow(params) {
     method: "POST",
     body: {
       chain: chain2,
-      address,
+      address: address2,
       ciphertext,
       encapsulatedKey,
       signerPublicKey: signer.publicKeyDerBase64,
@@ -44289,17 +44593,17 @@ async function assertHoodChain(client) {
     throw new VaultError("EVM_CHAIN_MISMATCH", `${client.host} answered chain id ${chainId}; Hood TEE wallets live on Hood, chain id ${HOOD_CHAIN_ID}, only.`, { suggestion: "Nothing was signed or written. Point --rpc-url (or CANDLE_EVM_RPC_URL) at a Hood RPC." });
   }
 }
-async function readEvmHoldings(rpc, address) {
+async function readEvmHoldings(rpc, address2) {
   const [eth, usdg, weth] = await Promise.all([
-    rpc.getBalance(address),
-    rpc.erc20BalanceOf(toChecksumAddress(HOOD_USDG_ADDRESS), address),
-    rpc.erc20BalanceOf(HOOD_WETH_ADDRESS, address)
+    rpc.getBalance(address2),
+    rpc.erc20BalanceOf(toChecksumAddress(HOOD_USDG_ADDRESS), address2),
+    rpc.erc20BalanceOf(HOOD_WETH_ADDRESS, address2)
   ]);
   return { eth, usdg, weth };
 }
-function holdingsLines(address, holdings2, observedAt) {
+function holdingsLines(address2, holdings2, observedAt) {
   return [
-    `Holdings at ${address} on Hood (observed ${observedAt}):`,
+    `Holdings at ${address2} on Hood (observed ${observedAt}):`,
     `  ETH   ${formatUnits(holdings2.eth, NATIVE_DECIMALS)}  (${holdings2.eth} wei)`,
     `  USDG  ${formatUnits(holdings2.usdg, HOOD_USDG_DECIMALS)}  (${holdings2.usdg} raw)`,
     `  WETH  ${formatUnits(holdings2.weth, NATIVE_DECIMALS)}  (${holdings2.weth} raw)`,
@@ -45128,7 +45432,7 @@ async function walletsImport(args, ctx) {
     writeScreenLocalFailure(deps, { code: "KEY_INPUT_FAILED", message: resolvedAddress.message }, json);
     return 1;
   }
-  const address = resolvedAddress.address;
+  const address2 = resolvedAddress.address;
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
     writeScreenLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
@@ -45136,7 +45440,7 @@ async function walletsImport(args, ctx) {
   }
   const flow = await runImportFlow({
     chain: chain2,
-    address,
+    address: address2,
     privateKey: material.privateKey,
     ...parsed.values["--label"] !== undefined ? { label: parsed.values["--label"] } : {},
     apiKey,
@@ -45363,13 +45667,13 @@ function extractRepeated(args, flag) {
   }
   return { rest, values };
 }
-function findEvmTee(vault, address) {
-  return vault.index.entries.find((entry2) => entry2.chain === "evm" && entry2.role === "tee-wallet" && sameAddress2(entry2.address, address));
+function findEvmTee(vault, address2) {
+  return vault.index.entries.find((entry2) => entry2.chain === "evm" && entry2.role === "tee-wallet" && sameAddress2(entry2.address, address2));
 }
-function unknownWallet(ctx, address) {
+function unknownWallet(ctx, address2) {
   writeLocalFailure(ctx.deps, {
     code: "TEE_WALLET_UNKNOWN",
-    message: `${address} is not a Hood TEE wallet in this vault.`,
+    message: `${address2} is not a Hood TEE wallet in this vault.`,
     suggestion: "Hood TEE wallets live in the vault only: candle vault list shows every wallet it holds."
   }, ctx.json);
   return 1;
@@ -45391,8 +45695,8 @@ async function teeSweepEvm(args, ctx) {
   });
   if ("error" in parsed)
     return usage2(ctx, parsed.error);
-  const [address, extra] = parsed.positionals;
-  if (!address || extra !== undefined) {
+  const [address2, extra] = parsed.positionals;
+  if (!address2 || extra !== undefined) {
     return usage2(ctx, "Usage: candle tee sweep <0x address> [--rpc-url <url>] [--emergency] [--token <0x...>]... [--from-block <n>]");
   }
   const options = sweepOptions(ctx, parsed, tokenFlags);
@@ -45411,9 +45715,9 @@ async function teeSweepEvm(args, ctx) {
     const raw2 = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, resolvedVault.path, raw2, { acceptOlderCopy: true });
     const vault = hold(opened.vault);
-    const entry2 = findEvmTee(vault, address);
+    const entry2 = findEvmTee(vault, address2);
     if (entry2 === undefined)
-      return unknownWallet(ctx, address);
+      return unknownWallet(ctx, address2);
     return sweepEvmWallet({ ctx, vault, hold, entry: entry2, client, emergency, tokenFlags: tokens, fromBlock });
   });
 }
@@ -45442,7 +45746,7 @@ async function sweepEvmWallet(input) {
   const { deps, json } = ctx;
   let vault = input.vault;
   let entry2 = input.entry;
-  const address = entry2.address;
+  const address2 = entry2.address;
   const rpc = client.rpc;
   const note = (line) => (json ? deps.stderr : deps.stdout).write(`${line}
 `);
@@ -45450,8 +45754,8 @@ async function sweepEvmWallet(input) {
   if (destination === undefined) {
     writeLocalFailure(deps, {
       code: "TEE_WALLET_NO_VAULT",
-      message: `${address} has no pinned vault destination, so there is nothing a sweep may send to.`,
-      suggestion: `Pin a cold EVM vault key first: candle vault demote ${address} --sweep-to <evm vault key>`
+      message: `${address2} has no pinned vault destination, so there is nothing a sweep may send to.`,
+      suggestion: `Pin a cold EVM vault key first: candle vault demote ${address2} --sweep-to <evm vault key>`
     }, json);
     return 1;
   }
@@ -45474,24 +45778,24 @@ async function sweepEvmWallet(input) {
       if (unreadReason !== undefined) {
         writeLocalFailure(deps, {
           code: "TEE_WALLET_STATE_UNREAD",
-          message: `Could not read ${address}'s lifecycle from the server (${unreadReason}); its remote signing authority is unverified.`,
-          suggestion: `Restore the API key or connectivity and re-run. If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address} --emergency`
+          message: `Could not read ${address2}'s lifecycle from the server (${unreadReason}); its remote signing authority is unverified.`,
+          suggestion: `Restore the API key or connectivity and re-run. If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address2} --emergency`
         }, json);
         return 3;
       }
       if (serverState === "enabled") {
         writeLocalFailure(deps, {
           code: "TEE_WALLET_STILL_ENABLED",
-          message: `${address} is still enabled for the agent.`,
-          suggestion: `Stop it first: candle tee disable ${address}`
+          message: `${address2} is still enabled for the agent.`,
+          suggestion: `Stop it first: candle tee disable ${address2}`
         }, json);
         return 1;
       }
       if (serverState === "disable-pending") {
         writeLocalFailure(deps, {
           code: "TEE_WALLET_DISABLE_PENDING",
-          message: `${address}'s remote signing authority is not yet verified denied.`,
-          suggestion: `Re-run: candle tee disable ${address}. If the provider is down or theft is suspected, add --emergency (the agent signer may still race you).`
+          message: `${address2}'s remote signing authority is not yet verified denied.`,
+          suggestion: `Re-run: candle tee disable ${address2}. If the provider is down or theft is suspected, add --emergency (the agent signer may still race you).`
         }, json);
         return 3;
       }
@@ -45502,7 +45806,7 @@ async function sweepEvmWallet(input) {
     }
     server = await readHoodTeeServer(ctx, entry2);
     assertWalletLockFree(entry2, server.lock, deps.now());
-    const bridgeGate = bridgeSweepGate(address, server.bridges);
+    const bridgeGate = bridgeSweepGate(address2, server.bridges);
     if (bridgeGate.refusal) {
       writeLocalFailure(deps, bridgeGate.refusal, json);
       return 1;
@@ -45519,12 +45823,12 @@ async function sweepEvmWallet(input) {
   await assertHoodChain(client);
   const resolved = await resolvePending2(ctx, vault, entry2, rpc);
   vault = hold(resolved.vault);
-  entry2 = findEvmTee(vault, address);
+  entry2 = findEvmTee(vault, address2);
   if (resolved.stillPending.length > 0) {
     writeLocalFailure(deps, {
       code: "EVM_SWEEP_INCOMPLETE",
       message: `${resolved.stillPending.length} sweep transaction(s) from an earlier run are still in flight (${resolved.stillPending.map((p) => p.hash).join(", ")}).`,
-      suggestion: `Nothing new was signed. Re-run this sweep once they land: candle tee sweep ${address}${emergency ? " --emergency" : ""}`
+      suggestion: `Nothing new was signed. Re-run this sweep once they land: candle tee sweep ${address2}${emergency ? " --emergency" : ""}`
     }, json);
     return 3;
   }
@@ -45532,7 +45836,7 @@ async function sweepEvmWallet(input) {
   if (input.fromBlock !== undefined && input.fromBlock > head) {
     return usage2(ctx, `--from-block ${input.fromBlock} is above the chain head (${head}). Nothing was scanned.`);
   }
-  const record2 = recordSource(await readEvmRecord(vault), address);
+  const record2 = recordSource(await readEvmRecord(vault), address2);
   const start = startBlock(record2.scanStarts, input.fromBlock);
   const sources = {
     always: alwaysTokens(),
@@ -45559,7 +45863,7 @@ async function sweepEvmWallet(input) {
       reason: `no start block: no scan start is recorded for this wallet on this machine and --from-block was not given. Pass --from-block <n> (a Hood block at or before its first transfer in) or name tokens with --token <0x...>`
     };
   } else {
-    const found = await discoverTransferLogs(rpc, address, start.block, head);
+    const found = await discoverTransferLogs(rpc, address2, start.block, head);
     sources.logs = {
       ran: true,
       fromBlock: start.block,
@@ -45577,7 +45881,7 @@ async function sweepEvmWallet(input) {
   const holding = [];
   for (const token2 of candidates) {
     try {
-      const balance = await rpc.erc20BalanceOf(token2, address);
+      const balance = await rpc.erc20BalanceOf(token2, address2);
       if (balance > 0n)
         holding.push({ token: token2, balance });
     } catch (error) {
@@ -45591,8 +45895,8 @@ async function sweepEvmWallet(input) {
   let emergencyNonces;
   if (emergency) {
     emergencyNonces = {
-      latest: await rpc.getTransactionCount(address, "latest"),
-      pending: await rpc.getTransactionCount(address, "pending")
+      latest: await rpc.getTransactionCount(address2, "latest"),
+      pending: await rpc.getTransactionCount(address2, "pending")
     };
   }
   const replacing = emergencyNonces !== undefined && emergencyNonces.pending > emergencyNonces.latest;
@@ -45611,14 +45915,14 @@ async function sweepEvmWallet(input) {
       amount: item.balance
     });
     try {
-      const estimate2 = await rpc.estimateGas({ from: address, to: draft.to, value: 0n, data: draft.data });
+      const estimate2 = await rpc.estimateGas({ from: address2, to: draft.to, value: 0n, data: draft.data });
       const gas = gasWithHeadroom(estimate2);
       if (gas > MAX_TOKEN_TRANSFER_GAS) {
         residuals.push({
           kind: "token-gas-too-high",
           token: item.token,
           amountRaw: item.balance.toString(),
-          detail: `its transfer estimates at ${gas} gas, above the ${MAX_TOKEN_TRANSFER_GAS} a sweep spends on one token; move it on purpose with candle vault transfer <to> --asset ${item.token} --from ${address} if it is yours`
+          detail: `its transfer estimates at ${gas} gas, above the ${MAX_TOKEN_TRANSFER_GAS} a sweep spends on one token; move it on purpose with candle vault transfer <to> --asset ${item.token} --from ${address2} if it is yours`
         });
         continue;
       }
@@ -45632,7 +45936,7 @@ async function sweepEvmWallet(input) {
       });
     }
   }
-  const ethBalance = await rpc.getBalance(address);
+  const ethBalance = await rpc.getBalance(address2);
   const tokenGasCost = planned.reduce((sum, item) => sum + item.gas * fees.maxFeePerGas, 0n);
   let budget = ethBalance;
   const deferred = [];
@@ -45647,8 +45951,8 @@ async function sweepEvmWallet(input) {
   }
   if (planned.length === 0 && deferred.length > 0) {
     const shortfall = tokenGasCost - ethBalance;
-    throw new VaultError("EVM_SWEEP_NEEDS_GAS", `${address} holds ${formatUnits(ethBalance, NATIVE_DECIMALS)} ETH; the ${deferred.length} token transfer(s) need up to ${formatUnits(tokenGasCost, NATIVE_DECIMALS)} ETH of gas, ${formatUnits(shortfall, NATIVE_DECIMALS)} ETH short.`, {
-      suggestion: `Nothing was signed. Fund the gas, then sweep again: candle vault fund ${address} --amount ${formatUnits(shortfall * 2n, NATIVE_DECIMALS)} --asset ETH`,
+    throw new VaultError("EVM_SWEEP_NEEDS_GAS", `${address2} holds ${formatUnits(ethBalance, NATIVE_DECIMALS)} ETH; the ${deferred.length} token transfer(s) need up to ${formatUnits(tokenGasCost, NATIVE_DECIMALS)} ETH of gas, ${formatUnits(shortfall, NATIVE_DECIMALS)} ETH short.`, {
+      suggestion: `Nothing was signed. Fund the gas, then sweep again: candle vault fund ${address2} --amount ${formatUnits(shortfall * 2n, NATIVE_DECIMALS)} --asset ETH`,
       details: {
         shortfallWei: shortfall.toString(),
         requiredWei: tokenGasCost.toString(),
@@ -45663,11 +45967,11 @@ async function sweepEvmWallet(input) {
         kind: "token-needs-gas",
         token: item.token,
         amountRaw: item.balance.toString(),
-        detail: `not enough ETH left for its transfer; fund the gas and sweep again: candle vault fund ${address} --amount ${formatUnits(need * 2n, NATIVE_DECIMALS)} --asset ETH`
+        detail: `not enough ETH left for its transfer; fund the gas and sweep again: candle vault fund ${address2} --amount ${formatUnits(need * 2n, NATIVE_DECIMALS)} --asset ETH`
       });
     }
   }
-  note(`Sweep ${address} -> vault ${destination} (Hood)`);
+  note(`Sweep ${address2} -> vault ${destination} (Hood)`);
   for (const item of planned)
     note(`  send ${item.balance} raw of ${item.token}  (gas limit ${item.gas})`);
   note(`  then ETH: the balance left after these transfers, minus the final transfer's gas`);
@@ -45687,11 +45991,11 @@ async function sweepEvmWallet(input) {
       nonce = latest;
       note(pending > latest ? `A transaction already occupies nonce ${latest} (pending ${pending} > latest ${latest}). This sweep signs at nonce ${latest} with doubled fees and may replace that in-flight leg; replacement is not guaranteed if the leg paid a higher fee.` : `No in-flight transaction was observed (latest and pending nonce are both ${latest}); signing from nonce ${latest}.`);
     } else {
-      nonce = await rpc.getTransactionCount(address, "pending");
+      nonce = await rpc.getTransactionCount(address2, "pending");
     }
     const secret = await decryptKey(vault, entry2.id);
     try {
-      if (!sameEvmAddress(evmAddressFromSecret(secret), address)) {
+      if (!sameEvmAddress(evmAddressFromSecret(secret), address2)) {
         throw new VaultError("VAULT_VERIFY_FAILED", "The stored secret does not derive this address; refusing to sign.");
       }
       const send = async (tx, meta) => {
@@ -45781,7 +46085,7 @@ async function sweepEvmWallet(input) {
         nonce += 1n;
       }
       if (stopped === undefined) {
-        const balance = await rpc.getBalance(address);
+        const balance = await rpc.getBalance(address2);
         const quotedEth = await quoteFees(rpc);
         const ethReplacing = emergencyNonces !== undefined && nonce < emergencyNonces.pending;
         const ethFees = ethReplacing ? replacementFees(quotedEth) : quotedEth;
@@ -45794,7 +46098,7 @@ async function sweepEvmWallet(input) {
           to: destination,
           value: 0n
         });
-        const gas = gasWithHeadroom(await rpc.estimateGas({ from: address, to: draft.to, value: 0n, data: draft.data }));
+        const gas = gasWithHeadroom(await rpc.estimateGas({ from: address2, to: draft.to, value: 0n, data: draft.data }));
         const value = balance - gas * ethFees.maxFeePerGas;
         if (value > 0n)
           await send({ ...draft, gas, value }, { kind: "native", amountRaw: value });
@@ -45810,9 +46114,9 @@ async function sweepEvmWallet(input) {
     dustCeilingWei: null
   };
   try {
-    const eth = await rpc.getBalance(address);
+    const eth = await rpc.getBalance(address2);
     const dustFees = await quoteFees(rpc);
-    const dustGas = gasWithHeadroom(await rpc.estimateGas({ from: address, to: destination, value: 0n, data: new Uint8Array }));
+    const dustGas = gasWithHeadroom(await rpc.estimateGas({ from: address2, to: destination, value: 0n, data: new Uint8Array }));
     const dustCeiling = dustGas * dustFees.maxFeePerGas;
     inventory.ethWei = eth.toString();
     inventory.dustCeilingWei = dustCeiling.toString();
@@ -45826,7 +46130,7 @@ async function sweepEvmWallet(input) {
     for (const token2 of candidates) {
       if (residuals.some((r) => r.token !== undefined && sameAddress2(r.token, token2) && r.kind !== "transfer-reverted"))
         continue;
-      const left = await rpc.erc20BalanceOf(token2, address);
+      const left = await rpc.erc20BalanceOf(token2, address2);
       if (left > 0n) {
         residuals.push({
           kind: "token-remaining",
@@ -45887,7 +46191,7 @@ async function sweepEvmWallet(input) {
     writeJson(deps, {
       ok: exit === 0,
       chain: "hood",
-      address,
+      address: address2,
       vaultDestination: destination,
       state: finalState,
       serverState: emergency ? "not-read" : serverState,
@@ -45944,11 +46248,11 @@ async function sweepEvmWallet(input) {
     }
   }
   if (missingSources.length > 0) {
-    notice(deps, "stdout", "note", `Not reported observed-empty: ${missingSources.join(" and ")} did not run, so a token only they would find may remain. ${sources.logs.ran ? "" : `Re-run with --from-block <n> or --token <0x...>: candle tee sweep ${address} --from-block <n>`}
+    notice(deps, "stdout", "note", `Not reported observed-empty: ${missingSources.join(" and ")} did not run, so a token only they would find may remain. ${sources.logs.ran ? "" : `Re-run with --from-block <n> or --token <0x...>: candle tee sweep ${address2} --from-block <n>`}
 `.trim());
   }
   if (emergency) {
-    notice(deps, "stdout", "warning", `Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}
+    notice(deps, "stdout", "warning", `Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address2}
 `.trim());
   } else if (observedEmpty && !complete) {
     notice(deps, "stdout", "note", `The wallet is observed empty, but its server state is ${serverState}; re-run once it is quarantined.
@@ -46013,8 +46317,8 @@ async function teeDisableEvm(args, ctx) {
   });
   if ("error" in parsed)
     return usage2(ctx, parsed.error);
-  const [address, extra] = parsed.positionals;
-  if (!address || extra !== undefined)
+  const [address2, extra] = parsed.positionals;
+  if (!address2 || extra !== undefined)
     return usage2(ctx, "Usage: candle tee disable <address>");
   if (!refuseEnvPassphrase(ctx))
     return 1;
@@ -46028,9 +46332,9 @@ async function teeDisableEvm(args, ctx) {
     const raw2 = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, resolvedVault.path, raw2, { acceptOlderCopy: true });
     const vault = hold(opened.vault);
-    const entry2 = findEvmTee(vault, address);
+    const entry2 = findEvmTee(vault, address2);
     if (entry2 === undefined)
-      return unknownWallet(ctx, address);
+      return unknownWallet(ctx, address2);
     return (await disableEvmEntry(ctx, vault, hold, entry2, false)).code;
   });
 }
@@ -46110,8 +46414,8 @@ async function vaultDemoteEvm(args, ctx) {
   });
   if ("error" in parsed)
     return usage2(ctx, parsed.error);
-  const [address, extra] = parsed.positionals;
-  if (!address || extra !== undefined) {
+  const [address2, extra] = parsed.positionals;
+  if (!address2 || extra !== undefined) {
     return usage2(ctx, "Usage: candle vault demote <tee-address> [--rpc-url <url>] [--emergency] [--sweep-to <label>]");
   }
   const options = sweepOptions(ctx, parsed, tokenFlags);
@@ -46132,12 +46436,12 @@ async function vaultDemoteEvm(args, ctx) {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     let vault = hold(opened.vault);
-    let entry2 = findEvmTee(vault, address);
+    let entry2 = findEvmTee(vault, address2);
     if (entry2 === undefined)
-      return unknownWallet(ctx, address);
+      return unknownWallet(ctx, address2);
     if (entry2.tee?.vaultDestination === undefined) {
       if (sweepTo === undefined) {
-        throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${address} has no pinned vault destination.`, {
+        throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${address2} has no pinned vault destination.`, {
           suggestion: "Pass --sweep-to <evm vault key> (a cold EVM vault key in this vault)."
         });
       }
@@ -46146,7 +46450,7 @@ async function vaultDemoteEvm(args, ctx) {
         acceptUnknownExposure: parsed.booleans.has("--accept-unknown-exposure")
       });
       vault = hold(await patchTee(ctx, vault, entry2.id, (tee) => ({ ...tee, vaultDestination: destination.address })));
-      entry2 = findEvmTee(vault, address);
+      entry2 = findEvmTee(vault, address2);
     }
     if (entry2.linkedWalletId === undefined) {
       notice(ctx.deps, "stdout", "warning", `No linkedWalletId is recorded for ${entry2.address}; disable was not called and remote authority stays unknown.
@@ -46159,9 +46463,9 @@ async function vaultDemoteEvm(args, ctx) {
       if (disabled.code !== 0 && disabled.code !== 3)
         return disabled.code;
       vault = disabled.vault;
-      entry2 = findEvmTee(vault, address);
+      entry2 = findEvmTee(vault, address2);
       if (disabled.code === 3) {
-        notice(ctx.deps, "stdout", "note", `The disable is not yet verified; the sweep below will wait for quarantine. If the provider is down or theft is suspected, run: candle vault demote ${address} --emergency
+        notice(ctx.deps, "stdout", "note", `The disable is not yet verified; the sweep below will wait for quarantine. If the provider is down or theft is suspected, run: candle vault demote ${address2} --emergency
 `.trim());
       }
     }
@@ -46204,15 +46508,15 @@ var init_tee_evm = __esm(() => {
 });
 
 // src/commands/tee-status-wallet.ts
-async function serverTeeWallet(ctx, address, chain2) {
+async function serverTeeWallet(ctx, address2, chain2) {
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   const suggestion = "Pass --verify to read it from this machine's vault, or select the profile holding its key.";
   if (!apiKey)
-    throw new TradingError("TEE_WALLET_NOT_ON_KEY", `${address}: no API key available.`, { suggestion });
+    throw new TradingError("TEE_WALLET_NOT_ON_KEY", `${address2}: no API key available.`, { suggestion });
   const { rows } = await listTradingWallets(ctx, apiKey);
-  const row = rows.find((candidate) => candidate.chain === chain2 && (chain2 === "evm" ? sameEvmAddress(candidate.address, address) : candidate.address === address));
+  const row = rows.find((candidate) => candidate.chain === chain2 && (chain2 === "evm" ? sameEvmAddress(candidate.address, address2) : candidate.address === address2));
   if (!row)
-    throw new TradingError("TEE_WALLET_NOT_ON_KEY", `${address} is not a TEE wallet bound to key ${apiKeyPrefix(apiKey) ?? "this key"}.`, { suggestion });
+    throw new TradingError("TEE_WALLET_NOT_ON_KEY", `${address2} is not a TEE wallet bound to key ${apiKeyPrefix(apiKey) ?? "this key"}.`, { suggestion });
   return { row, apiKey };
 }
 var UNVERIFIED_KEY_LINE = "Key not verified on this machine. Pass --verify to open the vault and check it.";
@@ -46224,7 +46528,7 @@ var init_tee_status_wallet = __esm(() => {
 });
 
 // src/commands/tee-status-evm.ts
-async function readVaultEntry(ctx, address) {
+async function readVaultEntry(ctx, address2) {
   const resolved = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
   if ("error" in resolved)
     throw new TradingError("USAGE", resolved.error);
@@ -46233,7 +46537,7 @@ async function readVaultEntry(ctx, address) {
     return null;
   const opened = await unlockInteractively(ctx, resolved.path, raw2, { acceptOlderCopy: true });
   try {
-    const entry2 = opened.vault.index.entries.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address));
+    const entry2 = opened.vault.index.entries.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address2));
     if (entry2 === undefined)
       return null;
     if (entry2.role !== "tee-wallet")
@@ -46249,11 +46553,11 @@ async function readVaultEntry(ctx, address) {
     closeVault(opened.vault);
   }
 }
-async function teeStatusEvm(ctx, parsed, address) {
+async function teeStatusEvm(ctx, parsed, address2) {
   const { deps, json } = ctx;
-  const checked = checkEvmAddress(address);
+  const checked = checkEvmAddress(address2);
   if (!checked.ok) {
-    writeUsageFailure(deps, `${address} is not a Hood address: ${checked.reason}.`, json);
+    writeUsageFailure(deps, `${address2} is not a Hood address: ${checked.reason}.`, json);
     return 2;
   }
   const rpcUrl = resolveEvmRpcUrl(parsed.values["--rpc-url"], deps.env[EVM_RPC_URL_ENV], "--rpc-url");
@@ -46279,7 +46583,7 @@ async function teeStatusEvm(ctx, parsed, address) {
   let serverWallet = null;
   if (!verify) {
     try {
-      serverWallet = await serverTeeWallet(ctx, address, "evm");
+      serverWallet = await serverTeeWallet(ctx, address2, "evm");
     } catch (error) {
       return tradingFailure(ctx, error);
     }
@@ -46301,7 +46605,7 @@ async function teeStatusEvm(ctx, parsed, address) {
   else {
     try {
       const rows = serverWallet ? [serverWallet.row] : (await listTradingWallets(ctx, apiKey)).rows;
-      const row = rows.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address));
+      const row = rows.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address2));
       if (row) {
         report.linkedWalletId ??= row.id;
         if (report.label === null && row.label)
@@ -46610,8 +46914,8 @@ async function commitActiveTee(active, mutate) {
     };
   }
 }
-async function openActiveTee(ctx, parsed, address, access4) {
-  const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed), access4);
+async function openActiveTee(ctx, parsed, address2, access4) {
+  const resolved = await resolveTeeAddress(ctx, parsed, address2, () => openExistingTeeStore(ctx, parsed), access4);
   if (!resolved.ok)
     return { ok: false, code: resolved.code };
   if (resolved.resolved.source === "vault")
@@ -46674,14 +46978,14 @@ async function openExistingTeeStore(ctx, parsed) {
     return { ok: false, code: 1 };
   }
 }
-function findEntry(store, address) {
-  return store.entries.find((e) => e.address === address);
+function findEntry(store, address2) {
+  return store.entries.find((e) => e.address === address2);
 }
-async function addressOwnedByVault(ctx, address) {
+async function addressOwnedByVault(ctx, address2) {
   const { findTeeInVault: findTeeInVault2 } = await Promise.resolve().then(() => (init_tee_lookup(), exports_tee_lookup));
   const { closeVault: closeVault2 } = await Promise.resolve().then(() => (init_store(), exports_store));
   try {
-    const hit = await findTeeInVault2(ctx, address);
+    const hit = await findTeeInVault2(ctx, address2);
     if (!hit.hit)
       return false;
     closeVault2(hit.vault);
@@ -46696,10 +47000,10 @@ async function addressOwnedByVault(ctx, address) {
     return "error";
   }
 }
-function noSuchEntry(ctx, address, path) {
+function noSuchEntry(ctx, address2, path) {
   writeLocalFailure(ctx.deps, {
     code: "TEE_WALLET_UNKNOWN",
-    message: `${address} is not a TEE wallet in ${path}.`,
+    message: `${address2} is not a TEE wallet in ${path}.`,
     suggestion: "Run: candle tee new"
   }, ctx.json);
   return 1;
@@ -46821,8 +47125,8 @@ async function teeEnable(args, ctx) {
   });
   if ("error" in parsed)
     return usage3(ctx, parsed.error);
-  const [address, extra] = parsed.positionals;
-  if (!address || extra !== undefined) {
+  const [address2, extra] = parsed.positionals;
+  if (!address2 || extra !== undefined) {
     return usage3(ctx, "Usage: candle tee enable <address> --vault <address> | --vault-key <label>");
   }
   const vaultFlag = parsed.values["--vault"];
@@ -46879,15 +47183,15 @@ async function teeEnable(args, ctx) {
     return usage3(ctx, "--vault <address> or --vault-key <label> is required: the destination every sweep sends to.");
   if (!isSolanaAddress(vault))
     return usage3(ctx, "--vault is not a valid Solana address.");
-  if (vault === address)
+  if (vault === address2)
     return usage3(ctx, "--vault must be a different address from the TEE wallet.");
-  const vaultOwned = await addressOwnedByVault(ctx, address);
+  const vaultOwned = await addressOwnedByVault(ctx, address2);
   if (vaultOwned === "usage")
     return 2;
   if (vaultOwned === "error")
     return 1;
   if (vaultOwned === true)
-    return refuseLegacyWriteForVaultAddress(ctx, address);
+    return refuseLegacyWriteForVaultAddress(ctx, address2);
   await printIdentity(ctx);
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
@@ -46898,13 +47202,13 @@ async function teeEnable(args, ctx) {
   if (!opened.ok)
     return opened.code;
   const { store, path } = opened;
-  const entry2 = findEntry(store, address);
+  const entry2 = findEntry(store, address2);
   if (!entry2)
-    return noSuchEntry(ctx, address, path);
+    return noSuchEntry(ctx, address2, path);
   if (entry2.imported || entry2.linkedWalletId) {
     writeLocalFailure(deps, {
       code: "TEE_WALLET_ALREADY_ENABLED",
-      message: `${address} was already enabled${entry2.linkedWalletId ? ` as ${entry2.linkedWalletId}` : ""}.`,
+      message: `${address2} was already enabled${entry2.linkedWalletId ? ` as ${entry2.linkedWalletId}` : ""}.`,
       suggestion: "A retired or enabled TEE wallet is never re-enabled. Run: candle tee new"
     }, json);
     return 1;
@@ -46912,7 +47216,7 @@ async function teeEnable(args, ctx) {
   if (!json) {
     writeHeading(deps, "stdout", "Delegate a dedicated TEE wallet to this profile's agent");
     writeFields(deps, "stdout", [
-      ["TEE wallet", address],
+      ["TEE wallet", address2],
       ["Network", "solana-mainnet"],
       ["Sweep vault", vault]
     ]);
@@ -46928,7 +47232,7 @@ async function teeEnable(args, ctx) {
   }
   const flow = await runImportFlow({
     chain: "solana",
-    address,
+    address: address2,
     privateKey: entry2.privateKey,
     label: parsed.values["--label"] ?? entry2.label,
     apiKey,
@@ -46944,7 +47248,7 @@ async function teeEnable(args, ctx) {
     else {
       writeLocalFailure(deps, {
         code: failure3.kind === "signer-store" ? "SIGNER_STORE_FAILED" : "SIGNER_COMMIT_FAILED",
-        message: `${address}: ${failure3.error instanceof Error ? failure3.error.message : failure3.error}`,
+        message: `${address2}: ${failure3.error instanceof Error ? failure3.error.message : failure3.error}`,
         suggestion: "The key is still sealed locally. Fix the error above and run enable again."
       }, json);
     }
@@ -46953,9 +47257,9 @@ async function teeEnable(args, ctx) {
   const submitted = flow.submitted;
   const importedAt = new Date().toISOString();
   const committed = await commitTee(deps, opened, (entries3) => {
-    const target = entries3.find((e) => e.address === address);
+    const target = entries3.find((e) => e.address === address2);
     if (!target)
-      throw new Error(`${address} is no longer in ${path}`);
+      throw new Error(`${address2} is no longer in ${path}`);
     target.imported = true;
     target.linkedWalletId = submitted.id;
     target.privyWalletId = submitted.privyWalletId;
@@ -46969,13 +47273,13 @@ async function teeEnable(args, ctx) {
     };
   });
   if (!committed.ok) {
-    writeCommitFailure(ctx, committed, `The server DID import ${address} as ${submitted.id}, but the grant could not be recorded locally. Do not fund it. Stop it (candle tee disable ${address}, or revoke ${submitted.id} from your session) and enable a fresh wallet.`);
+    writeCommitFailure(ctx, committed, `The server DID import ${address2} as ${submitted.id}, but the grant could not be recorded locally. Do not fund it. Stop it (candle tee disable ${address2}, or revoke ${submitted.id} from your session) and enable a fresh wallet.`);
     return 1;
   }
   const verified = submitted.remoteAuthority === "verified-active";
   if (json) {
     deps.stdout.write(`${JSON.stringify({
-      address,
+      address: address2,
       linkedWalletId: submitted.id,
       vaultDestination: vault,
       boundKeyPrefix: submitted.boundKeyPrefix ?? null,
@@ -46988,16 +47292,16 @@ async function teeEnable(args, ctx) {
   }
   if (verified) {
     writeFields(deps, "stdout", [
-      ["Address", address],
+      ["Address", address2],
       ["Wallet id", submitted.id],
       ["Bound key", submitted.boundKeyPrefix]
     ], "TEE wallet enabled");
-    notice(deps, "stdout", "note", `Remote authority verified. Fund it: candle tee fund ${address} --amount <n> --asset SOL|USDC
+    notice(deps, "stdout", "note", `Remote authority verified. Fund it: candle tee fund ${address2} --amount <n> --asset SOL|USDC
 `.trim());
     return 0;
   }
-  notice(deps, "stdout", "warning", `Imported ${address} as ${submitted.id}, but the server could NOT verify the remote authority${submitted.reasonCode ? ` (${submitted.reasonCode})` : ""}. The agent cannot trade it.
-Do not fund it. Disable it (candle tee disable ${address}) and enable a fresh wallet.
+  notice(deps, "stdout", "warning", `Imported ${address2} as ${submitted.id}, but the server could NOT verify the remote authority${submitted.reasonCode ? ` (${submitted.reasonCode})` : ""}. The agent cannot trade it.
+Do not fund it. Disable it (candle tee disable ${address2}) and enable a fresh wallet.
 `.trim());
   return 3;
 }
@@ -47016,8 +47320,8 @@ async function teeFund(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--amount", "--asset", "--keystore"], pathFlags: ["--keystore"] });
   if ("error" in parsed)
     return usage3(ctx, parsed.error);
-  const [address, extra] = parsed.positionals;
-  if (!address || extra !== undefined)
+  const [address2, extra] = parsed.positionals;
+  if (!address2 || extra !== undefined)
     return usage3(ctx, "Usage: candle tee fund <address> --amount <n> [--asset SOL|USDC]");
   const asset = (parsed.values["--asset"] ?? "SOL").toUpperCase();
   if (asset !== "SOL" && asset !== "USDC")
@@ -47029,7 +47333,7 @@ async function teeFund(args, ctx) {
   const raw2 = decimalToRaw2(amount, decimals);
   if (raw2 === null || raw2 === 0n)
     return usage3(ctx, `--amount must be a positive decimal with at most ${decimals} decimal places.`);
-  const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed));
+  const resolved = await resolveTeeAddress(ctx, parsed, address2, () => openExistingTeeStore(ctx, parsed));
   if (!resolved.ok)
     return resolved.code;
   try {
@@ -47037,13 +47341,13 @@ async function teeFund(args, ctx) {
     if (!entry2.linkedWalletId || entry2.tee?.remoteAuthority !== "verified-active") {
       writeLocalFailure(deps, {
         code: "TEE_WALLET_NOT_VERIFIED",
-        message: `${address} is not an enabled TEE wallet with verified remote authority; do not fund it.`,
+        message: `${address2} is not an enabled TEE wallet with verified remote authority; do not fund it.`,
         suggestion: "Run: candle tee enable <address> --vault <address>, and fund only after it reports verified."
       }, json);
       return 1;
     }
     if (entry2.tee?.stopRequestedAt) {
-      writeLocalFailure(deps, { code: "TEE_WALLET_STOPPED", message: `${address} has been stopped; a retired address is never refunded.` }, json);
+      writeLocalFailure(deps, { code: "TEE_WALLET_STOPPED", message: `${address2} has been stopped; a retired address is never refunded.` }, json);
       return 1;
     }
     const instruction = {
@@ -47053,7 +47357,7 @@ async function teeFund(args, ctx) {
       ...asset === "USDC" ? { mint: USDC_MINT } : {},
       amount,
       amountRaw: raw2.toString(),
-      destination: address,
+      destination: address2,
       from: "your vault wallet (sign it there; this CLI signs nothing)",
       note: "Every funded unit adds to the TEE wallet exposure. The initial float is not a maximum loss."
     };
@@ -47067,7 +47371,7 @@ async function teeFund(args, ctx) {
       ["Send", `${amount} ${asset}`],
       ["Raw units", raw2.toString()],
       ["Mint", asset === "USDC" ? USDC_MINT : undefined],
-      ["To", address],
+      ["To", address2],
       ["Network", "solana-mainnet"]
     ]);
     notice(deps, "stdout", "note", `Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.
@@ -47101,26 +47405,26 @@ async function teeStatus(args, ctx) {
   const verify = parsed.booleans.has("--verify");
   if (verify && !refuseEnvPassphrase2(ctx))
     return 1;
-  const [address, extra] = parsed.positionals;
-  if (!address || extra !== undefined)
+  const [address2, extra] = parsed.positionals;
+  if (!address2 || extra !== undefined)
     return usage3(ctx, "Usage: candle tee status <address> [--rpc-url <url>] [--verify]");
-  if (/^0x/i.test(address))
-    return await teeStatusEvm(ctx, parsed, address);
+  if (/^0x/i.test(address2))
+    return await teeStatusEvm(ctx, parsed, address2);
   const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
   if ("error" in solana)
     return usage3(ctx, solana.error);
   let local = null;
   let entry2;
   if (verify) {
-    const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed));
+    const resolved = await resolveTeeAddress(ctx, parsed, address2, () => openExistingTeeStore(ctx, parsed));
     if (!resolved.ok)
       return resolved.code;
     local = resolved.resolved;
     entry2 = local.source === "vault" ? local.legacyView : local.entry;
   } else {
     try {
-      const { row } = await serverTeeWallet(ctx, address, "solana");
-      entry2 = { address, label: row.label ?? "", linkedWalletId: row.id };
+      const { row } = await serverTeeWallet(ctx, address2, "solana");
+      entry2 = { address: address2, label: row.label ?? "", linkedWalletId: row.id };
     } catch (error) {
       return tradingFailure(ctx, error);
     }
@@ -47132,7 +47436,7 @@ async function teeStatus(args, ctx) {
         return reconciled.code;
     }
     const report = {
-      address,
+      address: address2,
       label: entry2.label,
       source: local?.source ?? "server",
       verified: verify,
@@ -47160,10 +47464,10 @@ async function teeStatus(args, ctx) {
     {
       const rpc = solana.rpc;
       try {
-        const lamports = await rpc.getBalance(address);
+        const lamports = await rpc.getBalance(address2);
         const tokens = [
-          ...await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
-          ...await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
+          ...await rpc.getTokenAccountsByOwner(address2, TOKEN_PROGRAM_ID),
+          ...await rpc.getTokenAccountsByOwner(address2, TOKEN_2022_PROGRAM_ID)
         ];
         report.balances = {
           lamports: lamports.toString(),
@@ -47188,7 +47492,7 @@ async function teeStatus(args, ctx) {
       return 0;
     }
     writeFields(deps, "stdout", [
-      ["Address", address],
+      ["Address", address2],
       ["Label", entry2.label]
     ], "TEE wallet");
     if (local?.source === "vault") {
@@ -47254,18 +47558,18 @@ async function teeDisable(args, ctx, demote) {
   const parsed = parseArgs(args, { valueFlags: ["--keystore"], pathFlags: ["--keystore"] });
   if ("error" in parsed)
     return usage3(ctx, parsed.error);
-  const [address, extra] = parsed.positionals;
-  if (!address || extra !== undefined)
+  const [address2, extra] = parsed.positionals;
+  if (!address2 || extra !== undefined)
     return usage3(ctx, "Usage: candle tee disable <address>");
   await printIdentity(ctx);
-  const openedActive = demote ? { ok: true, active: vaultActiveTee(ctx, demote.resolved) } : await openActiveTee(ctx, parsed, address, "read");
+  const openedActive = demote ? { ok: true, active: vaultActiveTee(ctx, demote.resolved) } : await openActiveTee(ctx, parsed, address2, "read");
   if (!openedActive.ok)
     return openedActive.code;
   const { active } = openedActive;
   try {
     const entry2 = active.entry;
     if (!entry2.linkedWalletId) {
-      writeLocalFailure(deps, { code: "TEE_WALLET_NOT_ENABLED", message: `${address} was never enabled; there is nothing to stop.` }, json);
+      writeLocalFailure(deps, { code: "TEE_WALLET_NOT_ENABLED", message: `${address2} was never enabled; there is nothing to stop.` }, json);
       return 1;
     }
     const linkedWalletId = entry2.linkedWalletId;
@@ -47274,7 +47578,7 @@ async function teeDisable(args, ctx, demote) {
       target.tee = { ...target.tee ?? { network: "solana-mainnet" }, stopRequestedAt };
     });
     if (!committed.ok) {
-      writeCommitFailure(ctx, committed, `The stop was NOT recorded locally and the server was not asked. Retry: candle tee disable ${address}`);
+      writeCommitFailure(ctx, committed, `The stop was NOT recorded locally and the server was not asked. Retry: candle tee disable ${address2}`);
       return 1;
     }
     const unconfirmed = (detail, suggestion) => {
@@ -47283,7 +47587,7 @@ async function teeDisable(args, ctx, demote) {
           ok: false,
           code: "STOP_UNCONFIRMED",
           message: detail,
-          address,
+          address: address2,
           linkedWalletId,
           stopRequestedAt,
           remoteEnforcement: "unconfirmed",
@@ -47294,13 +47598,13 @@ async function teeDisable(args, ctx, demote) {
       }
       notice(deps, "stderr", "note", `${detail}
 `.trim());
-      notice(deps, "stderr", "warning", `Stop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${address} again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.
+      notice(deps, "stderr", "warning", `Stop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${address2} again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.
 ${suggestion}
 `.trim());
     };
     const apiKey = await resolveApiKey(deps, ctx.profile);
     if (!apiKey) {
-      unconfirmed("No API key available, so the server was not asked to stop the agent.", `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle tee disable ${address}`);
+      unconfirmed("No API key available, so the server was not asked to stop the agent.", `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle tee disable ${address2}`);
       return 1;
     }
     const result2 = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(linkedWalletId)}`, {
@@ -47312,29 +47616,29 @@ ${suggestion}
       env: deps.env
     });
     if (!result2.ok) {
-      unconfirmed(`The stop request failed: ${result2.message ?? `HTTP ${result2.status}`}${result2.status === 401 ? " (this API key no longer works)" : ""}.`, `Re-run: candle tee disable ${address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`);
+      unconfirmed(`The stop request failed: ${result2.message ?? `HTTP ${result2.status}`}${result2.status === 401 ? " (this API key no longer works)" : ""}.`, `Re-run: candle tee disable ${address2}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`);
       return 1;
     }
     const outcome = readDisableOutcome(result2.body);
-    for (const warning of bridgeDisableWarnings(address, result2.body))
+    for (const warning of bridgeDisableWarnings(address2, result2.body))
       notice(deps, "stderr", "note", `${warning}
 `.trim());
     if (json) {
-      deps.stdout.write(`${JSON.stringify({ address, linkedWalletId: entry2.linkedWalletId, ...result2.body })}
+      deps.stdout.write(`${JSON.stringify({ address: address2, linkedWalletId: entry2.linkedWalletId, ...result2.body })}
 `);
       return outcome.complete ? 0 : 3;
     }
     if (outcome.complete) {
-      notice(deps, "stdout", "note", `Stopped ${address}. Remote signing denial verified; the wallet is quarantined.
+      notice(deps, "stdout", "note", `Stopped ${address2}. Remote signing denial verified; the wallet is quarantined.
 `.trim());
       if (!demote)
-        notice(deps, "stdout", "note", `Recover the funds: candle tee sweep ${address}
+        notice(deps, "stdout", "note", `Recover the funds: candle tee sweep ${address2}
 `.trim());
       return 0;
     }
-    notice(deps, "stdout", "warning", `Agent trading stopped at Candle for ${address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
-Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${address}
-If the provider is down or theft is suspected: ${demote ? `candle vault demote ${address}` : `candle tee sweep ${address}`} --emergency
+    notice(deps, "stdout", "warning", `Agent trading stopped at Candle for ${address2}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
+Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${address2}
+If the provider is down or theft is suspected: ${demote ? `candle vault demote ${address2}` : `candle tee sweep ${address2}`} --emergency
 `.trim());
     return 3;
   } finally {
@@ -47478,8 +47782,8 @@ async function teeSweep(args, ctx, demote) {
   });
   if ("error" in parsed)
     return usage3(ctx, parsed.error);
-  const [address, extra] = parsed.positionals;
-  if (!address || extra !== undefined)
+  const [address2, extra] = parsed.positionals;
+  if (!address2 || extra !== undefined)
     return usage3(ctx, "Usage: candle tee sweep <address> [--rpc-url <url>] [--emergency]");
   const solana = demote ? demote.solana : await openSolanaClient(ctx, parsed.values["--rpc-url"]);
   if ("error" in solana)
@@ -47497,7 +47801,7 @@ async function teeSweep(args, ctx, demote) {
     }
     openedActive = { ok: true, active: vaultActiveTee(ctx, demote.resolved) };
   } else {
-    openedActive = await openActiveTee(ctx, parsed, address, "sign");
+    openedActive = await openActiveTee(ctx, parsed, address2, "sign");
   }
   if (!openedActive.ok)
     return openedActive.code;
@@ -47508,7 +47812,7 @@ async function teeSweep(args, ctx, demote) {
     if (!vault) {
       writeLocalFailure(deps, {
         code: "TEE_WALLET_NO_VAULT",
-        message: `${address} has no pinned vault (it was never enabled), so there is nothing a sweep may send to.`
+        message: `${address2} has no pinned vault (it was never enabled), so there is nothing a sweep may send to.`
       }, json);
       return 1;
     }
@@ -47536,24 +47840,24 @@ async function teeSweep(args, ctx, demote) {
         if (!emergency) {
           writeLocalFailure(deps, {
             code: "TEE_WALLET_STATE_UNREAD",
-            message: `Could not read ${address}'s lifecycle from the server (${unreadReason}); its remote signing authority is unverified.`,
-            suggestion: `Restore the API key or connectivity and re-run, or stop it from your Candle session first. If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address} --emergency (remote authority stays pending and a still-authorized agent signer may race the sweep).`
+            message: `Could not read ${address2}'s lifecycle from the server (${unreadReason}); its remote signing authority is unverified.`,
+            suggestion: `Restore the API key or connectivity and re-run, or stop it from your Candle session first. If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address2} --emergency (remote authority stays pending and a still-authorized agent signer may race the sweep).`
           }, json);
           return 3;
         }
       } else if (serverState === "enabled") {
         writeLocalFailure(deps, {
           code: "TEE_WALLET_STILL_ENABLED",
-          message: `${address} is still enabled for the agent.`,
-          suggestion: `Stop it first: candle tee disable ${address}`
+          message: `${address2} is still enabled for the agent.`,
+          suggestion: `Stop it first: candle tee disable ${address2}`
         }, json);
         return 1;
       }
       if (serverState === "disable-pending" && !emergency) {
         writeLocalFailure(deps, {
           code: "TEE_WALLET_DISABLE_PENDING",
-          message: `${address}'s remote signing authority is not yet verified denied.`,
-          suggestion: `Re-run: candle tee disable ${address}. If the provider is down or theft is suspected, add --emergency (the agent signer may still race you).`
+          message: `${address2}'s remote signing authority is not yet verified denied.`,
+          suggestion: `Re-run: candle tee disable ${address2}. If the provider is down or theft is suspected, add --emergency (the agent signer may still race you).`
         }, json);
         return 3;
       }
@@ -47562,7 +47866,7 @@ async function teeSweep(args, ctx, demote) {
         return 1;
       }
     }
-    const bridgeGate = bridgeSweepGate(address, bridges);
+    const bridgeGate = bridgeSweepGate(address2, bridges);
     if (bridgeGate.refusal && !emergency) {
       writeLocalFailure(deps, bridgeGate.refusal, json);
       return 1;
@@ -47587,7 +47891,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
     }
     if (!json) {
       writeFields(deps, "stdout", [
-        ["From", address],
+        ["From", address2],
         ["Vault", vault],
         ["Network", "solana-mainnet"]
       ], "Sweep");
@@ -47598,7 +47902,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
     }
     const secret = base58.decode(entry2.privateKey);
     const teePubkey = pubkeyFromSecret(secret);
-    if (encodePubkey(teePubkey) !== address) {
+    if (encodePubkey(teePubkey) !== address2) {
       writeLocalFailure(deps, { code: "TEE_KEY_MISMATCH", message: "The stored secret does not derive this address; refusing to sign." }, json);
       return 1;
     }
@@ -47821,7 +48125,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
     {
       let token2022Accounts = [];
       try {
-        token2022Accounts = await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID);
+        token2022Accounts = await rpc.getTokenAccountsByOwner(address2, TOKEN_2022_PROGRAM_ID);
       } catch (error) {
         if (!stopForContext(error))
           residuals.push({
@@ -47870,7 +48174,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           const verdict = await verifyCloseArtifact({
             artifact,
             rpc,
-            tee: address,
+            tee: address2,
             vault,
             nftMint: acct.mint,
             nftAccount: acct.pubkey
@@ -47901,7 +48205,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
             leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, "the close build's blockhash has expired; not signed, re-run the sweep for a fresh close");
             continue;
           }
-          const display = describeClose({ verdict, tee: address, vault, nftMint: acct.mint, nftAccount: acct.pubkey });
+          const display = describeClose({ verdict, tee: address2, vault, nftMint: acct.mint, nftAccount: acct.pubkey });
           lpCloses.push({ mint: acct.mint, account: acct.pubkey, display });
           if (!json) {
             writeFields(deps, "stdout", [
@@ -47942,7 +48246,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
     const tokenAccounts = [];
     for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
       try {
-        tokenAccounts.push(...await rpc.getTokenAccountsByOwner(address, programId));
+        tokenAccounts.push(...await rpc.getTokenAccountsByOwner(address2, programId));
       } catch (error) {
         if (!stopForContext(error))
           residuals.push({
@@ -48084,7 +48388,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
     if (signingBlocked)
       notAttempted();
     try {
-      const balance = signingBlocked ? 0n : await rpc.getBalance(address);
+      const balance = signingBlocked ? 0n : await rpc.getBalance(address2);
       if (balance > 0n) {
         const blockhash = await rpc.getLatestBlockhash();
         const probe = compileLegacyMessage({
@@ -48141,7 +48445,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
     const inventory = { observedAt: new Date(deps.now()).toISOString(), verified: false, lamports: null, tokenAccounts: null };
     try {
       const listed = new Set(residuals.map((r) => r.account).filter((a) => a !== undefined));
-      const lamports = await rpc.getBalance(address);
+      const lamports = await rpc.getBalance(address2);
       inventory.lamports = lamports.toString();
       if (lamports > 0n && !solHandledAsResidual) {
         residuals.push({
@@ -48151,8 +48455,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         });
       }
       const remaining = [
-        ...await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
-        ...await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
+        ...await rpc.getTokenAccountsByOwner(address2, TOKEN_PROGRAM_ID),
+        ...await rpc.getTokenAccountsByOwner(address2, TOKEN_2022_PROGRAM_ID)
       ];
       inventory.tokenAccounts = remaining.length;
       for (const acct of remaining) {
@@ -48220,7 +48524,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
     const finalState = sweptLocally ? "swept" : emergency || serverState === "disable-pending" || serverState === "unread" ? "disable-pending" : serverState === "local-only" ? "local-only" : "quarantined";
     if (json) {
       deps.stdout.write(`${JSON.stringify({
-        address,
+        address: address2,
         vaultDestination: vault,
         state: finalState,
         serverState,
@@ -48263,7 +48567,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         ]);
     }
     if (emergency)
-      notice(deps, "stdout", "warning", `Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}
+      notice(deps, "stdout", "warning", `Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address2}
 `.trim());
     if (pendingStill.length > 0)
       notice(deps, "stdout", "note", `${pendingStill.length} transaction(s) still in flight (${pendingStill.map((p) => p.signature).join(", ")}). Re-run this sweep: a finalized one becomes a receipt, an expired one is swept again.
@@ -48281,7 +48585,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         notice(deps, "stdout", "warning", `The local pending record for ${r.signature} could not be removed (${cleanupFailures.get(r.signature ?? "")}). It was never broadcast; the next run drops it once its blockhash expires, normally within two minutes. Re-run after that.
 `.trim());
     if (serverState === "disable-pending" && !emergency)
-      notice(deps, "stdout", "warning", `Remote signing authority is not verified denied. Re-run: candle tee disable ${address}, then re-run this sweep to record it.
+      notice(deps, "stdout", "warning", `Remote signing authority is not verified denied. Re-run: candle tee disable ${address2}, then re-run this sweep to record it.
 `.trim());
     if (allReceipts.length === 0 && residuals.length === 0)
       notice(deps, "stdout", "note", `Nothing to sweep: no balances found.
@@ -53570,11 +53874,11 @@ var require_utils = __commonJS((exports, module) => {
     buffer.length = 0;
     return true;
   }
-  function consumeHextets(buffer, address, output) {
+  function consumeHextets(buffer, address2, output) {
     if (buffer.length) {
       const hex3 = stringArrayToHexStripped(buffer);
       if (hex3 !== "") {
-        address.push(hex3);
+        address2.push(hex3);
       } else {
         output.error = true;
         return false;
@@ -53586,7 +53890,7 @@ var require_utils = __commonJS((exports, module) => {
   function getIPV6(input) {
     let tokenCount = 0;
     const output = { error: false, address: "", zone: "" };
-    const address = [];
+    const address2 = [];
     const buffer = [];
     let endipv6Encountered = false;
     let endIpv6 = false;
@@ -53600,7 +53904,7 @@ var require_utils = __commonJS((exports, module) => {
         if (endipv6Encountered === true) {
           endIpv6 = true;
         }
-        if (!consume(buffer, address, output)) {
+        if (!consume(buffer, address2, output)) {
           break;
         }
         if (++tokenCount > 7) {
@@ -53610,10 +53914,10 @@ var require_utils = __commonJS((exports, module) => {
         if (i > 0 && input[i - 1] === ":") {
           endipv6Encountered = true;
         }
-        address.push(":");
+        address2.push(":");
         continue;
       } else if (cursor === "%") {
-        if (!consume(buffer, address, output)) {
+        if (!consume(buffer, address2, output)) {
           break;
         }
         consume = consumeIsZone;
@@ -53626,12 +53930,12 @@ var require_utils = __commonJS((exports, module) => {
       if (consume === consumeIsZone) {
         output.zone = buffer.join("");
       } else if (endIpv6) {
-        address.push(buffer.join(""));
+        address2.push(buffer.join(""));
       } else {
-        address.push(stringArrayToHexStripped(buffer));
+        address2.push(stringArrayToHexStripped(buffer));
       }
     }
-    output.address = address.join("");
+    output.address = address2.join("");
     return output;
   }
   function normalizeIPv6(host) {
@@ -70333,7 +70637,7 @@ var init_schemas = __esm(() => {
       try {
         if (parts.length !== 2)
           throw new Error;
-        const [address, prefix] = parts;
+        const [address3, prefix] = parts;
         if (!prefix)
           throw new Error;
         const prefixNum = Number(prefix);
@@ -70341,7 +70645,7 @@ var init_schemas = __esm(() => {
           throw new Error;
         if (prefixNum < 0 || prefixNum > 128)
           throw new Error;
-        new URL(`http://[${address}]`);
+        new URL(`http://[${address3}]`);
       } catch {
         payload.issues.push({
           code: "invalid_format",
@@ -77188,9 +77492,9 @@ function requireEvmChain2(slug, opts) {
 function defaultEvmChain2() {
   return requireEvmChain2("hood", { allowDisabled: true });
 }
-function isValidChainAddress2(slug, address) {
+function isValidChainAddress2(slug, address2) {
   const entry = requireChain2(slug, { allowDisabled: true });
-  return entry.addressFormat === "evm-hex20" ? EVM_ADDRESS2.test(address) : SOLANA_ADDRESS2.test(address);
+  return entry.addressFormat === "evm-hex20" ? EVM_ADDRESS2.test(address2) : SOLANA_ADDRESS2.test(address2);
 }
 // src/chain-registry.ts
 var entry = (slug) => getChain2(slug);
@@ -79861,10 +80165,13 @@ var HELP = {
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
       {
-        invocation: "markets [--sort <volume|oi|funding|change|name>] [--limit <n>] [--all]",
-        description: "List live main-perp markets directly from Hyperliquid; any Candle agent key required"
+        invocation: "markets [--sort <volume|oi|funding|change|name>] [--limit <n>] [--all] [--dex <name|all>]",
+        description: "List live perp markets directly from Hyperliquid (main exchange by default; --dex for a builder dex); any Candle agent key required"
       },
-      { invocation: "market <coin>", description: "Market detail, margin tiers, impact prices and precision rules" },
+      {
+        invocation: "market <coin>",
+        description: "Market detail, margin tiers, impact prices and precision rules; a builder-dex market is dex:COIN (xyz:TSLA) and prints its dex, oracle, deployer, margin mode and fee"
+      },
       {
         invocation: "book <coin> [--depth <1-20>] [--sig-figs <2-5>]",
         description: "Live order book, spread and mid, directly from Hyperliquid"
@@ -79964,6 +80271,10 @@ var HELP = {
       {
         invocation: "--all",
         description: "markets: include refused markets and reasons; OI caps can still refuse an order"
+      },
+      {
+        invocation: "--dex <name|all>",
+        description: "markets: one builder-deployed (HIP-3) dex such as xyz, or all for the main exchange and every builder dex; lists the dexes too"
       },
       { invocation: "--depth <1-20>", description: "book: levels per side (default 20)" },
       { invocation: "--sig-figs <2-5>", description: "book: Hyperliquid price aggregation" },
@@ -82358,9 +82669,9 @@ function assetContract(asset) {
 function describeSend2(amount, asset, to) {
   return `send ${amount} ${asset} to ${to}`;
 }
-function groupAddress2(address) {
-  const prefix = address.startsWith("0x") ? "0x" : "";
-  const groups = address.slice(prefix.length).match(/.{1,4}/g) ?? [];
+function groupAddress2(address2) {
+  const prefix = address2.startsWith("0x") ? "0x" : "";
+  const groups = address2.slice(prefix.length).match(/.{1,4}/g) ?? [];
   return [...prefix ? [prefix] : [], ...groups].join(" ");
 }
 function confirmTyped(typed) {
@@ -84589,10 +84900,10 @@ function createQuantKeyClient(options) {
 }
 
 // src/core/addresses.ts
-function isPlausibleTokenAddress(chain2, address) {
+function isPlausibleTokenAddress(chain2, address2) {
   if (chain2 === "hood")
-    return /^0x[0-9a-fA-F]{40}$/.test(address);
-  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address);
+    return /^0x[0-9a-fA-F]{40}$/.test(address2);
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address2);
 }
 
 // src/core/quant.ts
@@ -86135,8 +86446,8 @@ function namedSendFailure(plan) {
 }
 var TOKEN_ACCOUNT_STATE_OFFSET2 = 108;
 var TOKEN_ACCOUNT_STATE_FROZEN2 = 2;
-async function tokenAccountFrozen(rpc, address) {
-  const account = await rpc.getAccountInfo(address);
+async function tokenAccountFrozen(rpc, address2) {
+  const account = await rpc.getAccountInfo(address2);
   if (account === null)
     return { exists: false, frozen: false };
   return { exists: true, frozen: account.data[TOKEN_ACCOUNT_STATE_OFFSET2] === TOKEN_ACCOUNT_STATE_FROZEN2 };
@@ -86656,12 +86967,12 @@ function createTransferChain(chainDeps) {
         ..."max" in params.amount ? { maxRaw: plan.amountRaw.toString() } : {}
       };
     },
-    async balances(chain2, address) {
+    async balances(chain2, address2) {
       if (chain2 === "solana") {
-        const lamports = await deps.solana.read(() => solanaRpc.getBalance(address));
+        const lamports = await deps.solana.read(() => solanaRpc.getBalance(address2));
         return [{ asset: "SOL", contract: BASE_CONTRACTS.SOL, raw: lamports.toString(), decimals: 9 }];
       }
-      const wei = await deps.hood.rpc.getBalance(address);
+      const wei = await deps.hood.rpc.getBalance(address2);
       return [{ asset: "ETH", contract: BASE_CONTRACTS.ETH, raw: wei.toString(), decimals: 18 }];
     },
     async decimals(chain2, asset) {
@@ -86806,8 +87117,8 @@ class DestinationHistory {
   constructor(options) {
     this.options = options;
   }
-  key(environment, chain2, address) {
-    return `${environment}:${chain2}:${chain2 === "hood" ? address.toLowerCase() : address}`;
+  key(environment, chain2, address2) {
+    return `${environment}:${chain2}:${chain2 === "hood" ? address2.toLowerCase() : address2}`;
   }
   async rebuild(rows) {
     this.seen.clear();
@@ -86826,11 +87137,11 @@ class DestinationHistory {
     }
     await this.write();
   }
-  has(chain2, address) {
-    return this.seen.has(this.key(this.options.environment, chain2, address));
+  has(chain2, address2) {
+    return this.seen.has(this.key(this.options.environment, chain2, address2));
   }
-  async add(chain2, address) {
-    this.seen.add(this.key(this.options.environment, chain2, address));
+  async add(chain2, address2) {
+    this.seen.add(this.key(this.options.environment, chain2, address2));
     await this.write();
   }
   async write() {
@@ -86892,17 +87203,17 @@ async function sources(params, call2, deps) {
     return;
   });
   for (const chain2 of ["solana", "hood"]) {
-    const address = chain2 === "hood" ? embedded?.evm : embedded?.solana;
-    if (!address)
+    const address2 = chain2 === "hood" ? embedded?.evm : embedded?.solana;
+    if (!address2)
       continue;
     out.push({
       kind: "embedded",
       label: "Embedded wallet",
       chain: chain2,
-      address,
+      address: address2,
       on: withdraw.status === "on",
       ...withdraw.status === "off" ? { reason: withdraw.reason ?? "Turn on transfers from the embedded wallet in Settings > Transfers." } : {},
-      balances: await deps.reads.balances(chain2, address).catch(() => {
+      balances: await deps.reads.balances(chain2, address2).catch(() => {
         return;
       }) ?? null
     });
@@ -86921,10 +87232,10 @@ async function destinations(params, _call, deps) {
   if (chain2 !== "solana" && chain2 !== "hood")
     throw refused("INVALID_CHAIN", unsupportedChainText(chain2));
   const out = [];
-  const push = (address, extra) => {
-    if (out.some((row2) => sameAddress3(chain2, row2.address, address)))
+  const push = (address2, extra) => {
+    if (out.some((row2) => sameAddress3(chain2, row2.address, address2)))
       return;
-    out.push({ address, ...extra, sentBefore: deps.history.has(chain2, address) });
+    out.push({ address: address2, ...extra, sentBefore: deps.history.has(chain2, address2) });
   };
   if (kind === "embedded") {
     for (const row2 of await deps.reads.serverDestinations(chain2)) {
@@ -87565,13 +87876,13 @@ ${USAGE6}`, json);
         embeddedWallets: async () => {
           const body = await read("/api/v1/agent/wallets/embedded");
           const wallets2 = body?.wallets;
-          const address = (wallet3) => typeof wallet3?.address === "string" ? wallet3.address : undefined;
-          const solana = address(wallets2?.solana);
-          const evm = address(wallets2?.evm);
+          const address2 = (wallet3) => typeof wallet3?.address === "string" ? wallet3.address : undefined;
+          const solana = address2(wallets2?.solana);
+          const evm = address2(wallets2?.evm);
           return body ? { ...solana ? { solana } : {}, ...evm ? { evm } : {} } : undefined;
         },
         serverDestinations: (on) => serverDestinations(on, read),
-        balances: (on, address) => chain2.balances(on, address),
+        balances: (on, address2) => chain2.balances(on, address2),
         decimals: (on, asset) => chain2.decimals(on, asset),
         previewVault: (params, wallet3) => chain2.preview(params, wallet3)
       }
@@ -87834,7 +88145,7 @@ async function transferChainFor(ctx, stateDir, executor, history2, readKey2) {
     reportActivity: async (on, id) => {
       await reportTransferActivity(ctx, readKey2(), id, on);
     },
-    recordDestination: (on, address) => history2.add(on, address)
+    recordDestination: (on, address2) => history2.add(on, address2)
   });
 }
 function keyLimitOf(keys, prefix, now) {
@@ -92780,8 +93091,8 @@ async function deriveSolanaKey(entropy, path) {
   try {
     const leaf = derivePath(seed, path);
     try {
-      const { secret64, address } = pubkeyFromSecretSeed(leaf);
-      return { secret64, address, path };
+      const { secret64, address: address2 } = pubkeyFromSecretSeed(leaf);
+      return { secret64, address: address2, path };
     } finally {
       wipe(leaf);
     }
@@ -93133,13 +93444,13 @@ async function vaultNewKey(args, ctx) {
         const index = nextAllocatableIndex(current.index.hd.nextIndex[branch], current.index.hd.exposedIndexes[branch]);
         const derivationPath = branch === "evm" ? evmPath(index) : solanaVaultPath(index);
         const label = batch.labels?.[made] ?? parsed.values["--label"] ?? defaultLabel(branch, index);
-        let address;
+        let address2;
         let keyId;
         let blob;
         if (branch === "evm") {
           const key = await deriveEvmKeyFromRoot(root, index);
           try {
-            address = key.address;
+            address2 = key.address;
             keyId = freshKeyId();
             blob = await sealKeyBlob(current, keyId, key.secret);
           } finally {
@@ -93148,7 +93459,7 @@ async function vaultNewKey(args, ctx) {
         } else {
           const key = await deriveSolanaKey(root, derivationPath);
           try {
-            address = key.address;
+            address2 = key.address;
             keyId = freshKeyId();
             blob = await sealKeyBlob(current, keyId, key.secret64);
           } finally {
@@ -93159,7 +93470,7 @@ async function vaultNewKey(args, ctx) {
           id: keyId,
           chain: chain2,
           curve: chain2 === "evm" ? "secp256k1" : "ed25519",
-          address,
+          address: address2,
           label,
           createdAt: new Date(deps.now()).toISOString(),
           role: "vault",
@@ -93174,12 +93485,12 @@ async function vaultNewKey(args, ctx) {
           },
           addKeys: [blob]
         }, deps);
-        derived.push({ address, label, path: derivationPath, index, keyId });
-        await verifyWrittenFromDisk(current, address, keyId, chain2);
-        last = { address, keyId };
+        derived.push({ address: address2, label, path: derivationPath, index, keyId });
+        await verifyWrittenFromDisk(current, address2, keyId, chain2);
+        last = { address: address2, keyId };
         if (!ctx.json && batchRequested)
           writeFields(deps, "stdout", [
-            ["Address", address],
+            ["Address", address2],
             ["Label", label],
             ["Derivation", derivationPath]
           ]);
@@ -93265,7 +93576,7 @@ function nextAllocatableIndex(counter, exposed) {
     index++;
   return index;
 }
-async function verifyWrittenFromDisk(vault, address, keyId, chain2 = "solana") {
+async function verifyWrittenFromDisk(vault, address2, keyId, chain2 = "solana") {
   const raw2 = await readVaultRaw(vault.path);
   if (raw2 === null) {
     throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${vault.path} could not be read back after the write.`);
@@ -93273,14 +93584,14 @@ async function verifyWrittenFromDisk(vault, address, keyId, chain2 = "solana") {
   const onDisk = { ...vault, raw: raw2, file: parseVaultFile(raw2) };
   const secret = await decryptKey(onDisk, keyId);
   try {
-    if (!sameAddress4(chain2, addressOfSecret(chain2, secret), address)) {
+    if (!sameAddress4(chain2, addressOfSecret(chain2, secret), address2)) {
       throw new VaultError("VAULT_VERIFY_FAILED", "The key written to the vault does not produce the address just derived.");
     }
   } finally {
     wipe(secret);
   }
 }
-async function verifyWritten(path, address, keyId, reopen, _ctx, chain2 = "solana") {
+async function verifyWritten(path, address2, keyId, reopen, _ctx, chain2 = "solana") {
   const raw2 = await readVaultRaw(path);
   if (raw2 === null)
     throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${path} could not be read back after the write.`);
@@ -93288,7 +93599,7 @@ async function verifyWritten(path, address, keyId, reopen, _ctx, chain2 = "solan
   try {
     const secret = await decryptKey(reopened, keyId);
     try {
-      if (!sameAddress4(chain2, addressOfSecret(chain2, secret), address)) {
+      if (!sameAddress4(chain2, addressOfSecret(chain2, secret), address2)) {
         throw new VaultError("VAULT_VERIFY_FAILED", "The key written to the vault does not produce the address just derived.");
       }
     } finally {
@@ -93347,13 +93658,13 @@ async function externalNew(args, ctx) {
       return usage2(ctx, `A key labelled ${label} already exists in this vault; choose another --label.`);
     }
     const root = await decryptRoot(vault);
-    let address;
+    let address2;
     let keyId;
     let blob;
     try {
       const derived = await deriveSolanaKey(root, derivationPath);
       try {
-        address = derived.address;
+        address2 = derived.address;
         keyId = freshKeyId();
         blob = await sealKeyBlob(vault, keyId, derived.secret64);
       } finally {
@@ -93366,7 +93677,7 @@ async function externalNew(args, ctx) {
       id: keyId,
       chain: "solana",
       curve: "ed25519",
-      address,
+      address: address2,
       label,
       createdAt: new Date(deps.now()).toISOString(),
       role: "external",
@@ -93382,11 +93693,11 @@ async function externalNew(args, ctx) {
       },
       addKeys: [blob]
     }, deps);
-    await verifyWritten(path, address, keyId, opened.reopen, ctx);
+    await verifyWritten(path, address2, keyId, opened.reopen, ctx);
     if (ctx.json) {
       writeJson(deps, {
         ok: true,
-        address,
+        address: address2,
         label,
         path: derivationPath,
         index,
@@ -93398,7 +93709,7 @@ async function externalNew(args, ctx) {
     }
     writeSuccess(deps, "stdout", "External wallet created");
     writeFields(deps, "stdout", [
-      ["Address", address],
+      ["Address", address2],
       ["Label", label],
       ["Derivation", derivationPath],
       ["Role", "external: signs only through candle sign and candle external sweep"],
@@ -94397,8 +94708,8 @@ function chainOf(values) {
   const chain2 = values["--chain"] ?? "solana";
   return chain2 === "solana" || isEvmChainSlug(chain2) ? chain2 : undefined;
 }
-function pagePath(chain2, address, rest = "") {
-  return `/api/v1/token-pages/${chain2}/${encodeURIComponent(address)}${rest}`;
+function pagePath(chain2, address2, rest = "") {
+  return `/api/v1/token-pages/${chain2}/${encodeURIComponent(address2)}${rest}`;
 }
 function refusalOf2(result2) {
   if (result2.ok)
@@ -94612,8 +94923,8 @@ async function tokenAbout(args, ctx) {
   if ("error" in parsed)
     return usage4(parsed.error);
   const chain2 = chainOf(parsed.values);
-  const address = parsed.positionals[0];
-  if (parsed.positionals.length !== 1 || !address)
+  const address2 = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !address2)
     return usage4();
   if (!chain2)
     return usage4("--chain must be solana or hood.");
@@ -94621,12 +94932,12 @@ async function tokenAbout(args, ctx) {
   const apiKey = withCapabilities ? await requireKey(ctx) : undefined;
   if (withCapabilities && !apiKey)
     return 1;
-  const summary = await read(ctx, pagePath(chain2, address));
+  const summary = await read(ctx, pagePath(chain2, address2));
   if (!summary.ok)
     return writeApiFailure(ctx, summary, "none");
   let capabilities;
   if (apiKey) {
-    const own = await read(ctx, pagePath(chain2, address, "/capabilities"), apiKey);
+    const own = await read(ctx, pagePath(chain2, address2, "/capabilities"), apiKey);
     if (!own.ok)
       return writeApiFailure(ctx, own, "key");
     capabilities = dataOf(own);
@@ -94663,8 +94974,8 @@ async function tokenClaim(args, ctx) {
     return usage4(parsed.error);
   const { values, booleans } = parsed;
   const chain2 = chainOf(values);
-  const address = parsed.positionals[0];
-  if (parsed.positionals.length !== 1 || !address)
+  const address2 = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !address2)
     return usage4();
   if (!chain2)
     return usage4("--chain must be solana or hood.");
@@ -94695,11 +95006,11 @@ async function tokenClaim(args, ctx) {
   if (!apiKey)
     return 1;
   if (challenge)
-    return creatorChallenge(ctx, chain2, address, apiKey, values["--message-out"]);
+    return creatorChallenge(ctx, chain2, address2, apiKey, values["--message-out"]);
   const body = { kind: creator ? "creator" : "holder", ...challengeId ? { challengeId, signature } : {} };
   const result2 = await write2(ctx, {
     method: "POST",
-    path: pagePath(chain2, address, "/claims"),
+    path: pagePath(chain2, address2, "/claims"),
     body,
     apiKey,
     idempotencyKey
@@ -94709,7 +95020,7 @@ async function tokenClaim(args, ctx) {
   if (!result2.ok) {
     const refusal4 = refusalOf2(result2);
     if (refusal4?.code === "invalid_signature" && creator && !challengeId) {
-      writeRefusal(ctx, refusal4, `This account's known wallets do not include the verified creator, so the claim needs a signed challenge: candle token claim ${address} --chain ${chain2} --creator --challenge`);
+      writeRefusal(ctx, refusal4, `This account's known wallets do not include the verified creator, so the claim needs a signed challenge: candle token claim ${address2} --chain ${chain2} --creator --challenge`);
       return 1;
     }
     return writeApiFailure(ctx, result2, "key");
@@ -94726,8 +95037,8 @@ async function tokenClaim(args, ctx) {
     ], "Claimed");
   return 0;
 }
-async function creatorChallenge(ctx, chain2, address, apiKey, messageOut) {
-  const result2 = await apiRequest(pagePath(chain2, address, "/creator-challenges"), {
+async function creatorChallenge(ctx, chain2, address2, apiKey, messageOut) {
+  const result2 = await apiRequest(pagePath(chain2, address2, "/creator-challenges"), {
     apiUrl: ctx.apiUrl,
     method: "POST",
     body: {},
@@ -94753,7 +95064,7 @@ async function creatorChallenge(ctx, chain2, address, apiKey, messageOut) {
       return 1;
     }
   }
-  const next = `candle token claim ${address} --chain ${chain2} --creator --challenge-id ${data.challengeId} --signature <signature>`;
+  const next = `candle token claim ${address2} --chain ${chain2} --creator --challenge-id ${data.challengeId} --signature <signature>`;
   if (ctx.json) {
     ctx.deps.stdout.write(`${JSON.stringify({ ok: true, data, byteLength: bytes.length, sha256: sha2564, ...messageOut ? { messageOut } : {}, next })}
 `);
@@ -94794,8 +95105,8 @@ async function tokenSection(args, ctx) {
     return usage4(parsed.error);
   const { values } = parsed;
   const chain2 = chainOf(values);
-  const [address, sectionName] = parsed.positionals;
-  if (parsed.positionals.length !== 2 || !address)
+  const [address2, sectionName] = parsed.positionals;
+  if (parsed.positionals.length !== 2 || !address2)
     return usage4();
   if (!chain2)
     return usage4("--chain must be solana or hood.");
@@ -94836,14 +95147,14 @@ async function tokenSection(args, ctx) {
     if (!empty && parsed.booleans.has("--clear"))
       return usage4("--clear is for an empty file.");
     body = { text: checked.text, baseRevision: base2 };
-    path = pagePath(chain2, address, `/sections/${section2}`);
+    path = pagePath(chain2, address2, `/sections/${section2}`);
     method = "PUT";
   } else {
     const versionId = values["--version-id"];
     if (versionId === undefined || !UUID2.test(versionId))
       return usage4("--version-id is a version id from candle token history.");
     body = { versionId, baseRevision: base2 };
-    path = pagePath(chain2, address, `/sections/${section2}/restore`);
+    path = pagePath(chain2, address2, `/sections/${section2}/restore`);
     method = "POST";
   }
   const apiKey = await requireKey(ctx);
@@ -94879,8 +95190,8 @@ async function tokenHistory(args, ctx) {
     return usage4(parsed.error);
   const { values } = parsed;
   const chain2 = chainOf(values);
-  const [address, sectionName] = parsed.positionals;
-  if (parsed.positionals.length !== 2 || !address)
+  const [address2, sectionName] = parsed.positionals;
+  if (parsed.positionals.length !== 2 || !address2)
     return usage4();
   if (!chain2)
     return usage4("--chain must be solana or hood.");
@@ -94894,7 +95205,7 @@ async function tokenHistory(args, ctx) {
     ...limit !== undefined ? { limit } : {},
     ...values["--cursor"] !== undefined ? { cursor: values["--cursor"] } : {}
   });
-  const result2 = await read(ctx, pagePath(chain2, address, `/sections/${section2}/history${query2.size ? `?${query2}` : ""}`));
+  const result2 = await read(ctx, pagePath(chain2, address2, `/sections/${section2}/history${query2.size ? `?${query2}` : ""}`));
   if (!result2.ok)
     return writeApiFailure(ctx, result2, "none");
   const data = dataOf(result2);
@@ -94934,8 +95245,8 @@ async function tokenFlag(args, ctx) {
     return usage4(parsed.error);
   const { values } = parsed;
   const chain2 = chainOf(values);
-  const address = parsed.positionals[0];
-  if (parsed.positionals.length !== 1 || !address)
+  const address2 = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !address2)
     return usage4();
   if (!chain2)
     return usage4("--chain must be solana or hood.");
@@ -94957,7 +95268,7 @@ async function tokenFlag(args, ctx) {
   const body = { contentId, reason, ...detail !== undefined ? { detail } : {} };
   const result2 = await write2(ctx, {
     method: "POST",
-    path: pagePath(chain2, address, "/flags"),
+    path: pagePath(chain2, address2, "/flags"),
     body,
     apiKey,
     idempotencyKey
@@ -94982,8 +95293,8 @@ async function tokenUpdate(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--file", "--idempotency-key"], pathFlags: ["--file"] });
   if ("error" in parsed)
     return usage4(parsed.error);
-  const chain2 = chainOf(parsed.values), address = parsed.positionals[0], file = parsed.values["--file"];
-  if (!chain2 || !address || !file || parsed.positionals.length !== 1)
+  const chain2 = chainOf(parsed.values), address2 = parsed.positionals[0], file = parsed.values["--file"];
+  if (!chain2 || !address2 || !file || parsed.positionals.length !== 1)
     return usage4();
   let bytes;
   try {
@@ -95002,7 +95313,7 @@ async function tokenUpdate(args, ctx) {
     return 1;
   const result2 = await write2(ctx, {
     method: "POST",
-    path: pagePath(chain2, address, "/updates"),
+    path: pagePath(chain2, address2, "/updates"),
     body: { text: checked.text },
     apiKey,
     idempotencyKey
@@ -95027,8 +95338,8 @@ async function tokenComment(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--file", "--idempotency-key"], pathFlags: ["--file"] });
   if ("error" in parsed)
     return usage4(parsed.error);
-  const chain2 = chainOf(parsed.values), address = parsed.positionals[0], file = parsed.values["--file"];
-  if (!chain2 || !address || !file || parsed.positionals.length !== 1)
+  const chain2 = chainOf(parsed.values), address2 = parsed.positionals[0], file = parsed.values["--file"];
+  if (!chain2 || !address2 || !file || parsed.positionals.length !== 1)
     return usage4();
   let bytes;
   try {
@@ -95047,7 +95358,7 @@ async function tokenComment(args, ctx) {
     return 1;
   const result2 = await write2(ctx, {
     method: "POST",
-    path: pagePath(chain2, address, "/comments"),
+    path: pagePath(chain2, address2, "/comments"),
     body: { text: checked.text },
     apiKey,
     idempotencyKey
@@ -95074,8 +95385,8 @@ async function tokenComments(args, ctx) {
     return usage4(parsed.error);
   const { values } = parsed;
   const chain2 = chainOf(values);
-  const address = parsed.positionals[0];
-  if (parsed.positionals.length !== 1 || !address)
+  const address2 = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !address2)
     return usage4();
   if (!chain2)
     return usage4("--chain must be solana or hood.");
@@ -95086,7 +95397,7 @@ async function tokenComments(args, ctx) {
     ...limit !== undefined ? { limit } : {},
     ...values["--cursor"] !== undefined ? { cursor: values["--cursor"] } : {}
   });
-  const result2 = await read(ctx, pagePath(chain2, address, `/comments${query2.size ? `?${query2}` : ""}`));
+  const result2 = await read(ctx, pagePath(chain2, address2, `/comments${query2.size ? `?${query2}` : ""}`));
   if (!result2.ok)
     return writeApiFailure(ctx, result2, "none");
   const data = dataOf(result2);
@@ -95125,8 +95436,8 @@ async function tokenPost(args, ctx) {
   const parsed = parseArgs(args.slice(1), { valueFlags: ["--chain", "--idempotency-key"] });
   if ("error" in parsed)
     return usage4(parsed.error);
-  const chain2 = chainOf(parsed.values), [address, id] = parsed.positionals;
-  if (!chain2 || !address || !id || !UUID2.test(id) || parsed.positionals.length !== 2)
+  const chain2 = chainOf(parsed.values), [address2, id] = parsed.positionals;
+  if (!chain2 || !address2 || !id || !UUID2.test(id) || parsed.positionals.length !== 2)
     return usage4();
   const idempotencyKey = idempotencyKeyOf(parsed.values, usage4);
   if (typeof idempotencyKey === "number")
@@ -95136,7 +95447,7 @@ async function tokenPost(args, ctx) {
     return 1;
   const result2 = await write2(ctx, {
     method: "DELETE",
-    path: pagePath(chain2, address, `/posts/${id}`),
+    path: pagePath(chain2, address2, `/posts/${id}`),
     body: {},
     apiKey,
     idempotencyKey
@@ -97401,14 +97712,14 @@ var atomicDryRunSchema = exports_external.object({
 }).passthrough();
 async function embeddedLaunchWallet(ctx, key, chain2) {
   const discovered = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded"));
-  const address = chain2 === "hood" ? discovered.wallets?.evm?.address : discovered.wallets?.solana?.address;
-  if (!address)
+  const address2 = chain2 === "hood" ? discovered.wallets?.evm?.address : discovered.wallets?.solana?.address;
+  if (!address2)
     throw new TradingError("PAYER_REQUIRED", `This account has no ${chainName(chain2)} embedded wallet. Create one in the app, or launch from a TEE wallet with --wallet <tee>. Nothing was built.`);
   if (discovered.embeddedWalletPermission === "denied")
-    throw new TradingError("EMBEDDED_WALLET_NOT_PERMITTED", `This key may not use the account's embedded wallet (${address}). Nothing was built.`, {
+    throw new TradingError("EMBEDDED_WALLET_NOT_PERMITTED", `This key may not use the account's embedded wallet (${address2}). Nothing was built.`, {
       suggestion: "Have the owner allow it: candle keys update <prefix> --embedded-wallet allow (device token), or in the web key manager. Or launch from a TEE wallet bound to this key with --wallet <tee>."
     });
-  return address;
+  return address2;
 }
 async function embeddedLaunch(ctx, key, args) {
   const { flags, id } = args;
@@ -98628,6 +98939,783 @@ import { randomUUID as randomUUID11, sign as sign4 } from "node:crypto";
 
 // src/hyperliquid.ts
 init_sha3();
+
+// src/hyperliquid-markets.ts
+var INFO_URLS2 = {
+  mainnet: "https://api.hyperliquid.xyz/info",
+  testnet: "https://api.hyperliquid-testnet.xyz/info"
+};
+var ONE3 = 10n ** 18n;
+var DECIMAL2 = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?$/;
+
+class PerpsMarketError2 extends Error {
+  code;
+  retryable;
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "PerpsMarketError";
+    this.retryable = code === "PERPS_UNAVAILABLE";
+  }
+}
+function unavailable4() {
+  throw new PerpsMarketError2("PERPS_UNAVAILABLE", "Hyperliquid market data is unavailable; retry shortly.");
+}
+function usage6(message) {
+  throw new PerpsMarketError2("PERPS_USAGE", message);
+}
+function object5(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function decimal4(value) {
+  return typeof value === "string" && value.length <= 100 && DECIMAL2.test(value) && (value.split(".")[1]?.length ?? 0) <= 18;
+}
+function scaled2(value) {
+  const negative = value.startsWith("-");
+  const [whole = "0", fraction = ""] = (negative ? value.slice(1) : value).split(".");
+  const result2 = BigInt(whole) * ONE3 + BigInt(fraction.padEnd(18, "0"));
+  return negative ? -result2 : result2;
+}
+function nonnegative2(value) {
+  return decimal4(value) && !value.startsWith("-") ? scaled2(value) : null;
+}
+function fixed2(value, places) {
+  const negative = value < 0n;
+  const abs = negative ? -value : value;
+  const divisor = 10n ** BigInt(18 - places);
+  const rounded = (abs + divisor / 2n) / divisor;
+  const digits = rounded.toString().padStart(places + 1, "0");
+  return `${negative && rounded !== 0n ? "-" : ""}${places ? `${digits.slice(0, -places)}.${digits.slice(-places)}` : digits}`;
+}
+var DEX_COIN2 = /^([A-Za-z0-9]{1,12}):([A-Za-z0-9]{1,20})$/;
+var MAIN_COIN2 = /^[A-Za-z0-9]{1,20}$/;
+function parsePerpsCoin2(coin) {
+  if (typeof coin !== "string")
+    return null;
+  if (MAIN_COIN2.test(coin))
+    return { dex: "", coin };
+  const m = DEX_COIN2.exec(coin);
+  if (!m || !m[1] || !m[2])
+    return null;
+  return { dex: m[1].toLowerCase(), coin: `${m[1].toLowerCase()}:${m[2]}` };
+}
+function parsePerpsDex2(dex) {
+  if (dex === undefined || dex === null || dex === "")
+    return "";
+  if (typeof dex !== "string" || !/^[A-Za-z0-9]{1,12}$/.test(dex))
+    return null;
+  return dex.toLowerCase();
+}
+function perpsAssetId2(dexIndex, indexInMeta) {
+  return dexIndex === 0 ? indexInMeta : 1e5 + dexIndex * 1e4 + indexInMeta;
+}
+function perpsMarginMode2(meta) {
+  return meta.onlyIsolated === true || meta.marginMode === "noCross" || meta.marginMode === "strictIsolated" ? "isolated" : "cross";
+}
+var COLLATERAL_NAMES2 = { 0: "USDC", 235: "USDE", 268: "USDT0", 360: "USDH" };
+function perpsCollateralName2(token2) {
+  return COLLATERAL_NAMES2[token2] ?? `spot token ${token2}`;
+}
+var PERPS_MAIN_TAKER_FEE_PCT2 = "0.045";
+var PERPS_MAIN_MAKER_FEE_PCT2 = "0.015";
+var PERPS_FEE_WARNING_MULTIPLIER2 = 2;
+function perpsFeeMultiplier2(meta, dex) {
+  if (dex === "")
+    return "1";
+  const share = nonnegative2(meta.deployerFeeScale ?? "0") ?? 0n;
+  let multiple = share <= ONE3 ? ONE3 + share : 2n * share;
+  if (meta.growthMode === "enabled")
+    multiple = multiple / 10n;
+  return trim2(multiple);
+}
+function trim2(value) {
+  return fixed2(value, 18).replace(/\.?0+$/, "") || "0";
+}
+function perpsDexTerms2(meta, dex, collateralToken) {
+  const name2 = dex?.name ?? "";
+  const multiplier = perpsFeeMultiplier2(meta, name2);
+  const scaledMultiplier = scaled2(multiplier);
+  const pct3 = (base2) => trim2(scaled2(base2) * scaledMultiplier / ONE3);
+  return {
+    dex: name2,
+    dexName: dex?.fullName ?? null,
+    deployer: dex?.deployer ?? null,
+    oracleSource: dex ? "deployer" : "validators",
+    oracleSetters: dex?.oracleSetters ?? [],
+    marginMode: perpsMarginMode2(meta),
+    collateral: perpsCollateralName2(collateralToken),
+    feeMultiplier: multiplier,
+    takerFeePct: pct3(PERPS_MAIN_TAKER_FEE_PCT2),
+    makerFeePct: pct3(PERPS_MAIN_MAKER_FEE_PCT2),
+    feeWarning: scaledMultiplier > BigInt(PERPS_FEE_WARNING_MULTIPLIER2) * ONE3 ? `${meta.name} charges ${multiplier}x the main exchange's fee (its deployer sets it), above Candle's ${PERPS_FEE_WARNING_MULTIPLIER2}x warning line` : null
+  };
+}
+function address2(value) {
+  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
+}
+function parsePerpDexs2(value) {
+  if (!Array.isArray(value))
+    return unavailable4();
+  const dexes = [];
+  for (const [index, entry2] of value.entries()) {
+    if (index === 0 || entry2 === null)
+      continue;
+    if (!object5(entry2) || typeof entry2.name !== "string" || !/^[a-z0-9]{1,12}$/.test(entry2.name) || !address2(entry2.deployer) || entry2.oracleUpdater !== null && entry2.oracleUpdater !== undefined && !address2(entry2.oracleUpdater))
+      return unavailable4();
+    const setters = new Set;
+    if (address2(entry2.oracleUpdater))
+      setters.add(entry2.oracleUpdater.toLowerCase());
+    if (Array.isArray(entry2.subDeployers)) {
+      for (const pair of entry2.subDeployers)
+        if (Array.isArray(pair) && pair[0] === "setOracle" && Array.isArray(pair[1])) {
+          for (const a of pair[1])
+            if (address2(a))
+              setters.add(a.toLowerCase());
+        }
+    }
+    if (setters.size === 0)
+      setters.add(entry2.deployer.toLowerCase());
+    dexes.push({
+      index,
+      name: entry2.name,
+      fullName: typeof entry2.fullName === "string" ? entry2.fullName : entry2.name,
+      deployer: entry2.deployer.toLowerCase(),
+      oracleUpdater: address2(entry2.oracleUpdater) ? entry2.oracleUpdater.toLowerCase() : null,
+      oracleSetters: [...setters].sort()
+    });
+  }
+  return dexes;
+}
+async function readHyperliquidPerpDexs2(fetcher, network2) {
+  return parsePerpDexs2(await info2(fetcher, network2, { type: "perpDexs" }));
+}
+function at2(values, index) {
+  const value = values[index];
+  if (value === undefined)
+    return unavailable4();
+  return value;
+}
+function integer2(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+function parseMarkets2(value) {
+  if (!Array.isArray(value) || value.length !== 2)
+    return unavailable4();
+  const [meta, ctxs] = value;
+  if (!object5(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
+    return unavailable4();
+  for (const row2 of meta.universe) {
+    if (!object5(row2) || typeof row2.name !== "string" || !integer2(row2.szDecimals) || row2.szDecimals > 6 || !integer2(row2.maxLeverage))
+      return unavailable4();
+    for (const key of ["isDelisted", "onlyIsolated"])
+      if (row2[key] !== undefined && typeof row2[key] !== "boolean")
+        return unavailable4();
+    if (row2.marginTableId !== undefined && !integer2(row2.marginTableId))
+      return unavailable4();
+    for (const key of ["marginMode", "growthMode"])
+      if (row2[key] !== undefined && row2[key] !== null && typeof row2[key] !== "string")
+        return unavailable4();
+    if (row2.deployerFeeScale !== undefined && nonnegative2(row2.deployerFeeScale) === null)
+      return unavailable4();
+  }
+  if (meta.collateralToken !== undefined && !integer2(meta.collateralToken))
+    return unavailable4();
+  for (const ctx of ctxs) {
+    if (!object5(ctx))
+      return unavailable4();
+    for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
+      if (ctx[key] !== undefined && ctx[key] !== null && !decimal4(ctx[key]))
+        return unavailable4();
+    }
+    if (ctx.impactPxs != null && (!Array.isArray(ctx.impactPxs) || ctx.impactPxs.length !== 2 || !ctx.impactPxs.every(decimal4)))
+      return unavailable4();
+  }
+  const marginTables = new Map;
+  if (meta.marginTables !== undefined) {
+    if (!Array.isArray(meta.marginTables))
+      return unavailable4();
+    for (const entry2 of meta.marginTables) {
+      if (!Array.isArray(entry2) || !integer2(entry2[0]) || !object5(entry2[1]) || !Array.isArray(entry2[1].marginTiers))
+        return unavailable4();
+      const tiers = [];
+      for (const tier of entry2[1].marginTiers) {
+        if (!object5(tier) || nonnegative2(tier.lowerBound) === null || !integer2(tier.maxLeverage))
+          return unavailable4();
+        tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
+      }
+      marginTables.set(entry2[0], tiers);
+    }
+  }
+  return {
+    universe: meta.universe,
+    ctxs,
+    marginTables,
+    ...meta.collateralToken === undefined ? {} : { collateralToken: meta.collateralToken }
+  };
+}
+async function info2(fetcher, network2, body) {
+  try {
+    const response = await fetcher(INFO_URLS2[network2], {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000),
+      redirect: "error"
+    });
+    if (!response.ok)
+      return unavailable4();
+    return JSON.parse(await response.text());
+  } catch {
+    return unavailable4();
+  }
+}
+async function readHyperliquidMarkets2(fetcher, network2, dex = "") {
+  return parseMarkets2(await info2(fetcher, network2, dex ? { type: "metaAndAssetCtxs", dex } : { type: "metaAndAssetCtxs" }));
+}
+function perpsMarketGate2(meta, ctx, minOpenInterestUsd, dex = {
+  name: "",
+  collateralToken: 0,
+  opensRefused: []
+}) {
+  if (dex.name !== "" && dex.collateralToken !== 0)
+    return { tradeable: false, reason: "collateral" };
+  if (dex.name !== "" && dex.opensRefused.includes(dex.name))
+    return { tradeable: false, reason: "dexOpensRefused" };
+  if (meta.isDelisted === true)
+    return { tradeable: false, reason: "delisted" };
+  const mark = nonnegative2(ctx.markPx);
+  const mid = nonnegative2(typeof ctx.midPx === "string" ? ctx.midPx : ctx.markPx);
+  const oi = nonnegative2(ctx.openInterest);
+  if (mark === null || mid === null || oi === null)
+    return { tradeable: false, reason: "noPrice" };
+  const divisor = 10n ** 30n;
+  const micros = (oi * mark + divisor - 1n) / divisor;
+  if (micros > BigInt(Number.MAX_SAFE_INTEGER))
+    return unavailable4();
+  if (minOpenInterestUsd > 0 && micros < BigInt(minOpenInterestUsd) * 1000000n)
+    return { tradeable: false, reason: "minOpenInterest" };
+  return { tradeable: true, reason: null };
+}
+function resolve4(snapshot, coin) {
+  const exact = snapshot.universe.findIndex((row2) => row2.name === coin);
+  if (exact !== -1)
+    return exact;
+  const matches = snapshot.universe.map((row2, i) => ({ row: row2, i })).filter(({ row: row2 }) => row2.name.toLowerCase() === coin.toLowerCase());
+  if (matches.length === 1)
+    return at2(matches, 0).i;
+  return notFound2(coin);
+}
+function notFound2(coin) {
+  throw new PerpsMarketError2("PERPS_MARKET_NOT_FOUND", coin.includes(":") ? `${coin} is not a market on that Hyperliquid builder dex.` : `${coin} is not a market on Hyperliquid's main perp exchange.`);
+}
+var PERPS_CANDLE_INTERVALS2 = [
+  "1m",
+  "3m",
+  "5m",
+  "15m",
+  "30m",
+  "1h",
+  "2h",
+  "4h",
+  "8h",
+  "12h",
+  "1d",
+  "3d",
+  "1w",
+  "1M"
+];
+var INTERVAL_MS2 = [
+  60000,
+  180000,
+  300000,
+  900000,
+  1800000,
+  3600000,
+  7200000,
+  14400000,
+  28800000,
+  43200000,
+  86400000,
+  259200000,
+  604800000,
+  2678400000
+];
+function perpsCandleWindow2(opts, now) {
+  const interval = opts.interval ?? "1h";
+  const index = PERPS_CANDLE_INTERVALS2.indexOf(interval);
+  if (index < 0)
+    return usage6(`interval must be one of ${PERPS_CANDLE_INTERVALS2.join(" ")}.`);
+  const count2 = bounded2(opts.count, 100, 1, 5000, "count");
+  const raw2 = opts.end;
+  const endTime = raw2 === undefined ? now : epoch2(raw2);
+  const startTime = endTime - count2 * at2(INTERVAL_MS2, index);
+  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
+    return usage6("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
+  return { interval, count: count2, startTime, endTime };
+}
+function epoch2(raw2) {
+  return typeof raw2 === "number" || /^\d+$/.test(raw2) ? Number(raw2) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw2) ? Date.parse(raw2) : NaN;
+}
+var PERPS_FUNDING_HISTORY_MAX_MS2 = 30 * 86400000;
+var PERPS_FUNDING_HISTORY_MAX_ROWS2 = 500;
+function perpsFundingWindow2(opts, now) {
+  const endTime = opts.end === undefined ? now : epoch2(opts.end);
+  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now)
+    return usage6("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
+  const startTime = opts.start === undefined ? endTime - 86400000 : epoch2(opts.start);
+  if (!Number.isSafeInteger(startTime) || startTime < 0 || startTime > endTime)
+    return usage6("start must be an ISO 8601 time or epoch milliseconds, no later than end.");
+  if (endTime - startTime > PERPS_FUNDING_HISTORY_MAX_MS2)
+    return usage6("start must be at most 30 days before end.");
+  return { startTime, endTime };
+}
+function bounded2(value, fallback, min, max, name2) {
+  const n = value ?? fallback;
+  if (!Number.isInteger(n) || n < min || n > max)
+    return usage6(`${name2} must be an integer from ${min} to ${max}.`);
+  return n;
+}
+function parsePerpsFundingHistory2(value, coin, window) {
+  if (!Array.isArray(value))
+    return unavailable4();
+  const funding = [];
+  for (const row2 of value) {
+    if (!object5(row2) || row2.coin !== coin || !integer2(row2.time) || !decimal4(row2.fundingRate) || !decimal4(row2.premium))
+      return unavailable4();
+    if (row2.time >= window.startTime && row2.time <= window.endTime)
+      funding.push({
+        time: row2.time,
+        fundingRate: row2.fundingRate,
+        fundingAprPct: fixed2(scaled2(row2.fundingRate) * 876000n, 2),
+        premium: row2.premium
+      });
+  }
+  funding.sort((a, b) => a.time - b.time);
+  return {
+    funding: funding.slice(0, PERPS_FUNDING_HISTORY_MAX_ROWS2),
+    truncated: funding.length > PERPS_FUNDING_HISTORY_MAX_ROWS2
+  };
+}
+
+class PerpsMarketReader2 {
+  opts;
+  configPromise;
+  coreCache;
+  extrasCache;
+  corePending;
+  extrasPending;
+  dexCache = new Map;
+  dexPending = new Map;
+  dexesCache;
+  dexesPending;
+  now;
+  constructor(opts) {
+    this.opts = opts;
+    this.now = opts.now ?? Date.now;
+  }
+  key() {
+    if (!this.opts.apiKey?.trim())
+      throw new PerpsMarketError2("PERPS_KEY_REQUIRED", "Configure a Candle agent key (any scope) to read perps markets.");
+  }
+  config() {
+    this.key();
+    this.configPromise ??= (async () => {
+      try {
+        const value = await this.opts.readConfig();
+        if (!object5(value) || !object5(value.limits) || !integer2(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
+          throw new Error("config shape");
+        const refused2 = value.limits.dexOpensRefused;
+        return {
+          minOpenInterestUsd: value.limits.minOpenInterestUsd,
+          source: "server",
+          network: value.network,
+          dexOpensRefused: Array.isArray(refused2) ? refused2.filter((d) => typeof d === "string") : [],
+          warnings: []
+        };
+      } catch {
+        return {
+          minOpenInterestUsd: 1e6,
+          source: "default",
+          dexOpensRefused: [],
+          warnings: ["Candle config unavailable; using the release's default OI floor."]
+        };
+      }
+    })();
+    return this.configPromise;
+  }
+  core() {
+    const ttl = this.opts.cacheMs ?? 5000;
+    if (this.coreCache && ttl > 0 && this.now() - this.coreCache.at < ttl)
+      return Promise.resolve(this.coreCache.value);
+    this.corePending ??= readHyperliquidMarkets2(this.opts.fetcher, this.opts.network).then((value) => {
+      this.coreCache = { value, at: this.now() };
+      return value;
+    }).finally(() => {
+      this.corePending = undefined;
+    });
+    return this.corePending;
+  }
+  dexCore(dex) {
+    const ttl = this.opts.cacheMs ?? 5000;
+    const hit = this.dexCache.get(dex);
+    if (hit && ttl > 0 && this.now() - hit.at < ttl)
+      return Promise.resolve(hit.value);
+    let pending = this.dexPending.get(dex);
+    if (!pending) {
+      pending = readHyperliquidMarkets2(this.opts.fetcher, this.opts.network, dex).then((value) => {
+        this.dexCache.set(dex, { value, at: this.now() });
+        return value;
+      }).finally(() => {
+        this.dexPending.delete(dex);
+      });
+      this.dexPending.set(dex, pending);
+    }
+    return pending;
+  }
+  dexes() {
+    const ttl = this.opts.cacheMs ?? 5000;
+    if (this.dexesCache && ttl > 0 && this.now() - this.dexesCache.at < ttl)
+      return Promise.resolve(this.dexesCache.value);
+    this.dexesPending ??= readHyperliquidPerpDexs2(this.opts.fetcher, this.opts.network).then((value) => {
+      this.dexesCache = { value, at: this.now() };
+      return value;
+    }).finally(() => {
+      this.dexesPending = undefined;
+    });
+    return this.dexesPending;
+  }
+  async dex(name2) {
+    const found = (await this.dexes()).find((d) => d.name === name2);
+    if (!found)
+      throw new PerpsMarketError2("PERPS_MARKET_NOT_FOUND", `${name2} is not a Hyperliquid builder dex.`);
+    return found;
+  }
+  async locate(coin) {
+    const parsed = parsePerpsCoin2(coin);
+    if (!parsed)
+      return notFound2(coin);
+    if (parsed.dex === "") {
+      const snapshot2 = await this.core();
+      return { snapshot: snapshot2, index: resolve4(snapshot2, parsed.coin), dex: null };
+    }
+    const dex = await this.dex(parsed.dex);
+    const snapshot = await this.dexCore(dex.name);
+    return { snapshot, index: resolve4(snapshot, parsed.coin), dex };
+  }
+  extras() {
+    const ttl = this.opts.cacheMs ?? 5000;
+    if (this.extrasCache && ttl > 0 && this.now() - this.extrasCache.at < ttl)
+      return Promise.resolve(this.extrasCache.value);
+    this.extrasPending ??= (async () => {
+      const warnings = [];
+      const [predicted, cap] = await Promise.all([
+        info2(this.opts.fetcher, this.opts.network, { type: "predictedFundings" }).then((value2) => {
+          if (!Array.isArray(value2))
+            return unavailable4();
+          const map2 = new Map;
+          for (const entry2 of value2) {
+            if (!Array.isArray(entry2) || typeof entry2[0] !== "string" || !Array.isArray(entry2[1]))
+              return unavailable4();
+            for (const venue of entry2[1]) {
+              if (!Array.isArray(venue) || typeof venue[0] !== "string")
+                return unavailable4();
+              if (venue[0] === "HlPerp" && venue[1] !== null) {
+                if (!object5(venue[1]) || !decimal4(venue[1].fundingRate) || !integer2(venue[1].nextFundingTime))
+                  return unavailable4();
+                map2.set(entry2[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
+              }
+            }
+          }
+          return map2;
+        }).catch(() => {
+          warnings.push("Predicted funding unavailable.");
+          return null;
+        }),
+        info2(this.opts.fetcher, this.opts.network, { type: "perpsAtOpenInterestCap" }).then((value2) => {
+          if (!Array.isArray(value2) || !value2.every((v) => typeof v === "string"))
+            return unavailable4();
+          return new Set(value2);
+        }).catch(() => {
+          warnings.push("Open-interest caps unavailable.");
+          return null;
+        })
+      ]);
+      const value = { predicted, cap, warnings: warnings.sort() };
+      this.extrasCache = { value, at: this.now() };
+      return value;
+    })().finally(() => {
+      this.extrasPending = undefined;
+    });
+    return this.extrasPending;
+  }
+  envelope(config, warnings = [], readAt = this.now()) {
+    const mismatch = config.network !== undefined && config.network !== this.opts.network;
+    return {
+      success: true,
+      network: this.opts.network,
+      readAt,
+      gate: {
+        minOpenInterestUsd: config.minOpenInterestUsd,
+        source: config.source,
+        ...config.dexOpensRefused.length > 0 ? { dexOpensRefused: config.dexOpensRefused } : {}
+      },
+      warnings: [
+        ...config.warnings,
+        ...warnings,
+        ...mismatch ? ["Candle and client networks differ; tradeability is unknown."] : []
+      ]
+    };
+  }
+  row(core, extras, config, asset, dex = null) {
+    const meta = at2(core.universe, asset);
+    const ctx = at2(core.ctxs, asset);
+    const collateralToken = core.collateralToken ?? 0;
+    const mark = ctx.markPx == null ? null : scaled2(ctx.markPx);
+    const oi = ctx.openInterest == null ? null : scaled2(ctx.openInterest);
+    const prev = ctx.prevDayPx == null ? null : scaled2(ctx.prevDayPx);
+    const predicted = extras.predicted?.get(meta.name);
+    return {
+      coin: meta.name,
+      asset: perpsAssetId2(dex?.index ?? 0, asset),
+      markPx: ctx.markPx ?? null,
+      oraclePx: ctx.oraclePx ?? null,
+      midPx: ctx.midPx ?? null,
+      fundingRate: ctx.funding ?? null,
+      fundingAprPct: ctx.funding == null ? null : fixed2(scaled2(ctx.funding) * 876000n, 2),
+      predictedFundingRate: predicted?.fundingRate ?? null,
+      nextFundingTime: predicted?.nextFundingTime ?? null,
+      openInterest: ctx.openInterest ?? null,
+      openInterestUsd: oi === null || mark === null ? null : fixed2(oi * mark / ONE3, 2),
+      dayNotionalVolumeUsd: ctx.dayNtlVlm ?? null,
+      prevDayPx: ctx.prevDayPx ?? null,
+      change24hPct: prev === null || prev === 0n || mark === null ? null : fixed2((mark - prev) * 100n * ONE3 / prev, 1),
+      maxLeverage: meta.maxLeverage,
+      onlyIsolated: perpsMarginMode2(meta) === "isolated",
+      isDelisted: meta.isDelisted === true,
+      atOpenInterestCap: dex ? null : extras.cap?.has(meta.name) ?? null,
+      candle: config.network !== undefined && config.network !== this.opts.network ? { tradeable: null, reason: "networkMismatch" } : perpsMarketGate2(meta, ctx, config.minOpenInterestUsd, {
+        name: dex?.name ?? "",
+        collateralToken,
+        opensRefused: config.dexOpensRefused
+      }),
+      dex: dex?.name ?? "",
+      terms: perpsDexTerms2(meta, dex, collateralToken)
+    };
+  }
+  async markets(opts = {}) {
+    this.key();
+    const sort = opts.sort ?? "volume";
+    if (!["volume", "oi", "funding", "change", "name"].includes(sort))
+      return usage6("sort must be volume, oi, funding, change or name.");
+    const limit = opts.limit === undefined ? undefined : bounded2(opts.limit, 500, 1, 500, "limit");
+    const dexFilter = opts.dex === "all" ? "all" : parsePerpsDex2(opts.dex);
+    if (dexFilter === null)
+      return usage6("dex must be a builder dex name such as xyz, or all.");
+    const main = dexFilter === "" || dexFilter === "all";
+    const [config, core, extras] = await Promise.all([this.config(), main ? this.core() : null, this.extras()]);
+    const listed = [];
+    let dexes = null;
+    const skipped2 = [];
+    if (core)
+      listed.push({ snapshot: core, dex: null });
+    if (dexFilter !== "") {
+      dexes = await this.dexes();
+      const wanted = dexFilter === "all" ? dexes : [await this.dex(dexFilter)];
+      const settled = await Promise.allSettled(wanted.map((d) => this.dexCore(d.name)));
+      for (const [i, d] of wanted.entries()) {
+        const result2 = at2(settled, i);
+        if (result2.status === "fulfilled")
+          listed.push({ snapshot: result2.value, dex: d });
+        else if (dexFilter === "all")
+          skipped2.push(d.name);
+        else
+          throw result2.reason;
+      }
+    }
+    const rows = listed.flatMap(({ snapshot, dex }) => snapshot.universe.map((_, asset) => this.row(snapshot, extras, config, asset, dex))).filter((row2) => opts.all || row2.candle.tradeable !== false);
+    const field = {
+      volume: "dayNotionalVolumeUsd",
+      oi: "openInterestUsd",
+      funding: "fundingRate",
+      change: "change24hPct"
+    };
+    rows.sort((a, b) => {
+      if (sort !== "name") {
+        const av = a[field[sort]];
+        const bv = b[field[sort]];
+        if (av === null && bv !== null)
+          return 1;
+        if (bv === null && av !== null)
+          return -1;
+        if (av !== null && bv !== null) {
+          const diff = scaled2(bv) - scaled2(av);
+          if (diff !== 0n)
+            return diff > 0n ? 1 : -1;
+        }
+      }
+      return a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0;
+    });
+    const dexRows = dexes === null ? undefined : await Promise.all((dexFilter === "all" ? dexes : dexes.filter((d) => d.name === dexFilter)).map(async (d) => {
+      if (skipped2.includes(d.name))
+        return { ...d, collateral: null, tradeable: null };
+      const token2 = (await this.dexCore(d.name)).collateralToken ?? 0;
+      return {
+        ...d,
+        collateral: perpsCollateralName2(token2),
+        tradeable: token2 === 0 && !config.dexOpensRefused.includes(d.name)
+      };
+    }));
+    const warnings = [...extras.warnings, ...skipped2.map((d) => `Builder dex ${d} markets unavailable.`)];
+    return {
+      ...this.envelope(config, warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
+      markets: limit === undefined ? rows : rows.slice(0, limit),
+      ...dexRows ? { dexes: dexRows } : {}
+    };
+  }
+  async market(coin) {
+    this.key();
+    const [config, located, extras] = await Promise.all([this.config(), this.locate(coin), this.extras()]);
+    const core = located.snapshot;
+    const asset = located.index;
+    const meta = at2(core.universe, asset);
+    const ctx = at2(core.ctxs, asset);
+    const readAt = located.dex ? this.dexCache.get(located.dex.name)?.at ?? 0 : this.coreCache?.at ?? 0;
+    return {
+      ...this.envelope(config, extras.warnings, Math.max(readAt, this.extrasCache?.at ?? 0)),
+      market: {
+        ...this.row(core, extras, config, asset, located.dex),
+        szDecimals: meta.szDecimals,
+        maxPriceDecimals: 6 - meta.szDecimals,
+        priceRule: "at most 5 significant figures",
+        minOrderUsd: 10,
+        impactBidPx: ctx.impactPxs?.[0] ?? null,
+        impactAskPx: ctx.impactPxs?.[1] ?? null,
+        premium: ctx.premium ?? null,
+        marginTiers: core.marginTables.get(meta.marginTableId ?? -1) ?? [
+          { lowerBoundUsd: "0", maxLeverage: meta.maxLeverage }
+        ]
+      }
+    };
+  }
+  async book(coin, opts = {}) {
+    this.key();
+    const depth = bounded2(opts.depth, 20, 1, 20, "depth");
+    if (opts.sigFigs !== undefined)
+      bounded2(opts.sigFigs, 5, 2, 5, "sigFigs");
+    const [config, located] = await Promise.all([this.config(), this.locate(coin)]);
+    const canonical3 = at2(located.snapshot.universe, located.index).name;
+    const value = await info2(this.opts.fetcher, this.opts.network, {
+      type: "l2Book",
+      coin: canonical3,
+      ...opts.sigFigs === undefined ? {} : { nSigFigs: opts.sigFigs }
+    });
+    if (!object5(value) || value.coin !== canonical3 || !integer2(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
+      return unavailable4();
+    const sides = [];
+    for (const side of value.levels) {
+      if (!Array.isArray(side))
+        return unavailable4();
+      const levels = [];
+      for (const level of side) {
+        if (!object5(level) || nonnegative2(level.px) === null || nonnegative2(level.sz) === null || !integer2(level.n))
+          return unavailable4();
+        levels.push({ px: level.px, sz: level.sz, n: level.n });
+      }
+      sides.push(levels);
+    }
+    const bids = at2(sides, 0).sort((a, b) => scaled2(a.px) > scaled2(b.px) ? -1 : scaled2(a.px) < scaled2(b.px) ? 1 : 0).slice(0, depth);
+    const asks = at2(sides, 1).sort((a, b) => scaled2(a.px) < scaled2(b.px) ? -1 : scaled2(a.px) > scaled2(b.px) ? 1 : 0).slice(0, depth);
+    const bid = bids[0];
+    const ask = asks[0];
+    const spread = bid && ask ? scaled2(ask.px) - scaled2(bid.px) : null;
+    const mid = bid && ask ? (scaled2(ask.px) + scaled2(bid.px)) / 2n : null;
+    return {
+      ...this.envelope(config),
+      coin: canonical3,
+      time: value.time,
+      bids,
+      asks,
+      spreadPx: spread === null ? null : fixed2(spread, 18).replace(/\.?0+$/, ""),
+      midPx: mid === null ? null : fixed2(mid, 18).replace(/\.?0+$/, ""),
+      spreadBps: spread === null || mid === null || mid === 0n ? null : fixed2(spread * 10000n * ONE3 / mid, 2)
+    };
+  }
+  async candles(coin, opts = {}) {
+    this.key();
+    const window = perpsCandleWindow2(opts, this.now());
+    const [config, located] = await Promise.all([this.config(), this.locate(coin)]);
+    const canonical3 = at2(located.snapshot.universe, located.index).name;
+    const value = await info2(this.opts.fetcher, this.opts.network, {
+      type: "candleSnapshot",
+      req: { coin: canonical3, interval: window.interval, startTime: window.startTime, endTime: window.endTime }
+    });
+    if (!Array.isArray(value))
+      return unavailable4();
+    const candles = [];
+    for (const c of value) {
+      if (!object5(c) || !integer2(c.t) || !integer2(c.T) || !integer2(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative2(v) !== null) || c.s !== canonical3 || c.i !== window.interval)
+        return unavailable4();
+      if (c.t <= window.endTime && c.T >= window.startTime)
+        candles.push({
+          t: c.t,
+          T: c.T,
+          o: c.o,
+          h: c.h,
+          l: c.l,
+          c: c.c,
+          v: c.v,
+          n: c.n
+        });
+    }
+    candles.sort((a, b) => a.t - b.t);
+    return {
+      ...this.envelope(config),
+      coin: canonical3,
+      interval: window.interval,
+      candles: candles.slice(-window.count)
+    };
+  }
+  async fundingHistory(coin, opts = {}) {
+    this.key();
+    const window = perpsFundingWindow2(opts, this.now());
+    const [config, located] = await Promise.all([this.config(), this.locate(coin)]);
+    const canonical3 = at2(located.snapshot.universe, located.index).name;
+    const value = await info2(this.opts.fetcher, this.opts.network, {
+      type: "fundingHistory",
+      coin: canonical3,
+      startTime: window.startTime,
+      endTime: window.endTime
+    });
+    return {
+      ...this.envelope(config),
+      coin: canonical3,
+      startTime: window.startTime,
+      endTime: window.endTime,
+      ...parsePerpsFundingHistory2(value, canonical3, window)
+    };
+  }
+  async predictedFunding() {
+    this.key();
+    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
+    if (extras.predicted === null)
+      return unavailable4();
+    const predicted = [];
+    for (const meta of core.universe) {
+      const row2 = extras.predicted.get(meta.name);
+      if (row2)
+        predicted.push({
+          coin: meta.name,
+          fundingRate: row2.fundingRate,
+          fundingAprPct: fixed2(scaled2(row2.fundingRate) * 876000n, 2),
+          nextFundingTime: row2.nextFundingTime
+        });
+    }
+    predicted.sort((a, b) => a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0);
+    return { ...this.envelope(config, extras.warnings, this.extrasCache?.at ?? this.now()), predicted };
+  }
+}
+
+// src/hyperliquid.ts
 var HYPERLIQUID_ALLOWED_ACTION_TYPES2 = [
   "order",
   "cancel",
@@ -98824,11 +99912,11 @@ function sameValue2(a, b) {
 var EVM_ADDRESS_RE3 = /^0x[0-9a-fA-F]{40}$/;
 var HYPERLIQUID_CLOID_RE2 = /^0x[0-9a-f]{32}$/;
 var HYPERLIQUID_STANDARD_ACCOUNT_MODES2 = ["default", "disabled"];
-async function hyperliquidAccountMode2(fetcher, network2, address) {
+async function hyperliquidAccountMode2(fetcher, network2, address3) {
   const res = await fetcher(HYPERLIQUID_INFO_URLS2[network2], {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ type: "userAbstraction", user: address.toLowerCase() })
+    body: JSON.stringify({ type: "userAbstraction", user: address3.toLowerCase() })
   });
   if (!res.ok)
     throw new Error("Cannot read the account mode from Hyperliquid");
@@ -98873,7 +99961,7 @@ function checkBuilderField2(action, builder) {
   }
   return null;
 }
-function decimal4(value) {
+function decimal5(value) {
   if (typeof value !== "string" || !/^-?(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/.test(value))
     return null;
   const negative = value.startsWith("-");
@@ -98936,13 +100024,39 @@ function actionShapeProblem2(action) {
     return "the scheduled cancel carries an invalid time";
   return null;
 }
+function hyperliquidPerpAsset2(a) {
+  return typeof a === "number" && Number.isSafeInteger(a) && a >= 0 && (a < 1e4 || a >= 110000 && a < 1e8);
+}
+function hyperliquidCoinDex2(coin) {
+  return parsePerpsCoin2(coin)?.dex ?? null;
+}
+async function venueUniverse2(read2, dex, withCtxs) {
+  let base2 = 0;
+  if (dex !== "") {
+    const found = parsePerpDexs2(await read2({ type: "perpDexs" })).find((d) => d.name === dex);
+    if (!found)
+      throw new Error(`Hyperliquid has no builder dex ${dex}`);
+    base2 = perpsAssetId2(found.index, 0);
+  }
+  const body = withCtxs ? { type: "metaAndAssetCtxs" } : { type: "meta" };
+  const answer2 = await read2(dex === "" ? body : { ...body, dex });
+  const meta = withCtxs && Array.isArray(answer2) ? answer2[0] : answer2;
+  if (!meta || !Array.isArray(meta.universe))
+    throw new Error("Hyperliquid returned an unreadable market list");
+  const ctxs = withCtxs && Array.isArray(answer2) && Array.isArray(answer2[1]) ? answer2[1] : null;
+  return { dex, base: base2, universe: meta.universe, ctxs };
+}
+function venueIndex2(venue, coin) {
+  const upper = coin.toUpperCase();
+  return venue.universe.findIndex((m) => typeof m?.name === "string" && m.name.toUpperCase() === upper);
+}
 function withinBps2(px, reference, isBuy, bps2) {
   const bound = BigInt(bps2);
   return isBuy ? px * 10000n <= reference * (10000n + bound) : px * 10000n >= reference * (10000n - bound);
 }
 function checkActionIntent2(action, opts) {
   const intent = opts.intent;
-  const mainAsset = (a) => typeof a === "number" && Number.isInteger(a) && a >= 0 && a < 1e4;
+  const perpAsset = hyperliquidPerpAsset2;
   const orderList = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : [];
   if (!Array.isArray(orderList))
     return "invalid orders";
@@ -98950,18 +100064,18 @@ function checkActionIntent2(action, opts) {
     if (!raw2 || typeof raw2 !== "object")
       return "invalid order";
     const o = raw2;
-    if (!mainAsset(o.a))
-      return "order asset is outside the main perp universe";
-    if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal4(o.s) ?? 0n) <= 0n || (decimal4(o.p) ?? 0n) <= 0n)
+    if (!perpAsset(o.a))
+      return "order asset is not a Hyperliquid perp market (spot and outcome markets are refused)";
+    if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal5(o.s) ?? 0n) <= 0n || (decimal5(o.p) ?? 0n) <= 0n)
       return "invalid order side, size, price or reduce-only flag";
     if (opts.keyReduceOnly === true && o.r !== true)
       return "this key is reduce-only and the build is not reducing";
   }
   if (action.type === "cancel") {
-    if (!Array.isArray(action.cancels) || action.cancels.length !== 1 || !mainAsset(action.cancels[0]?.a))
+    if (!Array.isArray(action.cancels) || action.cancels.length !== 1 || !perpAsset(action.cancels[0]?.a))
       return "invalid cancel asset";
   }
-  if ((action.type === "updateLeverage" || action.type === "updateIsolatedMargin") && !mainAsset(action.asset))
+  if ((action.type === "updateLeverage" || action.type === "updateIsolatedMargin") && !perpAsset(action.asset))
     return "invalid action asset";
   if (!intent)
     return null;
@@ -99003,7 +100117,7 @@ function checkActionIntent2(action, opts) {
     }
   }
   if (method === "margin") {
-    const amount = decimal4(p.amount);
+    const amount = decimal5(p.amount);
     if (amount === null || amount % 10n ** 12n !== 0n || !Number.isSafeInteger(action.ntli) || BigInt(action.ntli) !== amount / 10n ** 12n || action.isBuy !== true)
       return "isolated margin amount does not match the request";
     if (opts.marginTarget && action.asset !== opts.marginTarget.asset)
@@ -99037,18 +100151,18 @@ function checkActionIntent2(action, opts) {
     if (list.length !== 1 || !leg || action.grouping !== "positionTpsl")
       return "a take-profit / stop-loss attach is one positionTpsl order";
     const trigger = leg.t?.trigger;
-    if (!trigger || leg.r !== true || trigger.isMarket !== true || trigger.tpsl !== p.leg || decimal4(trigger.triggerPx) !== decimal4(p.triggerPx))
+    if (!trigger || leg.r !== true || trigger.isMarket !== true || trigger.tpsl !== p.leg || decimal5(trigger.triggerPx) !== decimal5(p.triggerPx))
       return "trigger leg, reduce-only flag or price does not match the request";
     if (typeof leg.c !== "string" || !HYPERLIQUID_CLOID_RE2.test(leg.c))
       return "the trigger leg carries no client order id";
-    const triggerPx = decimal4(trigger.triggerPx) ?? 0n;
-    if (triggerPx <= 0n || !withinBps2(decimal4(leg.p) ?? 0n, triggerPx, leg.b === true, HYPERLIQUID_TPSL_SLIPPAGE_BPS2 + HYPERLIQUID_MID_DRIFT_BPS2))
+    const triggerPx = decimal5(trigger.triggerPx) ?? 0n;
+    if (triggerPx <= 0n || !withinBps2(decimal5(leg.p) ?? 0n, triggerPx, leg.b === true, HYPERLIQUID_TPSL_SLIPPAGE_BPS2 + HYPERLIQUID_MID_DRIFT_BPS2))
       return "trigger order price is outside its slippage of the trigger price";
     const target = opts.tpslTarget;
     if (target) {
-      if (leg.a !== target.asset || leg.b !== target.isBuy || decimal4(leg.s) !== decimal4(target.size))
+      if (leg.a !== target.asset || leg.b !== target.isBuy || decimal5(leg.s) !== decimal5(target.size))
         return "trigger side, asset or size does not match the position Hyperliquid shows";
-      const mark = decimal4(target.markPx) ?? 0n;
+      const mark = decimal5(target.markPx) ?? 0n;
       const above = triggerPx > mark;
       const ok = p.leg === "tp" === !target.isBuy ? above : triggerPx < mark;
       if (mark <= 0n || !ok)
@@ -99073,7 +100187,7 @@ function checkActionIntent2(action, opts) {
       return "requested order is not a limit/IOC order";
     if (method === "open") {
       const buy = p.side === "long" || p.side === "buy";
-      if (first.b !== buy || first.r !== false || decimal4(first.s) !== decimal4(p.size))
+      if (first.b !== buy || first.r !== false || decimal5(first.s) !== decimal5(p.size))
         return "order side, size or reduce-only flag does not match the request";
       const tif = (p.type ?? (p.price === undefined ? "market" : "limit")) === "market" ? "Ioc" : p.tif ?? "Gtc";
       if (typ.limit.tif !== tif)
@@ -99090,10 +100204,10 @@ function checkActionIntent2(action, opts) {
         if (!leg)
           return "missing trigger order";
         const trigger = leg.t?.trigger;
-        if (leg.a !== first.a || leg.b !== !buy || leg.r !== true || decimal4(leg.s) !== decimal4(p.size) || trigger?.tpsl !== kind || trigger.isMarket !== true || decimal4(trigger.triggerPx) !== decimal4(p[field]))
+        if (leg.a !== first.a || leg.b !== !buy || leg.r !== true || decimal5(leg.s) !== decimal5(p.size) || trigger?.tpsl !== kind || trigger.isMarket !== true || decimal5(trigger.triggerPx) !== decimal5(p[field]))
           return "trigger side, size, reduce-only flag or price does not match the request";
-        const px = decimal4(leg.p) ?? 0n;
-        const triggerPx = decimal4(trigger.triggerPx) ?? 0n;
+        const px = decimal5(leg.p) ?? 0n;
+        const triggerPx = decimal5(trigger.triggerPx) ?? 0n;
         if (triggerPx <= 0n || !withinBps2(px, triggerPx, leg.b === true, HYPERLIQUID_TPSL_SLIPPAGE_BPS2 + HYPERLIQUID_MID_DRIFT_BPS2))
           return "trigger order price is outside its slippage of the trigger price";
       }
@@ -99102,12 +100216,12 @@ function checkActionIntent2(action, opts) {
         return "unexpected extra orders";
       if (method === "close" && p.pct != null && p.size != null)
         return "a close takes a size or a percentage, not both";
-      if (method === "close" && (first.r !== true || typ.limit.tif !== "Ioc" || action.grouping !== "na" || p.size != null && (decimal4(first.s) ?? 0n) > (decimal4(p.size) ?? 0n)))
+      if (method === "close" && (first.r !== true || typ.limit.tif !== "Ioc" || action.grouping !== "na" || p.size != null && (decimal5(first.s) ?? 0n) > (decimal5(p.size) ?? 0n)))
         return "close size or reduce-only flag does not match the request";
-      if (method === "modify" && p.size != null && decimal4(first.s) !== decimal4(p.size))
+      if (method === "modify" && p.size != null && decimal5(first.s) !== decimal5(p.size))
         return "replacement size does not match the request";
     }
-    if (p.price != null && decimal4(first.p) !== decimal4(p.price))
+    if (p.price != null && decimal5(first.p) !== decimal5(p.price))
       return "order price does not match the request";
   }
   return null;
@@ -99120,19 +100234,19 @@ function hyperliquidClosePct2(value) {
   return millionths > 0n && millionths <= 1000000n ? millionths : null;
 }
 function hyperliquidPctSize2(held, pct3, szDecimals) {
-  const scaled2 = decimal4(held);
-  if (scaled2 === null || scaled2 < 0n)
+  const scaled3 = decimal5(held);
+  if (scaled3 === null || scaled3 < 0n)
     throw new Error("Invalid held size");
   if (pct3 === 1000000n)
     return held;
-  return hyperliquidFloorSize2(formatScaled2(scaled2 * pct3 / 1000000n), szDecimals);
+  return hyperliquidFloorSize2(formatScaled2(scaled3 * pct3 / 1000000n), szDecimals);
 }
 function hyperliquidFloorSize2(value, szDecimals) {
-  const scaled2 = decimal4(value);
-  if (scaled2 === null || scaled2 < 0n)
+  const scaled3 = decimal5(value);
+  if (scaled3 === null || scaled3 < 0n)
     throw new Error("Invalid size");
   const unit = 10n ** BigInt(18 - Math.max(0, Math.min(18, szDecimals)));
-  return formatScaled2(scaled2 / unit * unit);
+  return formatScaled2(scaled3 / unit * unit);
 }
 function formatScaled2(value) {
   const negative = value < 0n;
@@ -99141,7 +100255,7 @@ function formatScaled2(value) {
   const frac = (abs % 10n ** 18n).toString().padStart(18, "0").replace(/0+$/, "");
   return `${negative ? "-" : ""}${whole}${frac ? `.${frac}` : ""}`;
 }
-async function hyperliquidCloseOrder2(fetcher, network2, address, params) {
+async function hyperliquidCloseOrder2(fetcher, network2, address3, params) {
   const read2 = async (body) => {
     const res = await fetcher(HYPERLIQUID_INFO_URLS2[network2], {
       method: "POST",
@@ -99152,31 +100266,38 @@ async function hyperliquidCloseOrder2(fetcher, network2, address, params) {
       throw new Error("Cannot read the close position from Hyperliquid");
     return JSON.parse(await res.text());
   };
-  const [meta, state] = await Promise.all([read2({ type: "meta" }), read2({ type: "clearinghouseState", user: address })]);
+  const dex = hyperliquidCoinDex2(params.coin);
+  if (dex === null)
+    throw new Error("coin must be a market name such as BTC, or xyz:TSLA on a builder dex");
+  const [venue, state] = await Promise.all([
+    venueUniverse2(read2, dex, false),
+    read2(dex === "" ? { type: "clearinghouseState", user: address3 } : { type: "clearinghouseState", user: address3, dex })
+  ]);
   const coin = String(params.coin).toUpperCase();
-  const universe = meta.universe;
-  const asset = universe.findIndex((m) => m.name.toUpperCase() === coin);
+  const universe = venue.universe;
+  const index = venueIndex2(venue, coin);
   const szi = state.assetPositions.find((p) => p.position.coin.toUpperCase() === coin)?.position.szi;
-  const signed = decimal4(szi);
-  if (asset < 0 || asset >= 1e4 || signed === null || signed === 0n)
-    throw new Error("No main-universe position to close");
+  const signed = decimal5(szi);
+  if (index < 0 || index >= 1e4 || signed === null || signed === 0n)
+    throw new Error(dex === "" ? "No main-universe position to close" : `No position to close on builder dex ${dex}`);
+  const asset = venue.base + index;
   const held = signed < 0n ? -signed : signed;
   const heldSz = String(szi).replace(/^-/, "");
   if (params.pct != null) {
     if (params.size != null)
       throw new Error("A close takes a size or a percentage, not both");
     const pct3 = hyperliquidClosePct2(params.pct);
-    const szDecimals = universe[asset]?.szDecimals;
+    const szDecimals = universe[index]?.szDecimals;
     if (pct3 === null)
       throw new Error("pct must be above 0 and at most 100, with at most 4 decimals");
     if (!Number.isInteger(szDecimals))
       throw new Error("Hyperliquid did not report this market's size precision");
     const size2 = hyperliquidPctSize2(heldSz, pct3, szDecimals);
-    if ((decimal4(size2) ?? 0n) <= 0n)
+    if ((decimal5(size2) ?? 0n) <= 0n)
       throw new Error("This percentage of the position rounds to zero at the market's size step");
     return { asset, isBuy: signed < 0n, size: size2 };
   }
-  const asked = params.size == null ? held : decimal4(params.size);
+  const asked = params.size == null ? held : decimal5(params.size);
   if (asked === null || asked <= 0n)
     throw new Error("Invalid close size");
   const size = asked < held ? String(params.size) : heldSz;
@@ -99185,7 +100306,7 @@ async function hyperliquidCloseOrder2(fetcher, network2, address, params) {
 var HYPERLIQUID_DEFAULT_SLIPPAGE_BPS2 = 100;
 var HYPERLIQUID_MID_DRIFT_BPS2 = 100;
 var HYPERLIQUID_TPSL_SLIPPAGE_BPS2 = 500;
-async function hyperliquidOrderMarket2(fetcher, network2, address, method, params) {
+async function hyperliquidOrderMarket2(fetcher, network2, address3, method, params) {
   const read2 = async (body) => {
     const res = await fetcher(HYPERLIQUID_INFO_URLS2[network2], {
       method: "POST",
@@ -99199,9 +100320,9 @@ async function hyperliquidOrderMarket2(fetcher, network2, address, method, param
   let coin = String(params.coin ?? "").toUpperCase();
   let order;
   if (method === "modify") {
-    const status = await read2({ type: "orderStatus", user: address, oid: params.cloid });
+    const status = await read2({ type: "orderStatus", user: address3, oid: params.cloid });
     const resting = status?.order?.order ?? null;
-    if (!resting || typeof resting.coin !== "string" || decimal4(resting.limitPx) === null)
+    if (!resting || typeof resting.coin !== "string" || decimal5(resting.limitPx) === null)
       throw new Error("No resting order with this cloid on Hyperliquid");
     if (resting.isTrigger === true)
       throw new Error("A take-profit or stop-loss leg cannot be modified; cancel it instead");
@@ -99210,21 +100331,24 @@ async function hyperliquidOrderMarket2(fetcher, network2, address, method, param
     order = {
       isBuy: resting.side === "B",
       limitPx: String(resting.limitPx),
-      ...decimal4(resting.sz) !== null ? { size: String(resting.sz) } : {},
+      ...decimal5(resting.sz) !== null ? { size: String(resting.sz) } : {},
       reduceOnly: resting.reduceOnly === true,
       tif,
       ...Number.isSafeInteger(resting.oid) ? { oid: resting.oid } : {}
     };
   }
-  const [meta, contexts] = await read2({ type: "metaAndAssetCtxs" });
-  const asset = meta.universe.findIndex((m) => m.name.toUpperCase() === coin);
-  if (asset < 0 || asset >= 1e4)
-    throw new Error("No main-universe market for this coin on Hyperliquid");
-  const context = contexts[asset];
+  const dex = hyperliquidCoinDex2(coin);
+  if (dex === null)
+    throw new Error("No perp market for this coin on Hyperliquid (spot and outcome markets are refused)");
+  const venue = await venueUniverse2(read2, dex, true);
+  const index = venueIndex2(venue, coin);
+  if (index < 0 || index >= 1e4)
+    throw new Error(dex === "" ? "No main-universe market for this coin on Hyperliquid" : `No ${coin} market on builder dex ${dex}`);
+  const context = venue.ctxs?.[index];
   const midPx = context?.midPx ?? context?.markPx;
-  if ((decimal4(midPx) ?? 0n) <= 0n)
+  if ((decimal5(midPx) ?? 0n) <= 0n)
     throw new Error("No Hyperliquid price for this coin");
-  return { asset, midPx: String(midPx), ...order ? { order } : {} };
+  return { asset: venue.base + index, midPx: String(midPx), ...order ? { order } : {} };
 }
 function checkOrderMarket2(action, intent, market) {
   const list = action.type === "modify" ? [action.order] : action.orders;
@@ -99238,8 +100362,8 @@ function checkOrderMarket2(action, intent, market) {
     const requested = p.slippageBps;
     const slippage = typeof requested === "number" && Number.isInteger(requested) && requested > 0 ? requested : HYPERLIQUID_DEFAULT_SLIPPAGE_BPS2;
     const bound = BigInt(slippage + HYPERLIQUID_MID_DRIFT_BPS2);
-    const px = decimal4(first.p) ?? 0n;
-    const mid = decimal4(market.midPx) ?? 0n;
+    const px = decimal5(first.p) ?? 0n;
+    const mid = decimal5(market.midPx) ?? 0n;
     const within = first.b === true ? px * 10000n <= mid * (10000n + bound) : px * 10000n >= mid * (10000n - bound);
     if (mid <= 0n || !within)
       return "market order price is outside its slippage of Hyperliquid's mid";
@@ -99249,7 +100373,7 @@ function checkOrderMarket2(action, intent, market) {
       return "no resting order on Hyperliquid to check the modify against";
     if (first.b !== market.order.isBuy)
       return "modify changes the resting order's side";
-    if (p.price == null && decimal4(first.p) !== decimal4(market.order.limitPx))
+    if (p.price == null && decimal5(first.p) !== decimal5(market.order.limitPx))
       return "modify changes the resting order's price";
     const requested = typeof p.cloid === "string" ? p.cloid.toLowerCase() : null;
     const byOid = market.order.oid !== undefined && action.oid === market.order.oid;
@@ -99260,7 +100384,7 @@ function checkOrderMarket2(action, intent, market) {
       return "modify changes the resting order's reduce-only flag";
     if (first.t?.limit?.tif !== market.order.tif)
       return "modify changes the resting order's time in force";
-    if (p.size == null && (market.order.size === undefined || decimal4(first.s) !== decimal4(market.order.size)))
+    if (p.size == null && (market.order.size === undefined || decimal5(first.s) !== decimal5(market.order.size)))
       return "modify changes the resting order's size";
   }
   return null;
@@ -99289,7 +100413,7 @@ function verifyPerpsBuild2(build, opts) {
       return { ok: false, reason: intentRefusal };
     if (opts.closeOrder) {
       const order = action.orders[0];
-      if (!order || order.a !== opts.closeOrder.asset || order.b !== opts.closeOrder.isBuy || decimal4(order.s) !== decimal4(opts.closeOrder.size) || order.r !== true)
+      if (!order || order.a !== opts.closeOrder.asset || order.b !== opts.closeOrder.isBuy || decimal5(order.s) !== decimal5(opts.closeOrder.size) || order.r !== true)
         return { ok: false, reason: "close side, asset or size does not match the requested position" };
     }
     if (opts.market) {
@@ -99361,12 +100485,20 @@ async function infoRead2(fetcher, network2, body) {
     throw new Error(`Hyperliquid returned an unreadable ${String(body.type)}`);
   }
 }
-async function hyperliquidWalletSnapshot2(fetcher, network2, address, now = Date.now) {
-  const user = address.toLowerCase();
+async function hyperliquidWalletSnapshot2(fetcher, network2, address3, now = Date.now, dex = "") {
+  const user = address3.toLowerCase();
+  const withDex = (body) => dex === "" ? body : { ...body, dex };
+  let assetBase = 0;
+  if (dex !== "") {
+    const found = parsePerpDexs2(await infoRead2(fetcher, network2, { type: "perpDexs" })).find((d) => d.name === dex);
+    if (!found)
+      throw new Error(`Hyperliquid has no builder dex ${dex}`);
+    assetBase = perpsAssetId2(found.index, 0);
+  }
   const [metaAndCtxs, state, open8] = await Promise.all([
-    infoRead2(fetcher, network2, { type: "metaAndAssetCtxs" }),
-    infoRead2(fetcher, network2, { type: "clearinghouseState", user }),
-    infoRead2(fetcher, network2, { type: "frontendOpenOrders", user })
+    infoRead2(fetcher, network2, withDex({ type: "metaAndAssetCtxs" })),
+    infoRead2(fetcher, network2, withDex({ type: "clearinghouseState", user })),
+    infoRead2(fetcher, network2, withDex({ type: "frontendOpenOrders", user }))
   ]);
   const readAt = now();
   if (!Array.isArray(metaAndCtxs) || metaAndCtxs.length < 2 || !Array.isArray(metaAndCtxs[1]))
@@ -99388,9 +100520,13 @@ async function hyperliquidWalletSnapshot2(fetcher, network2, address, now = Date
   const ctxs = metaAndCtxs[1];
   const marks = universe.map((_, i) => {
     const mark = ctxs[i]?.markPx;
-    return typeof mark === "string" && (decimal4(mark) ?? 0n) > 0n ? mark : null;
+    return typeof mark === "string" && (decimal5(mark) ?? 0n) > 0n ? mark : null;
   });
-  const assetOf2 = (coin) => universe.findIndex((m) => m.name === coin);
+  const indexOf = (coin) => universe.findIndex((m) => m.name === coin);
+  const assetOf2 = (coin) => {
+    const index = indexOf(coin);
+    return index < 0 || index >= 1e4 ? -1 : assetBase + index;
+  };
   const unsupported2 = [];
   const positionsRaw = state?.assetPositions;
   if (!Array.isArray(positionsRaw))
@@ -99401,16 +100537,16 @@ async function hyperliquidWalletSnapshot2(fetcher, network2, address, now = Date
     const coin = p?.coin;
     const lev = p?.leverage;
     const szi = p?.szi;
-    if (typeof coin !== "string" || typeof szi !== "string" || decimal4(szi) === null) {
+    if (typeof coin !== "string" || typeof szi !== "string" || decimal5(szi) === null) {
       unsupported2.push(`an unreadable position (${JSON.stringify(coin ?? null)})`);
       continue;
     }
     const asset = assetOf2(coin);
-    if (asset < 0 || asset >= 1e4 || lev?.type !== "cross" && lev?.type !== "isolated" || !Number.isInteger(lev.value)) {
+    if (asset < 0 || lev?.type !== "cross" && lev?.type !== "isolated" || !Number.isInteger(lev.value)) {
       unsupported2.push(`position ${coin}`);
       continue;
     }
-    if (decimal4(szi) === 0n)
+    if (decimal5(szi) === 0n)
       continue;
     positions.push({ coin, asset, szi, leverage: { type: lev.type, value: lev.value } });
   }
@@ -99426,7 +100562,7 @@ async function hyperliquidWalletSnapshot2(fetcher, network2, address, now = Date
     }
     const asset = assetOf2(coin);
     const oid = o.oid;
-    if (asset < 0 || asset >= 1e4 || !Number.isSafeInteger(oid) || o.side !== "A" && o.side !== "B" || decimal4(o.sz) === null || decimal4(o.limitPx) === null) {
+    if (asset < 0 || !Number.isSafeInteger(oid) || o.side !== "A" && o.side !== "B" || decimal5(o.sz) === null || decimal5(o.limitPx) === null) {
       unsupported2.push(`order ${coin}${Number.isSafeInteger(oid) ? ` ${oid}` : ""}`);
       continue;
     }
@@ -99453,7 +100589,15 @@ async function hyperliquidWalletSnapshot2(fetcher, network2, address, now = Date
   }
   orders.sort((a, b) => a.asset - b.asset || a.oid - b.oid);
   positions.sort((a, b) => a.asset - b.asset);
-  return { readAt, universe, marks, positions, orders, unsupported: unsupported2 };
+  return {
+    readAt,
+    ...dex === "" ? {} : { dex, assetBase },
+    universe,
+    marks,
+    positions,
+    orders,
+    unsupported: unsupported2
+  };
 }
 function snapshotPosition2(snapshot, coin) {
   const upper = coin.toUpperCase();
@@ -99463,25 +100607,29 @@ function hyperliquidTpslTarget2(snapshot, coin) {
   const position = snapshotPosition2(snapshot, coin);
   if (!position)
     throw new Error(`No ${coin} position on Hyperliquid to protect`);
-  const mark = snapshot.marks[position.asset];
-  const szDecimals = snapshot.universe[position.asset]?.szDecimals;
+  const index = position.asset - (snapshot.assetBase ?? 0);
+  const mark = snapshot.marks[index];
+  const szDecimals = snapshot.universe[index]?.szDecimals;
   if (!mark || szDecimals === undefined)
     throw new Error(`No Hyperliquid mark for ${position.coin}`);
   const held = position.szi.replace(/^-/, "");
   const size = hyperliquidFloorSize2(held, szDecimals);
   return { asset: position.asset, isBuy: position.szi.startsWith("-"), size, markPx: mark };
 }
-async function venueEvidence2(fetcher, network2, address, intent, now) {
+async function venueEvidence2(fetcher, network2, address3, intent, now) {
   const p = intent.params;
+  const coinDex = p.coin === undefined ? "" : hyperliquidCoinDex2(p.coin);
+  if (coinDex === null)
+    throw new Error("coin must be a market name such as BTC, or xyz:TSLA on a builder dex");
   switch (intent.method) {
     case "open":
     case "modify":
-      return { market: await hyperliquidOrderMarket2(fetcher, network2, address, intent.method, p) };
+      return { market: await hyperliquidOrderMarket2(fetcher, network2, address3, intent.method, p) };
     case "close":
-      return { closeOrder: await hyperliquidCloseOrder2(fetcher, network2, address, p) };
+      return { closeOrder: await hyperliquidCloseOrder2(fetcher, network2, address3, p) };
     case "cancel": {
       if (p.oid !== undefined) {
-        const snapshot = await hyperliquidWalletSnapshot2(fetcher, network2, address, now);
+        const snapshot = await hyperliquidWalletSnapshot2(fetcher, network2, address3, now, coinDex);
         const order = snapshot.orders.find((o) => o.oid === p.oid && (p.coin === undefined || o.coin.toUpperCase() === String(p.coin).toUpperCase()));
         if (!order)
           throw new Error("Hyperliquid shows no such open order on this wallet");
@@ -99489,28 +100637,32 @@ async function venueEvidence2(fetcher, network2, address, intent, now) {
       }
       const status = await infoRead2(fetcher, network2, {
         type: "orderStatus",
-        user: address.toLowerCase(),
+        user: address3.toLowerCase(),
         oid: p.cloid
       });
       const resting = status?.order?.order;
       if (!resting || typeof resting.coin !== "string" || !Number.isSafeInteger(resting.oid))
         throw new Error("Hyperliquid shows no order with this cloid on this wallet");
-      const meta = await infoRead2(fetcher, network2, { type: "meta" });
-      const asset = (meta.universe ?? []).findIndex((m) => m.name === resting.coin);
-      if (asset < 0 || asset >= 1e4)
-        throw new Error("The order is not on Hyperliquid's main perp exchange");
-      return { cancelTarget: { asset, oid: resting.oid } };
+      const restingDex = hyperliquidCoinDex2(resting.coin);
+      if (restingDex === null)
+        throw new Error("The order is not on a Hyperliquid perp exchange");
+      const venue = await venueUniverse2((body) => infoRead2(fetcher, network2, body), restingDex, false);
+      const index = venue.universe.findIndex((m) => m.name === resting.coin);
+      if (index < 0 || index >= 1e4)
+        throw new Error("The order is not on a Hyperliquid perp exchange");
+      return { cancelTarget: { asset: venue.base + index, oid: resting.oid } };
     }
     case "leverage": {
-      const snapshot = await hyperliquidWalletSnapshot2(fetcher, network2, address, now);
+      const snapshot = await hyperliquidWalletSnapshot2(fetcher, network2, address3, now, coinDex);
       const coin = String(p.coin ?? "").toUpperCase();
-      const asset = snapshot.universe.findIndex((m) => m.name.toUpperCase() === coin);
-      if (asset < 0)
-        throw new Error("No main-universe market for this coin on Hyperliquid");
-      const name2 = snapshot.universe[asset]?.name;
+      const index = snapshot.universe.findIndex((m) => m.name.toUpperCase() === coin);
+      if (index < 0 || index >= 1e4)
+        throw new Error("No perp market for this coin on Hyperliquid");
+      const asset = (snapshot.assetBase ?? 0) + index;
+      const name2 = snapshot.universe[index]?.name;
       const data = await infoRead2(fetcher, network2, {
         type: "activeAssetData",
-        user: address.toLowerCase(),
+        user: address3.toLowerCase(),
         coin: name2
       });
       const lev = data?.leverage;
@@ -99520,14 +100672,14 @@ async function venueEvidence2(fetcher, network2, address, intent, now) {
       return { leverageTarget: { asset, leverage: lev.value, mode: lev.type, flat } };
     }
     case "margin": {
-      const snapshot = await hyperliquidWalletSnapshot2(fetcher, network2, address, now);
+      const snapshot = await hyperliquidWalletSnapshot2(fetcher, network2, address3, now, coinDex);
       const position = snapshotPosition2(snapshot, String(p.coin ?? ""));
       if (!position || position.leverage.type !== "isolated")
         throw new Error("Hyperliquid shows no isolated position in this coin");
       return { marginTarget: { asset: position.asset } };
     }
     case "tpsl": {
-      const snapshot = await hyperliquidWalletSnapshot2(fetcher, network2, address, now);
+      const snapshot = await hyperliquidWalletSnapshot2(fetcher, network2, address3, now, coinDex);
       return { tpslTarget: hyperliquidTpslTarget2(snapshot, String(p.coin ?? "")) };
     }
     case "scheduleCancel":
@@ -99599,556 +100751,6 @@ function hyperliquidSignatureHex2(value) {
   if (!sig || typeof sig.r !== "string" || typeof sig.s !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(sig.r) || !/^0x[0-9a-fA-F]{64}$/.test(sig.s) || ![0, 1, 27, 28].includes(Number(sig.v)))
     throw new Error("Invalid embedded Hyperliquid signature");
   return `${sig.r}${sig.s.slice(2)}${Number(sig.v).toString(16).padStart(2, "0")}`;
-}
-
-// src/hyperliquid-markets.ts
-var INFO_URLS2 = {
-  mainnet: "https://api.hyperliquid.xyz/info",
-  testnet: "https://api.hyperliquid-testnet.xyz/info"
-};
-var ONE3 = 10n ** 18n;
-var DECIMAL2 = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?$/;
-
-class PerpsMarketError2 extends Error {
-  code;
-  retryable;
-  constructor(code, message) {
-    super(message);
-    this.code = code;
-    this.name = "PerpsMarketError";
-    this.retryable = code === "PERPS_UNAVAILABLE";
-  }
-}
-function unavailable4() {
-  throw new PerpsMarketError2("PERPS_UNAVAILABLE", "Hyperliquid market data is unavailable; retry shortly.");
-}
-function usage6(message) {
-  throw new PerpsMarketError2("PERPS_USAGE", message);
-}
-function object5(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-function decimal5(value) {
-  return typeof value === "string" && value.length <= 100 && DECIMAL2.test(value) && (value.split(".")[1]?.length ?? 0) <= 18;
-}
-function scaled2(value) {
-  const negative = value.startsWith("-");
-  const [whole = "0", fraction = ""] = (negative ? value.slice(1) : value).split(".");
-  const result2 = BigInt(whole) * ONE3 + BigInt(fraction.padEnd(18, "0"));
-  return negative ? -result2 : result2;
-}
-function nonnegative2(value) {
-  return decimal5(value) && !value.startsWith("-") ? scaled2(value) : null;
-}
-function fixed2(value, places) {
-  const negative = value < 0n;
-  const abs = negative ? -value : value;
-  const divisor = 10n ** BigInt(18 - places);
-  const rounded = (abs + divisor / 2n) / divisor;
-  const digits = rounded.toString().padStart(places + 1, "0");
-  return `${negative && rounded !== 0n ? "-" : ""}${places ? `${digits.slice(0, -places)}.${digits.slice(-places)}` : digits}`;
-}
-function at2(values, index) {
-  const value = values[index];
-  if (value === undefined)
-    return unavailable4();
-  return value;
-}
-function integer2(value) {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-function parseMarkets2(value) {
-  if (!Array.isArray(value) || value.length !== 2)
-    return unavailable4();
-  const [meta, ctxs] = value;
-  if (!object5(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
-    return unavailable4();
-  for (const row2 of meta.universe) {
-    if (!object5(row2) || typeof row2.name !== "string" || !integer2(row2.szDecimals) || row2.szDecimals > 6 || !integer2(row2.maxLeverage))
-      return unavailable4();
-    for (const key of ["isDelisted", "onlyIsolated"])
-      if (row2[key] !== undefined && typeof row2[key] !== "boolean")
-        return unavailable4();
-    if (row2.marginTableId !== undefined && !integer2(row2.marginTableId))
-      return unavailable4();
-  }
-  for (const ctx of ctxs) {
-    if (!object5(ctx))
-      return unavailable4();
-    for (const key of ["markPx", "midPx", "oraclePx", "openInterest", "funding", "dayNtlVlm", "prevDayPx", "premium"]) {
-      if (ctx[key] !== undefined && ctx[key] !== null && !decimal5(ctx[key]))
-        return unavailable4();
-    }
-    if (ctx.impactPxs != null && (!Array.isArray(ctx.impactPxs) || ctx.impactPxs.length !== 2 || !ctx.impactPxs.every(decimal5)))
-      return unavailable4();
-  }
-  const marginTables = new Map;
-  if (meta.marginTables !== undefined) {
-    if (!Array.isArray(meta.marginTables))
-      return unavailable4();
-    for (const entry2 of meta.marginTables) {
-      if (!Array.isArray(entry2) || !integer2(entry2[0]) || !object5(entry2[1]) || !Array.isArray(entry2[1].marginTiers))
-        return unavailable4();
-      const tiers = [];
-      for (const tier of entry2[1].marginTiers) {
-        if (!object5(tier) || nonnegative2(tier.lowerBound) === null || !integer2(tier.maxLeverage))
-          return unavailable4();
-        tiers.push({ lowerBoundUsd: tier.lowerBound, maxLeverage: tier.maxLeverage });
-      }
-      marginTables.set(entry2[0], tiers);
-    }
-  }
-  return { universe: meta.universe, ctxs, marginTables };
-}
-async function info2(fetcher, network2, body) {
-  try {
-    const response = await fetcher(INFO_URLS2[network2], {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(5000),
-      redirect: "error"
-    });
-    if (!response.ok)
-      return unavailable4();
-    return JSON.parse(await response.text());
-  } catch {
-    return unavailable4();
-  }
-}
-async function readHyperliquidMarkets2(fetcher, network2) {
-  return parseMarkets2(await info2(fetcher, network2, { type: "metaAndAssetCtxs" }));
-}
-function perpsMarketGate2(meta, ctx, minOpenInterestUsd) {
-  if (meta.isDelisted === true)
-    return { tradeable: false, reason: "delisted" };
-  const mark = nonnegative2(ctx.markPx);
-  const mid = nonnegative2(typeof ctx.midPx === "string" ? ctx.midPx : ctx.markPx);
-  const oi = nonnegative2(ctx.openInterest);
-  if (mark === null || mid === null || oi === null)
-    return { tradeable: false, reason: "noPrice" };
-  const divisor = 10n ** 30n;
-  const micros = (oi * mark + divisor - 1n) / divisor;
-  if (micros > BigInt(Number.MAX_SAFE_INTEGER))
-    return unavailable4();
-  if (minOpenInterestUsd > 0 && micros < BigInt(minOpenInterestUsd) * 1000000n)
-    return { tradeable: false, reason: "minOpenInterest" };
-  return { tradeable: true, reason: null };
-}
-function resolve4(snapshot, coin) {
-  if (/^[A-Za-z0-9]{1,20}$/.test(coin)) {
-    const exact = snapshot.universe.findIndex((row2) => row2.name === coin);
-    if (exact !== -1)
-      return exact;
-    const matches = snapshot.universe.map((row2, i) => ({ row: row2, i })).filter(({ row: row2 }) => row2.name.toLowerCase() === coin.toLowerCase());
-    if (matches.length === 1)
-      return at2(matches, 0).i;
-  }
-  throw new PerpsMarketError2("PERPS_MARKET_NOT_FOUND", `${coin} is not a market on Hyperliquid's main perp exchange.`);
-}
-var PERPS_CANDLE_INTERVALS2 = [
-  "1m",
-  "3m",
-  "5m",
-  "15m",
-  "30m",
-  "1h",
-  "2h",
-  "4h",
-  "8h",
-  "12h",
-  "1d",
-  "3d",
-  "1w",
-  "1M"
-];
-var INTERVAL_MS2 = [
-  60000,
-  180000,
-  300000,
-  900000,
-  1800000,
-  3600000,
-  7200000,
-  14400000,
-  28800000,
-  43200000,
-  86400000,
-  259200000,
-  604800000,
-  2678400000
-];
-function perpsCandleWindow2(opts, now) {
-  const interval = opts.interval ?? "1h";
-  const index = PERPS_CANDLE_INTERVALS2.indexOf(interval);
-  if (index < 0)
-    return usage6(`interval must be one of ${PERPS_CANDLE_INTERVALS2.join(" ")}.`);
-  const count2 = bounded2(opts.count, 100, 1, 5000, "count");
-  const raw2 = opts.end;
-  const endTime = raw2 === undefined ? now : epoch2(raw2);
-  const startTime = endTime - count2 * at2(INTERVAL_MS2, index);
-  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now || startTime < 0)
-    return usage6("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
-  return { interval, count: count2, startTime, endTime };
-}
-function epoch2(raw2) {
-  return typeof raw2 === "number" || /^\d+$/.test(raw2) ? Number(raw2) : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(raw2) ? Date.parse(raw2) : NaN;
-}
-var PERPS_FUNDING_HISTORY_MAX_MS2 = 30 * 86400000;
-var PERPS_FUNDING_HISTORY_MAX_ROWS2 = 500;
-function perpsFundingWindow2(opts, now) {
-  const endTime = opts.end === undefined ? now : epoch2(opts.end);
-  if (!Number.isSafeInteger(endTime) || endTime < 0 || endTime > now)
-    return usage6("end must be an ISO 8601 time or epoch milliseconds, no later than now.");
-  const startTime = opts.start === undefined ? endTime - 86400000 : epoch2(opts.start);
-  if (!Number.isSafeInteger(startTime) || startTime < 0 || startTime > endTime)
-    return usage6("start must be an ISO 8601 time or epoch milliseconds, no later than end.");
-  if (endTime - startTime > PERPS_FUNDING_HISTORY_MAX_MS2)
-    return usage6("start must be at most 30 days before end.");
-  return { startTime, endTime };
-}
-function bounded2(value, fallback, min, max, name2) {
-  const n = value ?? fallback;
-  if (!Number.isInteger(n) || n < min || n > max)
-    return usage6(`${name2} must be an integer from ${min} to ${max}.`);
-  return n;
-}
-function parsePerpsFundingHistory2(value, coin, window) {
-  if (!Array.isArray(value))
-    return unavailable4();
-  const funding = [];
-  for (const row2 of value) {
-    if (!object5(row2) || row2.coin !== coin || !integer2(row2.time) || !decimal5(row2.fundingRate) || !decimal5(row2.premium))
-      return unavailable4();
-    if (row2.time >= window.startTime && row2.time <= window.endTime)
-      funding.push({
-        time: row2.time,
-        fundingRate: row2.fundingRate,
-        fundingAprPct: fixed2(scaled2(row2.fundingRate) * 876000n, 2),
-        premium: row2.premium
-      });
-  }
-  funding.sort((a, b) => a.time - b.time);
-  return {
-    funding: funding.slice(0, PERPS_FUNDING_HISTORY_MAX_ROWS2),
-    truncated: funding.length > PERPS_FUNDING_HISTORY_MAX_ROWS2
-  };
-}
-
-class PerpsMarketReader2 {
-  opts;
-  configPromise;
-  coreCache;
-  extrasCache;
-  corePending;
-  extrasPending;
-  now;
-  constructor(opts) {
-    this.opts = opts;
-    this.now = opts.now ?? Date.now;
-  }
-  key() {
-    if (!this.opts.apiKey?.trim())
-      throw new PerpsMarketError2("PERPS_KEY_REQUIRED", "Configure a Candle agent key (any scope) to read perps markets.");
-  }
-  config() {
-    this.key();
-    this.configPromise ??= (async () => {
-      try {
-        const value = await this.opts.readConfig();
-        if (!object5(value) || !object5(value.limits) || !integer2(value.limits.minOpenInterestUsd) || value.network !== "mainnet" && value.network !== "testnet")
-          throw new Error("config shape");
-        return {
-          minOpenInterestUsd: value.limits.minOpenInterestUsd,
-          source: "server",
-          network: value.network,
-          warnings: []
-        };
-      } catch {
-        return {
-          minOpenInterestUsd: 1e6,
-          source: "default",
-          warnings: ["Candle config unavailable; using the release's default OI floor."]
-        };
-      }
-    })();
-    return this.configPromise;
-  }
-  core() {
-    const ttl = this.opts.cacheMs ?? 5000;
-    if (this.coreCache && ttl > 0 && this.now() - this.coreCache.at < ttl)
-      return Promise.resolve(this.coreCache.value);
-    this.corePending ??= readHyperliquidMarkets2(this.opts.fetcher, this.opts.network).then((value) => {
-      this.coreCache = { value, at: this.now() };
-      return value;
-    }).finally(() => {
-      this.corePending = undefined;
-    });
-    return this.corePending;
-  }
-  extras() {
-    const ttl = this.opts.cacheMs ?? 5000;
-    if (this.extrasCache && ttl > 0 && this.now() - this.extrasCache.at < ttl)
-      return Promise.resolve(this.extrasCache.value);
-    this.extrasPending ??= (async () => {
-      const warnings = [];
-      const [predicted, cap] = await Promise.all([
-        info2(this.opts.fetcher, this.opts.network, { type: "predictedFundings" }).then((value2) => {
-          if (!Array.isArray(value2))
-            return unavailable4();
-          const map2 = new Map;
-          for (const entry2 of value2) {
-            if (!Array.isArray(entry2) || typeof entry2[0] !== "string" || !Array.isArray(entry2[1]))
-              return unavailable4();
-            for (const venue of entry2[1]) {
-              if (!Array.isArray(venue) || typeof venue[0] !== "string")
-                return unavailable4();
-              if (venue[0] === "HlPerp" && venue[1] !== null) {
-                if (!object5(venue[1]) || !decimal5(venue[1].fundingRate) || !integer2(venue[1].nextFundingTime))
-                  return unavailable4();
-                map2.set(entry2[0], { fundingRate: venue[1].fundingRate, nextFundingTime: venue[1].nextFundingTime });
-              }
-            }
-          }
-          return map2;
-        }).catch(() => {
-          warnings.push("Predicted funding unavailable.");
-          return null;
-        }),
-        info2(this.opts.fetcher, this.opts.network, { type: "perpsAtOpenInterestCap" }).then((value2) => {
-          if (!Array.isArray(value2) || !value2.every((v) => typeof v === "string"))
-            return unavailable4();
-          return new Set(value2);
-        }).catch(() => {
-          warnings.push("Open-interest caps unavailable.");
-          return null;
-        })
-      ]);
-      const value = { predicted, cap, warnings: warnings.sort() };
-      this.extrasCache = { value, at: this.now() };
-      return value;
-    })().finally(() => {
-      this.extrasPending = undefined;
-    });
-    return this.extrasPending;
-  }
-  envelope(config, warnings = [], readAt = this.now()) {
-    const mismatch = config.network !== undefined && config.network !== this.opts.network;
-    return {
-      success: true,
-      network: this.opts.network,
-      readAt,
-      gate: { minOpenInterestUsd: config.minOpenInterestUsd, source: config.source },
-      warnings: [
-        ...config.warnings,
-        ...warnings,
-        ...mismatch ? ["Candle and client networks differ; tradeability is unknown."] : []
-      ]
-    };
-  }
-  row(core, extras, config, asset) {
-    const meta = at2(core.universe, asset);
-    const ctx = at2(core.ctxs, asset);
-    const mark = ctx.markPx == null ? null : scaled2(ctx.markPx);
-    const oi = ctx.openInterest == null ? null : scaled2(ctx.openInterest);
-    const prev = ctx.prevDayPx == null ? null : scaled2(ctx.prevDayPx);
-    const predicted = extras.predicted?.get(meta.name);
-    return {
-      coin: meta.name,
-      asset,
-      markPx: ctx.markPx ?? null,
-      oraclePx: ctx.oraclePx ?? null,
-      midPx: ctx.midPx ?? null,
-      fundingRate: ctx.funding ?? null,
-      fundingAprPct: ctx.funding == null ? null : fixed2(scaled2(ctx.funding) * 876000n, 2),
-      predictedFundingRate: predicted?.fundingRate ?? null,
-      nextFundingTime: predicted?.nextFundingTime ?? null,
-      openInterest: ctx.openInterest ?? null,
-      openInterestUsd: oi === null || mark === null ? null : fixed2(oi * mark / ONE3, 2),
-      dayNotionalVolumeUsd: ctx.dayNtlVlm ?? null,
-      prevDayPx: ctx.prevDayPx ?? null,
-      change24hPct: prev === null || prev === 0n || mark === null ? null : fixed2((mark - prev) * 100n * ONE3 / prev, 1),
-      maxLeverage: meta.maxLeverage,
-      onlyIsolated: meta.onlyIsolated === true,
-      isDelisted: meta.isDelisted === true,
-      atOpenInterestCap: extras.cap?.has(meta.name) ?? null,
-      candle: config.network !== undefined && config.network !== this.opts.network ? { tradeable: null, reason: "networkMismatch" } : perpsMarketGate2(meta, ctx, config.minOpenInterestUsd)
-    };
-  }
-  async markets(opts = {}) {
-    this.key();
-    const sort = opts.sort ?? "volume";
-    if (!["volume", "oi", "funding", "change", "name"].includes(sort))
-      return usage6("sort must be volume, oi, funding, change or name.");
-    const limit = opts.limit === undefined ? undefined : bounded2(opts.limit, 500, 1, 500, "limit");
-    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
-    const rows = core.universe.map((_, asset) => this.row(core, extras, config, asset)).filter((row2) => opts.all || row2.candle.tradeable !== false);
-    const field = {
-      volume: "dayNotionalVolumeUsd",
-      oi: "openInterestUsd",
-      funding: "fundingRate",
-      change: "change24hPct"
-    };
-    rows.sort((a, b) => {
-      if (sort !== "name") {
-        const av = a[field[sort]];
-        const bv = b[field[sort]];
-        if (av === null && bv !== null)
-          return 1;
-        if (bv === null && av !== null)
-          return -1;
-        if (av !== null && bv !== null) {
-          const diff = scaled2(bv) - scaled2(av);
-          if (diff !== 0n)
-            return diff > 0n ? 1 : -1;
-        }
-      }
-      return a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0;
-    });
-    return {
-      ...this.envelope(config, extras.warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
-      markets: limit === undefined ? rows : rows.slice(0, limit)
-    };
-  }
-  async market(coin) {
-    this.key();
-    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
-    const asset = resolve4(core, coin);
-    const meta = at2(core.universe, asset);
-    const ctx = at2(core.ctxs, asset);
-    return {
-      ...this.envelope(config, extras.warnings, Math.max(this.coreCache?.at ?? 0, this.extrasCache?.at ?? 0)),
-      market: {
-        ...this.row(core, extras, config, asset),
-        szDecimals: meta.szDecimals,
-        maxPriceDecimals: 6 - meta.szDecimals,
-        priceRule: "at most 5 significant figures",
-        minOrderUsd: 10,
-        impactBidPx: ctx.impactPxs?.[0] ?? null,
-        impactAskPx: ctx.impactPxs?.[1] ?? null,
-        premium: ctx.premium ?? null,
-        marginTiers: core.marginTables.get(meta.marginTableId ?? -1) ?? [
-          { lowerBoundUsd: "0", maxLeverage: meta.maxLeverage }
-        ]
-      }
-    };
-  }
-  async book(coin, opts = {}) {
-    this.key();
-    const depth = bounded2(opts.depth, 20, 1, 20, "depth");
-    if (opts.sigFigs !== undefined)
-      bounded2(opts.sigFigs, 5, 2, 5, "sigFigs");
-    const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical4 = at2(core.universe, resolve4(core, coin)).name;
-    const value = await info2(this.opts.fetcher, this.opts.network, {
-      type: "l2Book",
-      coin: canonical4,
-      ...opts.sigFigs === undefined ? {} : { nSigFigs: opts.sigFigs }
-    });
-    if (!object5(value) || value.coin !== canonical4 || !integer2(value.time) || !Array.isArray(value.levels) || value.levels.length !== 2)
-      return unavailable4();
-    const sides = [];
-    for (const side of value.levels) {
-      if (!Array.isArray(side))
-        return unavailable4();
-      const levels = [];
-      for (const level of side) {
-        if (!object5(level) || nonnegative2(level.px) === null || nonnegative2(level.sz) === null || !integer2(level.n))
-          return unavailable4();
-        levels.push({ px: level.px, sz: level.sz, n: level.n });
-      }
-      sides.push(levels);
-    }
-    const bids = at2(sides, 0).sort((a, b) => scaled2(a.px) > scaled2(b.px) ? -1 : scaled2(a.px) < scaled2(b.px) ? 1 : 0).slice(0, depth);
-    const asks = at2(sides, 1).sort((a, b) => scaled2(a.px) < scaled2(b.px) ? -1 : scaled2(a.px) > scaled2(b.px) ? 1 : 0).slice(0, depth);
-    const bid = bids[0];
-    const ask = asks[0];
-    const spread = bid && ask ? scaled2(ask.px) - scaled2(bid.px) : null;
-    const mid = bid && ask ? (scaled2(ask.px) + scaled2(bid.px)) / 2n : null;
-    return {
-      ...this.envelope(config),
-      coin: canonical4,
-      time: value.time,
-      bids,
-      asks,
-      spreadPx: spread === null ? null : fixed2(spread, 18).replace(/\.?0+$/, ""),
-      midPx: mid === null ? null : fixed2(mid, 18).replace(/\.?0+$/, ""),
-      spreadBps: spread === null || mid === null || mid === 0n ? null : fixed2(spread * 10000n * ONE3 / mid, 2)
-    };
-  }
-  async candles(coin, opts = {}) {
-    this.key();
-    const window = perpsCandleWindow2(opts, this.now());
-    const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical4 = at2(core.universe, resolve4(core, coin)).name;
-    const value = await info2(this.opts.fetcher, this.opts.network, {
-      type: "candleSnapshot",
-      req: { coin: canonical4, interval: window.interval, startTime: window.startTime, endTime: window.endTime }
-    });
-    if (!Array.isArray(value))
-      return unavailable4();
-    const candles = [];
-    for (const c of value) {
-      if (!object5(c) || !integer2(c.t) || !integer2(c.T) || !integer2(c.n) || ![c.o, c.h, c.l, c.c, c.v].every((v) => nonnegative2(v) !== null) || c.s !== canonical4 || c.i !== window.interval)
-        return unavailable4();
-      if (c.t <= window.endTime && c.T >= window.startTime)
-        candles.push({
-          t: c.t,
-          T: c.T,
-          o: c.o,
-          h: c.h,
-          l: c.l,
-          c: c.c,
-          v: c.v,
-          n: c.n
-        });
-    }
-    candles.sort((a, b) => a.t - b.t);
-    return {
-      ...this.envelope(config),
-      coin: canonical4,
-      interval: window.interval,
-      candles: candles.slice(-window.count)
-    };
-  }
-  async fundingHistory(coin, opts = {}) {
-    this.key();
-    const window = perpsFundingWindow2(opts, this.now());
-    const [config, core] = await Promise.all([this.config(), this.core()]);
-    const canonical4 = at2(core.universe, resolve4(core, coin)).name;
-    const value = await info2(this.opts.fetcher, this.opts.network, {
-      type: "fundingHistory",
-      coin: canonical4,
-      startTime: window.startTime,
-      endTime: window.endTime
-    });
-    return {
-      ...this.envelope(config),
-      coin: canonical4,
-      startTime: window.startTime,
-      endTime: window.endTime,
-      ...parsePerpsFundingHistory2(value, canonical4, window)
-    };
-  }
-  async predictedFunding() {
-    this.key();
-    const [config, core, extras] = await Promise.all([this.config(), this.core(), this.extras()]);
-    if (extras.predicted === null)
-      return unavailable4();
-    const predicted = [];
-    for (const meta of core.universe) {
-      const row2 = extras.predicted.get(meta.name);
-      if (row2)
-        predicted.push({
-          coin: meta.name,
-          fundingRate: row2.fundingRate,
-          fundingAprPct: fixed2(scaled2(row2.fundingRate) * 876000n, 2),
-          nextFundingTime: row2.nextFundingTime
-        });
-    }
-    predicted.sort((a, b) => a.coin < b.coin ? -1 : a.coin > b.coin ? 1 : 0);
-    return { ...this.envelope(config, extras.warnings, this.extrasCache?.at ?? this.now()), predicted };
-  }
 }
 
 // src/perps-history.ts
@@ -100303,8 +100905,8 @@ async function mainPerpCoins2(req) {
 function resolveWindow2(req) {
   const options = req.options ?? {};
   const kind = req.kind;
-  const address = req.address.toLowerCase();
-  if (!EVM_ADDRESS_RE4.test(address))
+  const address3 = req.address.toLowerCase();
+  if (!EVM_ADDRESS_RE4.test(address3))
     throw invalid3("wallet", "The wallet's Hyperliquid account is not an EVM address");
   for (const field of ["startTime", "endTime"]) {
     const value = options[field];
@@ -100322,7 +100924,7 @@ function resolveWindow2(req) {
       throw invalid3("cursor", `This cursor pages ${state.k}, not ${kind}`);
     if (state.n !== req.network)
       throw invalid3("cursor", `This cursor pages ${state.n}, not ${req.network}`);
-    if (state.w !== address)
+    if (state.w !== address3)
       throw invalid3("cursor", "This cursor pages another wallet");
     if (options.startTime !== undefined && options.startTime !== state.s || options.endTime !== undefined && options.endTime !== state.e || options.limit !== undefined && options.limit !== state.l)
       throw invalid3("cursor", "The window or page size changed; start again without a cursor");
@@ -100339,7 +100941,7 @@ function resolveWindow2(req) {
       v: 1,
       k: kind,
       n: req.network,
-      w: address,
+      w: address3,
       s: startTime,
       e: endTime,
       l: options.limit ?? PERPS_HISTORY_DEFAULT_LIMIT2,
@@ -100628,11 +101230,11 @@ function hyperliquidMark2(markets, coin) {
   const parsed = dec2(mark);
   return parsed !== null && parsed > 0n ? mark : null;
 }
-async function readHyperliquidClearinghouse2(fetcher, network2, address, opts = {}) {
-  return parseClearinghouse2(await hyperliquidInfo2(fetcher, network2, { type: "clearinghouseState", user: address.toLowerCase() }, opts));
+async function readHyperliquidClearinghouse2(fetcher, network2, address3, opts = {}) {
+  return parseClearinghouse2(await hyperliquidInfo2(fetcher, network2, { type: "clearinghouseState", user: address3.toLowerCase() }, opts));
 }
-async function readHyperliquidAccountMode2(fetcher, network2, address, opts = {}) {
-  const body = await hyperliquidInfo2(fetcher, network2, { type: "userAbstraction", user: address.toLowerCase() }, opts);
+async function readHyperliquidAccountMode2(fetcher, network2, address3, opts = {}) {
+  const body = await hyperliquidInfo2(fetcher, network2, { type: "userAbstraction", user: address3.toLowerCase() }, opts);
   if (typeof body !== "string" || body === "")
     throw new HyperliquidReadError2("Unexpected userAbstraction shape");
   return body;
@@ -100889,8 +101491,8 @@ var PERPS_RECENT_MAX_MS2 = 30 * 24 * 60 * 60 * 1000;
 function isMainPerpCoin2(coin) {
   return typeof coin === "string" && coin !== "" && !coin.includes(":") && !coin.includes("/") && !coin.startsWith("@");
 }
-async function readPerpsRecent2(fetcher, network2, address, window, opts = {}) {
-  const user = address.toLowerCase();
+async function readPerpsRecent2(fetcher, network2, address3, window, opts = {}) {
+  const user = address3.toLowerCase();
   const [fills, funding] = await Promise.all([
     hyperliquidInfo2(fetcher, network2, { type: "userFillsByTime", user, startTime: window.startTime, endTime: window.endTime }, opts),
     hyperliquidInfo2(fetcher, network2, { type: "userFunding", user, startTime: window.startTime, endTime: window.endTime }, opts)
@@ -101936,6 +102538,24 @@ function typedDataAuthorization(wallet3, typedData) {
   });
   return { body, authorizationSignature: sign4("sha256", Buffer.from(payload), wallet3.signer).toString("base64") };
 }
+function termsLines(build) {
+  const preview = build.preview ?? {};
+  const t = preview.terms;
+  if (!t || typeof t !== "object")
+    return { lines: [], warning: null };
+  const coin = safeText(preview.coin ?? "this market");
+  const text4 = (value) => safeText(value ?? "unknown");
+  const setters = Array.isArray(t.oracleSetters) ? t.oracleSetters.map((a) => safeText(a)).join(", ") : "";
+  const venue = typeof t.dex === "string" && t.dex !== "" ? `builder dex ${text4(t.dex)}${t.dexName ? ` (${text4(t.dexName)})` : ""}, deployed by ${text4(t.deployer)}; its deployer sets the oracle price${setters ? ` (${setters})` : ""}` : "Hyperliquid's main perp exchange; validators set the oracle price";
+  const margin = t.marginMode === "isolated" ? "isolated margin only" : "cross or isolated margin";
+  return {
+    lines: [
+      `Market ${coin}: ${venue}; ${margin}; collateral ${text4(t.collateral)}.`,
+      `Hyperliquid venue fee: ${text4(t.feeMultiplier)}x the main exchange's (taker ${text4(t.takerFeePct)}%, maker ${text4(t.makerFeePct)}% at the base tier), paid to Hyperliquid and the dex. Candle's builder fee is separate.`
+    ],
+    warning: typeof t.feeWarning === "string" && t.feeWarning !== "" ? safeText(t.feeWarning) : null
+  };
+}
 function previewLines2(build) {
   const action = build.action;
   const preview = build.preview ?? {};
@@ -101973,14 +102593,19 @@ function previewLines2(build) {
   lines.push(builder ? `Candle builder ${safeText(builder.b)} fee: ${builder.f / 10} bps.` : "Candle builder fee: none.");
   return [...lines, ...notes];
 }
-async function confirm(ctx, build, address, yes) {
+async function confirm(ctx, build, address3, yes) {
   writeFields(ctx.deps, ctx.json ? "stderr" : "stdout", [
-    ["Hyperliquid account", safeText(address)],
+    ["Hyperliquid account", safeText(address3)],
     ["Network", safeText(build.network)]
   ]);
   if (ctx.deps.env.CANDLE_HYPERLIQUID_BUILDER !== undefined)
     notice(ctx.deps, ctx.json ? "stderr" : "stdout", "warning", `Builder trust override: ${builderPin2(ctx)} (replaces this release's pin).
 `.trim());
+  const terms = termsLines(build);
+  for (const line of terms.lines)
+    notice(ctx.deps, ctx.json ? "stderr" : "stdout", "note", line);
+  if (terms.warning)
+    notice(ctx.deps, ctx.json ? "stderr" : "stdout", "warning", terms.warning);
   for (const line of previewLines2(build))
     notice(ctx.deps, ctx.json ? "stderr" : "stdout", "note", `${line}
 `.trim());
@@ -102816,7 +103441,7 @@ function errorCode3(err) {
 function errorText2(err) {
   return err instanceof Error ? err.message : String(err);
 }
-async function runStep2(io, step, path, body, intent) {
+async function runStep2(io, step, warnings, path, body, intent) {
   let build;
   try {
     build = await io.build(path, { walletId: io.walletId, ...body });
@@ -102824,6 +103449,12 @@ async function runStep2(io, step, path, body, intent) {
     step.status = "rejected";
     step.detail = `${errorCode3(err)}: ${errorText2(err)}`;
     return false;
+  }
+  if (build.preview && typeof build.preview === "object" && !Array.isArray(build.preview)) {
+    step.preview = build.preview;
+    const warning = step.preview.terms?.feeWarning;
+    if (typeof warning === "string" && warning && !warnings.includes(warning))
+      warnings.push(warning);
   }
   if (build.replayed === true) {
     step.status = "skipped";
@@ -102851,6 +103482,13 @@ async function runStep2(io, step, path, body, intent) {
   step.status = "built";
   if (io.mode === "no-submit")
     return false;
+  if (io.reviewBuild) {
+    if (!await io.reviewBuild(step, step.preview ?? {})) {
+      step.status = "skipped";
+      step.detail = "Declined at the market terms review. Nothing was signed.";
+      return false;
+    }
+  }
   let signature;
   try {
     signature = await io.sign(build.typedData);
@@ -102910,8 +103548,8 @@ function blankStep2(n, kind, coin, extra = {}) {
 var DECIMAL_RE3 = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/;
 var CLOID_RE3 = /^0x[0-9a-f]{32}$/;
 function perpsTpslParamsProblem2(p) {
-  if (typeof p.coin !== "string" || !/^[A-Za-z0-9]{1,20}$/.test(p.coin))
-    return "coin must be a market name";
+  if (hyperliquidCoinDex2(p.coin) === null)
+    return "coin must be a market name such as BTC, or xyz:TSLA on a builder dex";
   for (const [field, value] of [
     ["takeProfit", p.takeProfit],
     ["stopLoss", p.stopLoss]
@@ -102948,13 +103586,14 @@ async function runPerpsTpsl2(io, params) {
     throw new PerpsWorkflowError2("VALIDATION_FAILED", problem);
   const coinQuery = encodeURIComponent(params.coin);
   const server = await io.read(`/api/v1/agent/perps/tpsl?walletId=${encodeURIComponent(io.walletId)}&coin=${coinQuery}`);
+  const dex = hyperliquidCoinDex2(params.coin) ?? "";
   let snapshot;
   try {
-    snapshot = await hyperliquidWalletSnapshot2(io.fetcher, io.network, io.address, io.now);
+    snapshot = await hyperliquidWalletSnapshot2(io.fetcher, io.network, io.address, io.now, dex);
   } catch (err) {
     throw new PerpsWorkflowError2("PERPS_UNAVAILABLE", `Cannot read the account from Hyperliquid: ${errorText2(err)}`);
   }
-  const coin = typeof server.coin === "string" ? server.coin : params.coin.toUpperCase();
+  const coin = typeof server.coin === "string" ? server.coin : dex ? `${dex}:${params.coin.slice(params.coin.indexOf(":") + 1).toUpperCase()}` : params.coin.toUpperCase();
   const venueLegs = snapshot.orders.filter((o) => o.coin === coin && o.tpsl !== null);
   const tracked = [];
   for (const raw2 of Array.isArray(server.tracked) ? server.tracked : []) {
@@ -103040,7 +103679,7 @@ async function runPerpsTpsl2(io, params) {
       break;
     if (plan.cancel) {
       const step = plan.cancel;
-      const ok = await runStep2(io, step, "/api/v1/agent/perps/tpsl", {
+      const ok = await runStep2(io, step, warnings, "/api/v1/agent/perps/tpsl", {
         coin,
         operation: "cancel",
         leg: plan.leg,
@@ -103053,7 +103692,7 @@ async function runPerpsTpsl2(io, params) {
         break;
       }
       try {
-        const after = await hyperliquidWalletSnapshot2(io.fetcher, io.network, io.address, io.now);
+        const after = await hyperliquidWalletSnapshot2(io.fetcher, io.network, io.address, io.now, dex);
         result2.readAt = after.readAt;
         if (after.orders.some((o) => o.oid === step.target?.oid)) {
           step.status = "unknown";
@@ -103073,7 +103712,7 @@ async function runPerpsTpsl2(io, params) {
       }
     }
     if (plan.attach) {
-      const ok = await runStep2(io, plan.attach, "/api/v1/agent/perps/tpsl", {
+      const ok = await runStep2(io, plan.attach, warnings, "/api/v1/agent/perps/tpsl", {
         coin,
         operation: "attach",
         leg: plan.leg,
@@ -103144,10 +103783,10 @@ async function runPerpsFlatten2(io) {
   if (io.mode !== "no-submit" && io.confirm && !await io.confirm({ steps, warnings }))
     throw new PerpsWorkflowError2("CANCELLED", "Nothing was signed.");
   const workflowId = `flat-${io.cloid().slice(2, 18)}`;
-  const cancelStep = (step) => runStep2(io, step, "/api/v1/agent/perps/flatten/cancel", { coin: step.coin, oid: step.target?.oid, workflowId, workflowStep: step.step }, { method: "cancel", params: { coin: step.coin, oid: step.target?.oid } });
+  const cancelStep = (step) => runStep2(io, step, warnings, "/api/v1/agent/perps/flatten/cancel", { coin: step.coin, oid: step.target?.oid, workflowId, workflowStep: step.step }, { method: "cancel", params: { coin: step.coin, oid: step.target?.oid } });
   const closeStep = (step) => {
     const clientId2 = closeIds.get(step.coin);
-    return runStep2(io, step, "/api/v1/agent/perps/close", { coin: step.coin, clientId: clientId2, workflowId, workflowStep: step.step }, { method: "close", params: { coin: step.coin, clientId: clientId2 } });
+    return runStep2(io, step, warnings, "/api/v1/agent/perps/close", { coin: step.coin, clientId: clientId2, workflowId, workflowStep: step.step }, { method: "close", params: { coin: step.coin, clientId: clientId2 } });
   };
   if (io.mode !== "submit") {
     const first = steps[0];
@@ -103412,6 +104051,19 @@ async function workflowIo(ctx, opts) {
         throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes.");
       return (await ctx.deps.promptLine("Sign and submit this plan? [y/N] ")).trim().toLowerCase() === "y";
     },
+    reviewBuild: async (step, preview) => {
+      const terms = termsLines({ preview });
+      const to = ctx.json ? "stderr" : "stdout";
+      for (const line of terms.lines)
+        notice(ctx.deps, to, "note", line);
+      if (terms.warning)
+        notice(ctx.deps, to, "warning", terms.warning);
+      if (!terms.warning || opts.yes)
+        return true;
+      if (!ctx.deps.isTTY.stdin)
+        throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm this fee, or use --yes.");
+      return (await ctx.deps.promptLine(`Accept this venue fee for step ${step.step + 1}? [y/N] `)).trim().toLowerCase() === "y";
+    },
     cloid: () => `0x${randomBytes10(16).toString("hex")}`
   };
 }
@@ -103651,6 +104303,7 @@ function flagCell(row2) {
   return [
     row2.onlyIsolated ? "iso" : "",
     row2.atOpenInterestCap ? "cap" : "",
+    row2.terms?.feeWarning ? `fee:${row2.terms.feeMultiplier}x` : "",
     row2.candle.tradeable === false ? `x:${row2.candle.reason}` : row2.candle.tradeable === null ? "?:networkMismatch" : ""
   ].filter(Boolean).join(",");
 }
@@ -103686,9 +104339,16 @@ function writeMarkets(ctx, result2) {
   })}
 `);
   notice(ctx.deps, "stdout", "note", `Hyperliquid ${result2.network}. OI floor ${formatUsd(result2.gate.minOpenInterestUsd, { compact: true })} (${result2.gate.source}). Tradeable now is Candle's build gate at read time, not a promise. OI caps may still refuse an order.`);
+  for (const dex of result2.dexes ?? [])
+    notice(ctx.deps, "stdout", "note", safeText(`Builder dex ${dex.name} (${dex.fullName}): deployer ${dex.deployer}; oracle set by ${dex.oracleSetters.join(", ")}; collateral ${dex.collateral ?? "unknown"}; ${dex.tradeable === true ? "tradeable" : dex.tradeable === false ? "not tradeable on Candle" : "unavailable"}.`));
+}
+function termsLine(market) {
+  const t = market.terms;
+  const venue = t.dex ? `builder dex ${t.dex}${t.dexName ? ` (${t.dexName})` : ""}, deployer ${t.deployer}, oracle set by ${t.oracleSetters.join(", ")}` : "Hyperliquid main exchange, validator oracle";
+  return safeText(`${market.coin}: ${venue}; ${t.marginMode === "isolated" ? "isolated margin only" : "cross or isolated margin"}; max ${market.maxLeverage}x; collateral ${t.collateral}; fee ${t.feeMultiplier}x the main exchange's (taker ${t.takerFeePct}%, maker ${t.makerFeePct}% at the base tier, before Candle's builder fee).`);
 }
 var flags = {
-  markets: ["--sort", "--limit"],
+  markets: ["--sort", "--limit", "--dex"],
   market: [],
   book: ["--depth", "--sig-figs"],
   candles: ["--interval", "--count", "--end"]
@@ -103719,7 +104379,8 @@ async function read2(ctx, argv, command) {
     const result2 = command === "markets" ? await reader.markets({
       sort: values["--sort"],
       limit: number2("--limit"),
-      all: parsed.booleans.has("--all")
+      all: parsed.booleans.has("--all"),
+      dex: values["--dex"]
     }) : command === "market" ? await reader.market(coin) : command === "book" ? await reader.book(coin, { depth: number2("--depth"), sigFigs: number2("--sig-figs") }) : await reader.candles(coin, {
       interval: values["--interval"],
       count: number2("--count"),
@@ -103743,6 +104404,9 @@ async function read2(ctx, argv, command) {
 `);
     out(`Hyperliquid ${result2.network}; OI floor $${result2.gate.minOpenInterestUsd} (${result2.gate.source}). Tradeability is Candle's build gate at read time, not a promise. OI caps may still refuse an order.`);
     if ("market" in result2) {
+      out(termsLine(result2.market));
+      if (result2.market.terms.feeWarning)
+        notice(ctx.deps, "stdout", "warning", safeText(result2.market.terms.feeWarning));
       out(JSON.stringify({ ...result2.market, coin: safeText(result2.market.coin) }, null, 2));
     } else if ("bids" in result2) {
       out(`${safeText(result2.coin)}: BID PX / SIZE / ORDERS | ASK PX / SIZE / ORDERS`);
@@ -103871,7 +104535,7 @@ function verifyWithdrawMapping(build, expect) {
   if (build.to?.chain !== expect.to)
     return refuse3(`the build lands on ${String(build.to?.chain)}, not ${expect.to}`);
   const destination = build.to.address;
-  const own = expect.ownDestinations.some((address) => address.startsWith("0x") ? sameEvm(destination, address) : destination === address);
+  const own = expect.ownDestinations.some((address3) => address3.startsWith("0x") ? sameEvm(destination, address3) : destination === address3);
   if (!own)
     return refuse3("the build lands on a wallet that is not this key's own");
   if (parseWithdrawAmount(build.amountUsdc) !== expect.amountMicros)
@@ -104882,13 +105546,13 @@ function spendChallengeOf(extensions, apiHost, network2) {
     chainId: network2
   };
 }
-function spendStatement(address) {
-  return `Candle x402 spend_credit ${address}`;
+function spendStatement(address3) {
+  return `Candle x402 spend_credit ${address3}`;
 }
-function siwsMessage(challenge, address, statement = spendStatement(address)) {
+function siwsMessage(challenge, address3, statement = spendStatement(address3)) {
   const lines = [
     `${challenge.domain} wants you to sign in with your Solana account:`,
-    address,
+    address3,
     "",
     statement,
     "",
@@ -104903,14 +105567,14 @@ function siwsMessage(challenge, address, statement = spendStatement(address)) {
   return lines.join(`
 `);
 }
-function spendProofHeader(challenge, address, sign5) {
-  return proofHeader(challenge, address, spendStatement(address), sign5);
+function spendProofHeader(challenge, address3, sign5) {
+  return proofHeader(challenge, address3, spendStatement(address3), sign5);
 }
-function proofHeader(challenge, address, statement, sign5) {
-  const signature = sign5(new TextEncoder().encode(siwsMessage(challenge, address, statement)));
+function proofHeader(challenge, address3, statement, sign5) {
+  const signature = sign5(new TextEncoder().encode(siwsMessage(challenge, address3, statement)));
   return encodeHeader({
     domain: challenge.domain,
-    address,
+    address: address3,
     statement,
     uri: challenge.uri,
     version: challenge.version,
@@ -104998,8 +105662,8 @@ function dailyRefusal(priceUsdc, spentToday, limit) {
     priceUsdc
   };
 }
-function mayHoldWalletCredit(entries3, address, network2) {
-  return entries3.some((e) => e.keyless && e.state === "credited" && e.payer === address && e.network === network2);
+function mayHoldWalletCredit(entries3, address3, network2) {
+  return entries3.some((e) => e.keyless && e.state === "credited" && e.payer === address3 && e.network === network2);
 }
 function outcomeOf2(second) {
   const settlement = settlementOf(second.headers);
@@ -106338,8 +107002,8 @@ function pluginEnvironment(input) {
   if (input.rpcUrl !== undefined)
     env.CANDLE_PLUGIN_RPC_URL = input.rpcUrl;
   env.CANDLE_PLUGIN_NETWORK = input.network;
-  for (const [label, address] of Object.entries(input.wallets)) {
-    env[`CANDLE_PLUGIN_WALLET_${envSuffix(label)}`] = address;
+  for (const [label, address3] of Object.entries(input.wallets)) {
+    env[`CANDLE_PLUGIN_WALLET_${envSuffix(label)}`] = address3;
   }
   for (const [name2, value] of Object.entries(input.secrets)) {
     env[`CANDLE_SECRET_${envSuffix(name2)}`] = value;
@@ -107491,20 +108155,20 @@ async function portfolio(args, ctx) {
     }
     const lpSection = showSolana ? fromCandle.lp : undefined;
     const lpByWallet = new Map;
-    const lpOf = (address) => {
-      const entry2 = lpByWallet.get(address) ?? { positions: [], unread: [] };
-      lpByWallet.set(address, entry2);
+    const lpOf = (address3) => {
+      const entry2 = lpByWallet.get(address3) ?? { positions: [], unread: [] };
+      lpByWallet.set(address3, entry2);
       return entry2;
     };
     for (const position of lpSection?.positions ?? [])
       lpOf(position.wallet).positions.push(lpRow(position, prices));
     for (const unread of lpSection?.unreadable ?? [])
       lpOf(unread.wallet).unread.push(unread.position);
-    const wallet3 = (chain2, address, read3, extra) => {
-      const lp2 = chain2 === "solana" && lpSection ? lpOf(address) : undefined;
+    const wallet3 = (chain2, address3, read3, extra) => {
+      const lp2 = chain2 === "solana" && lpSection ? lpOf(address3) : undefined;
       return {
         chain: chain2,
-        address,
+        address: address3,
         ...extra,
         holdings: read3.holdings,
         ...read3.unread.length > 0 ? { unread: read3.unread } : {},
@@ -107682,7 +108346,7 @@ function filterCandle(body, keep) {
     ...body,
     tee,
     embedded,
-    unavailable: (body.unavailable ?? []).filter((address) => kept.has(address)),
+    unavailable: (body.unavailable ?? []).filter((address3) => kept.has(address3)),
     ...body.lp ? {
       lp: {
         ...body.lp,
@@ -107694,7 +108358,7 @@ function filterCandle(body, keep) {
       hood: {
         tee: hoodTee,
         embedded: hoodEmbedded,
-        unavailable: (body.hood.unavailable ?? []).filter((address) => hoodKept.has(address)),
+        unavailable: (body.hood.unavailable ?? []).filter((address3) => hoodKept.has(address3)),
         unpriced: 0,
         unpricedByReason: {}
       }
@@ -107749,7 +108413,7 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
     const failure4 = message(error);
     return {
       balances: async () => ({
-        byAddress: new Map(unique.map((address) => [address, { wei: null, usdg: null }])),
+        byAddress: new Map(unique.map((address3) => [address3, { wei: null, usdg: null }])),
         unavailable: unique,
         failure: failure4
       })
@@ -107767,7 +108431,7 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
       let next = 0;
       await Promise.all(Array.from({ length: Math.min(EVM_READS_IN_FLIGHT, unique.length) }, async () => {
         while (next < unique.length) {
-          const address = unique[next++];
+          const address3 = unique[next++];
           const read3 = async (call2) => {
             try {
               return await call2();
@@ -107776,13 +108440,13 @@ async function startEvmRead(addresses, rpcUrl, fetchFn) {
               return null;
             }
           };
-          const wei = await read3(() => rpc.getBalance(address));
-          const usdg = await read3(() => rpc.erc20BalanceOf(HOOD_USDG, address));
-          byAddress.set(address, { wei, usdg });
+          const wei = await read3(() => rpc.getBalance(address3));
+          const usdg = await read3(() => rpc.erc20BalanceOf(HOOD_USDG, address3));
+          byAddress.set(address3, { wei, usdg });
         }
       }));
-      const unavailable6 = unique.filter((address) => {
-        const read3 = byAddress.get(address);
+      const unavailable6 = unique.filter((address3) => {
+        const read3 = byAddress.get(address3);
         return read3 === undefined || read3.wei === null || read3.usdg === null;
       });
       return { byAddress, unavailable: unavailable6, ...failure4 === undefined ? {} : { failure: failure4 } };
@@ -107805,18 +108469,18 @@ async function readOwnRpc(addresses, solana, ctx) {
   for (let at3 = 0;at3 < unique.length; at3 += CHUNK) {
     const chunk = unique.slice(at3, at3 + CHUNK);
     if (rateLimited) {
-      for (const address of chunk)
-        lamports.set(address, null);
+      for (const address3 of chunk)
+        lamports.set(address3, null);
       continue;
     }
     try {
       const accounts = await rpc.getMultipleAccounts(chunk);
-      for (const [i, address] of chunk.entries())
-        lamports.set(address, (accounts[i]?.lamports ?? 0n).toString());
+      for (const [i, address3] of chunk.entries())
+        lamports.set(address3, (accounts[i]?.lamports ?? 0n).toString());
     } catch (error) {
       noteFailure(error);
-      for (const address of chunk)
-        lamports.set(address, null);
+      for (const address3 of chunk)
+        lamports.set(address3, null);
     }
   }
   const tokens = new Map;
@@ -107855,12 +108519,12 @@ async function readOwnRpc(addresses, solana, ctx) {
   }));
   const byAddress = new Map;
   const unavailable6 = [];
-  for (const address of unique) {
-    const sol = lamports.get(address) ?? null;
-    const held = failed.has(address) ? null : [...tokens.get(address)?.values() ?? []];
-    byAddress.set(address, { lamports: sol, tokens: held });
+  for (const address3 of unique) {
+    const sol = lamports.get(address3) ?? null;
+    const held = failed.has(address3) ? null : [...tokens.get(address3)?.values() ?? []];
+    byAddress.set(address3, { lamports: sol, tokens: held });
     if (sol === null || held === null)
-      unavailable6.push(address);
+      unavailable6.push(address3);
   }
   return { byAddress, unavailable: unavailable6, ...failure4 === undefined ? {} : { failure: failure4 } };
 }
@@ -108791,17 +109455,17 @@ init_presentation();
 init_render();
 
 // src/request-chain.ts
-function requestAddressChain2(address, chain2) {
+function requestAddressChain2(address3, chain2) {
   if (chain2 !== undefined) {
     const entry2 = requireChain2(chain2);
-    if (!isValidChainAddress2(entry2.slug, address))
+    if (!isValidChainAddress2(entry2.slug, address3))
       throw new ChainRegistryError2("INVALID_ADDRESS", entry2.slug, `Invalid ${entry2.slug} address`);
     return entry2.slug;
   }
-  if (isValidChainAddress2("solana", address))
+  if (isValidChainAddress2("solana", address3))
     return requireChain2("solana").slug;
   const evm = defaultEvmChain2();
-  if (isValidChainAddress2(evm.slug, address))
+  if (isValidChainAddress2(evm.slug, address3))
     return requireChain2(evm.slug).slug;
   return null;
 }
@@ -108810,8 +109474,8 @@ function requestAddressChain2(address, chain2) {
 init_usd();
 var usage12 = () => `Usage: candle scan <contract address> [--chain ${listChains2({ enabledOnly: true }).map((c) => c.slug).join("|")}] [--json]`;
 var OTHER_CHAIN = "Candle trades Solana and Hood today; that is not a Solana or Hood contract address.";
-function chainOfAddress(address, chain2) {
-  return requestAddressChain2(address, chain2);
+function chainOfAddress(address3, chain2) {
+  return requestAddressChain2(address3, chain2);
 }
 var isObject9 = (value) => value !== null && typeof value === "object";
 function readCard(body) {
@@ -108905,10 +109569,10 @@ async function scan(args, ctx) {
     writeUsageFailure(ctx.deps, usage12(), ctx.json);
     return 2;
   }
-  const address = parsed.positionals[0].trim();
+  const address3 = parsed.positionals[0].trim();
   let chain2;
   try {
-    chain2 = chainOfAddress(address, named);
+    chain2 = chainOfAddress(address3, named);
   } catch (error) {
     writeUsageFailure(ctx.deps, `${error instanceof Error ? error.message : String(error)}
 ${usage12()}`, ctx.json);
@@ -108919,7 +109583,7 @@ ${usage12()}`, ctx.json);
 ${usage12()}`, ctx.json);
     return 2;
   }
-  const result2 = await apiRequest(`/api/v1/tokens/${chain2}/${encodeURIComponent(address)}/card`, {
+  const result2 = await apiRequest(`/api/v1/tokens/${chain2}/${encodeURIComponent(address3)}/card`, {
     apiUrl: ctx.apiUrl,
     auth: "none",
     credentials: {},
@@ -109118,22 +109782,22 @@ async function readInput(ctx, file) {
 function assertExternalSigners(index, compiled, numRequiredSignatures, named) {
   const required = compiled.keys.slice(0, numRequiredSignatures);
   const signers = [];
-  for (const [i, address] of required.entries()) {
-    const entry2 = index.entries.find((candidate) => candidate.address === address);
+  for (const [i, address3] of required.entries()) {
+    const entry2 = index.entries.find((candidate) => candidate.address === address3);
     const role = i === 0 ? "the fee payer" : `signer ${i}`;
     if (entry2 === undefined) {
-      throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address} (${role}) is not an address this vault holds. candle sign signs only with this vault's external wallets.`, {
+      throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address3} (${role}) is not an address this vault holds. candle sign signs only with this vault's external wallets.`, {
         suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
       });
     }
     if (entry2.role !== "external") {
-      throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address} (${role}) is ${describeRole(entry2)}${entry2.label ? ` "${entry2.label}"` : ""}, which never signs for an outside tool. Only an external wallet does (candle external new).`, {
+      throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address3} (${role}) is ${describeRole(entry2)}${entry2.label ? ` "${entry2.label}"` : ""}, which never signs for an outside tool. Only an external wallet does (candle external new).`, {
         suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
       });
     }
     const provided = named.find((candidate) => candidate.id === entry2.id);
     if (provided === undefined) {
-      throw new VaultError("SIGN_SIGNER_NOT_PROVIDED", `${address} (${role}) is external wallet "${entry2.label}", and this invocation did not name it. Nothing was signed rather than returning a half-signed transaction.`, { suggestion: `Add: --wallet ${entry2.label}` });
+      throw new VaultError("SIGN_SIGNER_NOT_PROVIDED", `${address3} (${role}) is external wallet "${entry2.label}", and this invocation did not name it. Nothing was signed rather than returning a half-signed transaction.`, { suggestion: `Add: --wallet ${entry2.label}` });
     }
     signers.push(entry2);
   }
@@ -109180,7 +109844,7 @@ function formatSol2(lamports) {
 }
 function signerControlChanges(signers, simulation) {
   const addresses = new Set(signers.map((entry2) => entry2.address));
-  return controlChanges(simulation.snapshots, (address) => addresses.has(address));
+  return controlChanges(simulation.snapshots, (address3) => addresses.has(address3));
 }
 function displayLines(input) {
   const { tx, compiled, signers, simulation, mints } = input;
@@ -110355,10 +111019,10 @@ ${notes}`, booleans.has("--yes")))
     };
     if (action === "finish") {
       const ready = wallet3.withdrawals.active.filter((w) => w.claimable);
-      const address = positionals[0] ?? (ready.length === 1 ? ready[0]?.withdrawal : undefined);
-      if (!address)
+      const address3 = positionals[0] ?? (ready.length === 1 ? ready[0]?.withdrawal : undefined);
+      if (!address3)
         throw new TradingError("STAKING_WITHDRAWAL_REQUIRED", "Name a withdrawal; omission requires exactly one matured withdrawal in the selected wallet.");
-      body.withdrawal = address;
+      body.withdrawal = address3;
     } else
       body.amountRaw = rawAmount(positionals[0], action === "stake" ? wallet3.cndl.decimals : wallet3.staked.decimals);
     const signer = wallet3.payer === "linked" ? await tradingWallet(ctx, key, wallet3.linkedWalletId, "swap:write") : null;
@@ -111658,12 +112322,12 @@ async function resolveDestination(ctx, key, source2, to, chain2 = "solana") {
     throw new TradingError("DESTINATION_AMBIGUOUS", `"${to}" names ${approved.length} approved withdrawal addresses: ${approved.map((row2) => `${row2.label ?? ""} (${row2.id}, ${row2.address})`.trim()).join("; ")}. Name one by id or address.`);
   const listed = approved[0];
   if (listed) {
-    const address = hood ? checkEvmAddress(listed.address) : undefined;
-    if (address !== undefined && !address.ok)
+    const address3 = hood ? checkEvmAddress(listed.address) : undefined;
+    if (address3 !== undefined && !address3.ok)
       throw new TradingError("INVALID_RESPONSE", "Candle listed an approved Hood withdrawal address that is not an EVM address; nothing was built.");
     return {
       kind: "approved",
-      address: address?.ok ? address.address : listed.address,
+      address: address3?.ok ? address3.address : listed.address,
       id: listed.id,
       ...listed.label ? { label: listed.label } : {}
     };
@@ -112864,8 +113528,8 @@ async function verifyVaultIntegrity(copy, opts = {}) {
     report2.comparedAgainstLive = true;
     const copyAddresses = new Set(copy.index.entries.map((entry2) => entry2.address));
     const liveAddresses = new Set(opts.live.index.entries.map((entry2) => entry2.address));
-    const missing = [...liveAddresses].filter((address) => !copyAddresses.has(address));
-    const extra = [...copyAddresses].filter((address) => !liveAddresses.has(address));
+    const missing = [...liveAddresses].filter((address3) => !copyAddresses.has(address3));
+    const extra = [...copyAddresses].filter((address3) => !liveAddresses.has(address3));
     if (missing.length > 0 || extra.length > 0) {
       fail5(8, `this copy's address set does not match the live vault (${missing.length} address(es) in the vault and not in the copy, ${extra.length} the other way). It may be a stale copy, or a copy of a different vault`);
     }
@@ -113581,28 +114245,28 @@ async function vaultDemoteBatch(args, ctx) {
       }
     } else {
       const seen = [];
-      for (const address of named) {
-        const chain2 = isEvmAddress(address) ? "evm" : "solana";
-        if (seen.some((other) => sameAddress5(chain2, other, address))) {
-          outcomes.push({ address, label: null, chain: chain2, status: "skipped", reason: "listed more than once" });
+      for (const address3 of named) {
+        const chain2 = isEvmAddress(address3) ? "evm" : "solana";
+        if (seen.some((other) => sameAddress5(chain2, other, address3))) {
+          outcomes.push({ address: address3, label: null, chain: chain2, status: "skipped", reason: "listed more than once" });
           continue;
         }
-        seen.push(address);
-        const entry2 = tees.find((candidate) => sameAddress5(chain2, candidate.address, address));
+        seen.push(address3);
+        const entry2 = tees.find((candidate) => sameAddress5(chain2, candidate.address, address3));
         if (entry2 === undefined) {
           outcomes.push({
-            address,
+            address: address3,
             label: null,
             chain: chain2,
             status: "failed",
             code: "TEE_WALLET_UNKNOWN",
-            reason: `${address} is not a TEE wallet in the vault`
+            reason: `${address3} is not a TEE wallet in the vault`
           });
           continue;
         }
         if (entry2.tee?.lifecycle === "retired") {
           outcomes.push({
-            address,
+            address: address3,
             label: entry2.label,
             chain: chain2,
             status: "skipped",
@@ -113780,8 +114444,8 @@ async function vaultDemote(args, ctx) {
   });
   if ("error" in parsed)
     return usage2(ctx, parsed.error);
-  const [address, extra] = parsed.positionals;
-  if (!address || extra !== undefined) {
+  const [address3, extra] = parsed.positionals;
+  if (!address3 || extra !== undefined) {
     return usage2(ctx, "Usage: candle vault demote <tee-address> [--rpc-url <url>] [--emergency] [--sweep-to <label>]");
   }
   if (!refuseEnvPassphrase(ctx))
@@ -113797,7 +114461,7 @@ async function vaultDemote(args, ctx) {
   const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
   if ("error" in solana)
     return usage2(ctx, solana.error);
-  const resolved = await resolveTeeAddress(ctx, parsed, address, async () => ({
+  const resolved = await resolveTeeAddress(ctx, parsed, address3, async () => ({
     ok: false,
     code: 1
   }));
@@ -113806,7 +114470,7 @@ async function vaultDemote(args, ctx) {
       return resolved.code;
     writeLocalFailure(ctx.deps, {
       code: "TEE_WALLET_UNKNOWN",
-      message: `${address} is not a TEE wallet in the vault.`,
+      message: `${address3} is not a TEE wallet in the vault.`,
       suggestion: "Demote only addresses this vault holds as role:tee-wallet."
     }, ctx.json);
     return 1;
@@ -113815,7 +114479,7 @@ async function vaultDemote(args, ctx) {
     releaseResolvedTee(resolved.resolved);
     writeLocalFailure(ctx.deps, {
       code: "TEE_WALLET_UNKNOWN",
-      message: `${address} is not in the vault; use candle tee disable / tee sweep for the Phase 1 store.`
+      message: `${address3} is not in the vault; use candle tee disable / tee sweep for the Phase 1 store.`
     }, ctx.json);
     return 1;
   }
@@ -113828,7 +114492,7 @@ async function vaultDemote(args, ctx) {
     const step = { resolved: vaultResolved, solana };
     if (entry2.tee?.vaultDestination === undefined) {
       if (sweepTo === undefined) {
-        throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${address} has no pinned vault destination.`, {
+        throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${address3} has no pinned vault destination.`, {
           suggestion: "Pass --sweep-to <vault-key-label> (subject to the recovery destination rule), or adopt the server's pin."
         });
       }
@@ -113841,11 +114505,11 @@ async function vaultDemote(args, ctx) {
         };
       });
       applyVault(vaultResolved, next);
-      return await demoteWithAdapter(ctx, step, address, parsed.values["--rpc-url"], true);
+      return await demoteWithAdapter(ctx, step, address3, parsed.values["--rpc-url"], true);
     }
     requireTeeDestination(entry2);
     const needsEmergency = emergency || entry2.linkedWalletId === undefined || entry2.tee?.lifecycle === "stranded";
-    return await demoteWithAdapter(ctx, step, address, parsed.values["--rpc-url"], needsEmergency);
+    return await demoteWithAdapter(ctx, step, address3, parsed.values["--rpc-url"], needsEmergency);
   } catch (error) {
     if (error instanceof VaultError) {
       writeLocalFailure(ctx.deps, {
@@ -113860,22 +114524,22 @@ async function vaultDemote(args, ctx) {
     releaseResolvedTee(vaultResolved);
   }
 }
-async function demoteWithAdapter(ctx, step, address, rpcUrl, emergency) {
+async function demoteWithAdapter(ctx, step, address3, rpcUrl, emergency) {
   const linkedWalletId = step.resolved.entry.linkedWalletId;
   let disableCode = null;
   if (linkedWalletId !== undefined) {
-    disableCode = await teeDisable([address], ctx, step);
+    disableCode = await teeDisable([address3], ctx, step);
     if (disableCode !== 0 && disableCode !== 3 && !emergency)
       return disableCode;
   } else {
-    notice(ctx.deps, "stdout", "warning", `No linkedWalletId is recorded for ${address}; the grant could not be identified, so disable was not called and remote authority stays unknown.
+    notice(ctx.deps, "stdout", "warning", `No linkedWalletId is recorded for ${address3}; the grant could not be identified, so disable was not called and remote authority stays unknown.
 `.trim());
   }
   const destination = step.resolved.entry.tee?.vaultDestination;
   if (await nothingLeftToSweep(step.solana, step.resolved.entry)) {
     const code = disableCode === 0 ? 0 : 3;
     if (ctx.json) {
-      ctx.deps.stdout.write(`${JSON.stringify({ address, vaultDestination: destination, swept: false, nothingToSweep: true, lamports: "0", tokenAccounts: 0 })}
+      ctx.deps.stdout.write(`${JSON.stringify({ address: address3, vaultDestination: destination, swept: false, nothingToSweep: true, lamports: "0", tokenAccounts: 0 })}
 `);
     } else {
       notice(ctx.deps, "stdout", "note", `Nothing to sweep: 0 SOL, 0 token accounts.
@@ -113886,7 +114550,7 @@ async function demoteWithAdapter(ctx, step, address, rpcUrl, emergency) {
   if (!ctx.json)
     notice(ctx.deps, "stdout", "note", `Sweeping remaining funds to ${destination}...
 `.trim());
-  const sweepArgs = rpcUrl === undefined ? [address] : [address, "--rpc-url", rpcUrl];
+  const sweepArgs = rpcUrl === undefined ? [address3] : [address3, "--rpc-url", rpcUrl];
   if (emergency || linkedWalletId === undefined)
     sweepArgs.push("--emergency");
   return teeSweep(sweepArgs, ctx, step);
@@ -115743,10 +116407,10 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
     }, client3.rpc);
   });
 }
-function refuseRetiredFund(ctx, address) {
+function refuseRetiredFund(ctx, address3) {
   writeLocalFailure(ctx.deps, {
     code: "TEE_WALLET_STOPPED",
-    message: `${address} is a retired TEE wallet; a retired address is never refunded.`,
+    message: `${address3} is a retired TEE wallet; a retired address is never refunded.`,
     suggestion: "Nothing was signed. Create a new wallet to fund: candle tee new"
   }, ctx.json);
   return 1;
@@ -116084,7 +116748,7 @@ function reportDone(ctx, result2) {
       vault: result2.vaultPath,
       migrated: result2.migrated,
       skipped: result2.skipped,
-      entries: result2.addresses.map(({ address, lifecycle, label }) => ({ address, lifecycle, label })),
+      entries: result2.addresses.map(({ address: address3, lifecycle, label }) => ({ address: address3, lifecycle, label })),
       sourceDigest: result2.digest,
       idempotent: result2.idempotent,
       staleLegacyWarning: true
@@ -116151,8 +116815,8 @@ async function readLamports(addresses, solana, ctx) {
     }
     try {
       const accounts = await rpc.getMultipleAccounts(chunk);
-      for (const [i, address] of chunk.entries())
-        lamports.set(address, accounts[i]?.lamports ?? 0n);
+      for (const [i, address3] of chunk.entries())
+        lamports.set(address3, accounts[i]?.lamports ?? 0n);
     } catch (error) {
       unavailable6.push(...chunk);
       if (isRateLimited(error)) {
@@ -116183,18 +116847,18 @@ async function readEvmBalances(addresses, rpcUrl, fetchFn) {
     return read3;
   }
   const hood = read3.chainId === BigInt(HOOD_CHAIN_ID);
-  for (const address of addresses) {
+  for (const address3 of addresses) {
     try {
       read3.requests += 1;
-      read3.wei.set(address, await rpc.getBalance(address));
+      read3.wei.set(address3, await rpc.getBalance(address3));
       if (hood) {
         read3.requests += 1;
-        read3.usdg.set(address, await rpc.erc20BalanceOf(HOOD_USDG_ADDRESS, address));
+        read3.usdg.set(address3, await rpc.erc20BalanceOf(HOOD_USDG_ADDRESS, address3));
       }
     } catch (error) {
-      read3.wei.delete(address);
-      read3.usdg.delete(address);
-      read3.unavailable.push(address);
+      read3.wei.delete(address3);
+      read3.usdg.delete(address3);
+      read3.unavailable.push(address3);
       read3.failure ??= error instanceof Error ? error.message : String(error);
     }
   }
@@ -116580,7 +117244,7 @@ async function promoteEvmFresh(input, fromLabel) {
   const teeIndex = nextAllocatableIndex(nextIndexOf(vault.index.hd, "evmTee"), exposedIndexesOf(vault.index.hd, "evmTee"));
   const derivationPath = evmTeePath(teeIndex);
   const root = await decryptRoot(vault);
-  let address;
+  let address3;
   let keyId;
   let blob;
   let secret;
@@ -116590,7 +117254,7 @@ async function promoteEvmFresh(input, fromLabel) {
   try {
     const derived = await deriveEvmTeeKeyFromRoot(root, teeIndex);
     try {
-      address = derived.address;
+      address3 = derived.address;
       keyId = freshKeyId();
       secret = Uint8Array.from(derived.secret);
       blob = await sealKeyBlob(vault, keyId, derived.secret);
@@ -116603,7 +117267,7 @@ async function promoteEvmFresh(input, fromLabel) {
       id: keyId,
       chain: "evm",
       curve: "secp256k1",
-      address,
+      address: address3,
       label: parsed.values["--label"] ?? `evm-tee-${teeIndex}`,
       createdAt: now,
       role: "tee-wallet",
@@ -116633,7 +117297,7 @@ async function promoteEvmFresh(input, fromLabel) {
       },
       addKeys: [blob]
     }, ctx.deps));
-    scanStart = await appendScanStart(ctx, vault.path, address, height);
+    scanStart = await appendScanStart(ctx, vault.path, address3, height);
     await confirmAddress(ctx, "vault", destination.address, `promote a new TEE wallet with pinned vault ${destination.address}`);
     if (toKey !== undefined) {
       notice(ctx.deps, "stderr", "note", `${[toKeyPlanLine(toKey), ...signerStaysLines(toKey), ...targetWarnings(toKey.target, "evm")].join(`
@@ -116650,7 +117314,7 @@ async function promoteEvmFresh(input, fromLabel) {
   }
   const importCount = { n: 0 };
   const { exit: code, submitted } = await runTeeImport(ctx, {
-    address,
+    address: address3,
     privateKey,
     label: entry2.label,
     vaultDestination: destination.address,
@@ -116672,7 +117336,7 @@ async function promoteEvmFresh(input, fromLabel) {
   if (toKey !== undefined) {
     rebound = await rebindAfterImport(ctx, toKey, {
       linkedWalletId: target.linkedWalletId ?? null,
-      address,
+      address: address3,
       label: entry2.label,
       remoteAuthority: target.tee?.remoteAuthority ?? submitted?.remoteAuthority ?? null,
       importedTo: submitted?.boundKeyPrefix ?? null
@@ -116684,7 +117348,7 @@ async function promoteEvmFresh(input, fromLabel) {
       ok: rebound === undefined || rebound.exit === 0,
       mode: "fresh",
       chain: "evm",
-      address,
+      address: address3,
       label: entry2.label,
       path: derivationPath,
       vaultDestination: destination.address,
@@ -116697,7 +117361,7 @@ async function promoteEvmFresh(input, fromLabel) {
     });
   } else {
     writeFields(ctx.deps, "stdout", [
-      ["Address", address],
+      ["Address", address3],
       ["Derivation", derivationPath],
       ["Sweep to", destination.address],
       ["Hood scan start block", scanStart.block]
@@ -116964,14 +117628,14 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
     const teeIndex = nextAllocatableIndex(vault.index.hd.nextIndex.solanaTee, vault.index.hd.exposedIndexes.solanaTee);
     const derivationPath = solanaTeePath(teeIndex);
     const root = await decryptRoot(vault);
-    let address;
+    let address3;
     let keyId;
     let blob;
     let secret64;
     try {
       const derived = await deriveSolanaKey(root, derivationPath);
       try {
-        address = derived.address;
+        address3 = derived.address;
         keyId = freshKeyId();
         secret64 = Uint8Array.from(derived.secret64);
         blob = await sealKeyBlob(vault, keyId, derived.secret64);
@@ -116986,7 +117650,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
       id: keyId,
       chain: "solana",
       curve: "ed25519",
-      address,
+      address: address3,
       label: parsed.values["--label"] ?? `tee-${teeIndex}`,
       createdAt: now,
       role: "tee-wallet",
@@ -117025,7 +117689,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
     wipe(secret64);
     const importCount = { n: 0 };
     const { exit: code, submitted } = await runTeeImport(ctx, {
-      address,
+      address: address3,
       privateKey,
       label: entry2.label,
       vaultDestination: destination.address,
@@ -117049,7 +117713,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
       const importedTo = submitted?.boundKeyPrefix ?? null;
       rebound = await rebindAfterImport(ctx, toKey, {
         linkedWalletId: target.linkedWalletId ?? null,
-        address,
+        address: address3,
         label: entry2.label,
         remoteAuthority: target.tee?.remoteAuthority ?? submitted?.remoteAuthority ?? null,
         importedTo
@@ -117060,7 +117724,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
       writeJson(ctx.deps, {
         ok: rebound === undefined || rebound.exit === 0,
         mode: "fresh",
-        address,
+        address: address3,
         label: entry2.label,
         vaultDestination: destination.address,
         lifecycle: target.tee?.lifecycle,
@@ -117070,7 +117734,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
       });
     } else {
       writeFields(ctx.deps, "stdout", [
-        ["Address", address],
+        ["Address", address3],
         ["Sweep to", destination.address]
       ], "Fresh TEE wallet promoted");
     }
@@ -117416,15 +118080,15 @@ async function resumePromote(ctx, vault, entry2, reopen, path, hold, confirmatio
   }
   return { exit: 0, adopted };
 }
-async function displayHoldings(ctx, rpc, address) {
+async function displayHoldings(ctx, rpc, address3) {
   const observedAt = new Date(ctx.deps.now()).toISOString();
-  const lamports = await rpc.getBalance(address);
+  const lamports = await rpc.getBalance(address3);
   const tokens = [
-    ...await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
-    ...await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
+    ...await rpc.getTokenAccountsByOwner(address3, TOKEN_PROGRAM_ID),
+    ...await rpc.getTokenAccountsByOwner(address3, TOKEN_2022_PROGRAM_ID)
   ];
   writeFields(ctx.deps, "stdout", [
-    ["Address", address],
+    ["Address", address3],
     ["Observed at", formatTime(observedAt)]
   ], "Holdings");
   writeFields(ctx.deps, "stdout", [["SOL (lamports)", lamports.toString()]]);
@@ -117918,21 +118582,21 @@ function formatSol4(lamports) {
   const fraction = lamports % 1000000000n;
   return `${whole}.${fraction.toString().padStart(9, "0").slice(0, 6)}`;
 }
-function destinationCell(label, address) {
-  return `${label} (…${address.slice(-6)})`;
+function destinationCell(label, address3) {
+  return `${label} (…${address3.slice(-6)})`;
 }
 function actingDestinations(planned) {
   const out = [];
   for (const item of planned) {
     if (item.kind === "skip")
       continue;
-    const address = item.kind === "promote" ? item.destination.address : item.destinationAddress;
+    const address3 = item.kind === "promote" ? item.destination.address : item.destinationAddress;
     const label = item.kind === "promote" ? item.destination.label : item.row.destination;
-    const existing = out.find((candidate) => candidate.address === address);
+    const existing = out.find((candidate) => candidate.address === address3);
     if (existing !== undefined)
       existing.keys += 1;
     else
-      out.push({ label, address, keys: 1 });
+      out.push({ label, address: address3, keys: 1 });
   }
   return out;
 }
@@ -118102,10 +118766,10 @@ async function vaultPromoteBatch(args, ctx) {
         hoodHeight = await hood.rpc.blockNumber();
         const balances = new Map;
         evmHoldings = new Map;
-        for (const address of addresses) {
-          const held = await readEvmHoldings(hood.rpc, address);
-          evmHoldings.set(address, held);
-          balances.set(address, held.eth);
+        for (const address3 of addresses) {
+          const held = await readEvmHoldings(hood.rpc, address3);
+          evmHoldings.set(address3, held);
+          balances.set(address3, held.eth);
         }
         lamports = balances;
         writeSuccess(deps, "stderr", `ETH, USDG and WETH read for ${addresses.length} addresses (${addresses.length * 3} requests)
@@ -118121,7 +118785,7 @@ async function vaultPromoteBatch(args, ctx) {
       host = solana.endpoint.host;
       try {
         const accounts = await rpc.getMultipleAccounts(addresses);
-        lamports = new Map(addresses.map((address, at3) => [address, accounts[at3]?.lamports ?? 0n]));
+        lamports = new Map(addresses.map((address3, at3) => [address3, accounts[at3]?.lamports ?? 0n]));
         writeSuccess(deps, "stderr", `SOL read for ${addresses.length} addresses (${Math.ceil(addresses.length / 100)} requests)
 `.trim());
       } catch (error) {
@@ -118135,10 +118799,10 @@ async function vaultPromoteBatch(args, ctx) {
       notice(deps, "stderr", "note", `Reading token accounts for ${addresses.length} addresses: ${addresses.length * 2} requests over ${host}.
 `.trim());
       tokenCounts = new Map;
-      for (const address of addresses) {
-        const classic = await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID);
-        const token2022 = await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID);
-        tokenCounts.set(address, classic.length + token2022.length);
+      for (const address3 of addresses) {
+        const classic = await rpc.getTokenAccountsByOwner(address3, TOKEN_PROGRAM_ID);
+        const token2022 = await rpc.getTokenAccountsByOwner(address3, TOKEN_2022_PROGRAM_ID);
+        tokenCounts.set(address3, classic.length + token2022.length);
       }
     }
     const actingAddresses = acting.map((item) => item.subject.address);
@@ -118429,7 +119093,7 @@ ${renderControlledBy(controlledBy, acting.length)}
           promoted: results.filter((r) => r.state === "promoted").length,
           resumed: results.filter((r) => r.state === "resumed").length,
           skipped: results.filter((r) => r.state === "skipped").length,
-          destinations: destinations2.map(({ label, address, keys }) => ({ label, address, keys })),
+          destinations: destinations2.map(({ label, address: address3, keys }) => ({ label, address: address3, keys })),
           keys: rebindPhase === undefined ? results : keysWithRebind(results, rebindPhase, undefined),
           failedLine: stopped2.line,
           code: stopped2.code,
@@ -118602,20 +119266,20 @@ function renderBatchTable(planned, opts) {
   if (opts.hasValueUsd)
     headers2.push("value_usd (yours)");
   const rows = planned.map((item) => {
-    const address = item.subject.address;
+    const address3 = item.subject.address;
     const state = item.kind === "promote" ? item.acceptedUnknown ? "promote*" : "promote" : item.kind === "resume" ? "resume" : "skip";
     const destination = item.kind === "promote" ? `${item.destination.label} (${item.destination.address})` : `${item.row.destination} (${item.destinationAddress})`;
-    const authority = item.kind === "skip" ? "" : opts.roles === undefined ? "?" : authorityCell(address, opts.roles);
-    const cells = [String(item.row.line), state, item.subject.label, address, destination, authority];
-    const lamports = opts.lamports?.get(address);
+    const authority = item.kind === "skip" ? "" : opts.roles === undefined ? "?" : authorityCell(address3, opts.roles);
+    const cells = [String(item.row.line), state, item.subject.label, address3, destination, authority];
+    const lamports = opts.lamports?.get(address3);
     cells.push(lamports === undefined ? "unread" : evm ? formatUnits(lamports, NATIVE_DECIMALS) : formatSol4(lamports));
     if (evm) {
-      const held = opts.evmHoldings?.get(address);
+      const held = opts.evmHoldings?.get(address3);
       cells.push(held === undefined ? "unread" : formatUnits(held.usdg, HOOD_USDG_DECIMALS));
       cells.push(held === undefined ? "unread" : formatUnits(held.weth, NATIVE_DECIMALS));
     }
     if (opts.tokenCounts !== undefined)
-      cells.push(String(opts.tokenCounts.get(address) ?? 0));
+      cells.push(String(opts.tokenCounts.get(address3) ?? 0));
     if (opts.hasValueUsd)
       cells.push(item.row.valueUsd ?? "");
     return cells;
@@ -118691,7 +119355,7 @@ function finish(ctx, opts) {
       promoted,
       resumed,
       skipped: skipped2,
-      destinations: opts.destinations.map(({ label, address, keys }) => ({ label, address, keys })),
+      destinations: opts.destinations.map(({ label, address: address3, keys }) => ({ label, address: address3, keys })),
       keys: opts.rebound === undefined ? opts.keys : keysWithRebind(opts.keys, opts.rebound.phase, opts.rebound.run),
       controlledBy: controlledByJson(opts.controlledBy),
       authorities: authoritiesJson(opts.roles),
@@ -118987,8 +119651,8 @@ async function deriveOneEvm(vault, root, index, branch = "evm") {
     wipe(derived.secret);
   }
 }
-function lookupKey(address) {
-  return looksLikeEvmAddress(address) ? address.toLowerCase() : address;
+function lookupKey(address3) {
+  return looksLikeEvmAddress(address3) ? address3.toLowerCase() : address3;
 }
 async function deriveOne(vault, root, branch, index) {
   const path = pathForBranch(branch, index);
@@ -119007,14 +119671,14 @@ async function deriveOne(vault, root, branch, index) {
     wipe(derived.secret64);
   }
 }
-async function addressLooksUsed(rpc, address) {
-  if (await rpc.getBalance(address) > 0n)
+async function addressLooksUsed(rpc, address3) {
+  if (await rpc.getBalance(address3) > 0n)
     return true;
-  if ((await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)).length > 0)
+  if ((await rpc.getTokenAccountsByOwner(address3, TOKEN_PROGRAM_ID)).length > 0)
     return true;
-  if ((await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)).length > 0)
+  if ((await rpc.getTokenAccountsByOwner(address3, TOKEN_2022_PROGRAM_ID)).length > 0)
     return true;
-  return rpc.hasSignatureHistory(address);
+  return rpc.hasSignatureHistory(address3);
 }
 async function matchAgainstAccount(ctx, apiKey, derived) {
   const read3 = await completeLinkedWalletRead(ctx, apiKey);
@@ -119254,8 +119918,8 @@ No exposure was recorded: ${matches3.reason ?? "the linked-wallet read did not c
     notice(deps, "stdout", "note", `
 ${matches3.unmatched.length} address(es) this account imported were NOT derived by this restore:
 `.trim());
-    for (const address of matches3.unmatched)
-      deps.stdout.write(`  ${address}
+    for (const address3 of matches3.unmatched)
+      deps.stdout.write(`  ${address3}
 `);
     notice(deps, "stdout", "note", `
 Either this root derives them at an index beyond the bounds used here, in which case a higher --count or --tee-count finds them;
@@ -119469,7 +120133,7 @@ async function vaultRetireLegacy(args, ctx) {
     const vault = hold(opened.vault);
     await verifyVaultIntegrity(vault);
     const vaultAddresses = new Set(vault.index.entries.map((entry2) => entry2.address));
-    const missing = legacyAddresses.filter((address) => !vaultAddresses.has(address));
+    const missing = legacyAddresses.filter((address3) => !vaultAddresses.has(address3));
     if (missing.length > 0) {
       throw new VaultError("LEGACY_INCOMPLETE", `The vault is missing ${missing.length} address(es) still held in ${fromPath}.`, {
         suggestion: "Run `candle vault import-legacy --tee` first. The legacy file was not renamed."

@@ -9,6 +9,7 @@ import { describe, expect, test } from "bun:test"
 import { CandleClient } from "./client"
 import { CANDLE_HYPERLIQUID_BUILDER_ADDRESS, hyperliquidActionHash, hyperliquidL1TypedData } from "./hyperliquid"
 import { InMemorySecretStore } from "./secret-store"
+import { TPSL_TERMS, tpslTermsFixture } from "./tpsl-terms.fixture"
 import { generateSignerKeypair } from "./wallet-import"
 
 const BUILDER = "0x7a2b3c4d5e6f708192a3b4c5d6e7f80910a1b2c3"
@@ -201,6 +202,87 @@ describe("reduce-only", () => {
 })
 
 describe("plans", () => {
+  for (const leg of ["tp", "sl"] as const) {
+    for (const replace of [false, true]) {
+      for (const submit of [false, true]) {
+        test(`builder ${leg} ${replace ? "replacement" : "attach"} retains disclosures (submit=${submit})`, async () => {
+          const f = tpslTermsFixture({
+            walletId: WALLET,
+            address: ADDRESS,
+            builder: BUILDER,
+            signature: SIGNATURE,
+            leg,
+            replace,
+          })
+          const { client: c } = await client((call) => f.route(call.url, call.body))
+          const result = await c.perpsTpsl({
+            ...REF,
+            coin: "xyz:TSLA",
+            [leg === "tp" ? "takeProfit" : "stopLoss"]: f.triggerPx,
+            submit,
+          })
+          expect(result.complete).toBe(submit)
+          const built = result.steps.filter((s) => s.preview)
+          expect(built).toHaveLength(submit && replace ? 2 : 1)
+          for (const step of built) {
+            expect(step.preview?.terms).toEqual(TPSL_TERMS)
+            expect(step.status).toBe(submit ? "confirmed" : "built")
+          }
+          expect(result.warnings.filter((w) => w === TPSL_TERMS.feeWarning)).toHaveLength(1)
+          expect(f.events.filter((e) => e === "sign")).toHaveLength(submit ? (replace ? 2 : 1) : 0)
+          expect(f.events.filter((e) => e === "exchange")).toHaveLength(submit ? (replace ? 2 : 1) : 0)
+          if (!submit && replace) {
+            expect(result.steps.map((s) => s.status)).toEqual(["built", "planned"])
+            expect(f.events).toEqual(["build:cancel"])
+          }
+        })
+      }
+    }
+  }
+
+  for (const decline of [undefined, "cancel", "attach"] as const) {
+    test(`SDK public review sees each replacement build before signing (decline=${decline})`, async () => {
+      const f = tpslTermsFixture({
+        walletId: WALLET,
+        address: ADDRESS,
+        builder: BUILDER,
+        signature: SIGNATURE,
+        leg: "tp",
+        replace: true,
+      })
+      const { client: c } = await client((call) => f.route(call.url, call.body))
+      const result = await c.perpsTpsl(
+        { ...REF, coin: "xyz:TSLA", takeProfit: f.triggerPx },
+        {
+          reviewBuild: async (step, preview) => {
+            f.events.push(`review:${step.kind}`)
+            expect(preview.terms).toEqual(TPSL_TERMS)
+            expect(step.preview).toEqual(preview)
+            return step.kind !== decline
+          },
+        },
+      )
+      expect(result.complete).toBe(decline === undefined)
+      expect(f.events).toEqual(
+        decline === "cancel"
+          ? ["build:cancel", "review:cancel"]
+          : [
+              "build:cancel",
+              "review:cancel",
+              "sign",
+              "exchange",
+              "build:attach",
+              "review:attach",
+              ...(decline ? [] : ["sign", "exchange"]),
+            ],
+      )
+      if (decline) {
+        expect(result.steps.find((s) => s.kind === decline)?.status).toBe("skipped")
+        expect(result.steps.find((s) => s.kind === decline)?.preview?.terms).toEqual(TPSL_TERMS)
+      }
+    })
+  }
+
   test("flatten on an empty wallet: complete, nothing built or signed", async () => {
     const { client: c, calls } = await client(
       (call) =>

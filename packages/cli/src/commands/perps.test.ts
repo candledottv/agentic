@@ -8,6 +8,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import { generateKeyPairSync, verify } from "node:crypto"
+import { readFileSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -21,6 +22,10 @@ import {
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
 import { createCapture, createFakeStore, createTestDeps } from "../test-support"
+
+const BUILDER_DEX = JSON.parse(
+  readFileSync(join(import.meta.dir, "../__fixtures__/hyperliquid-builder-dex.json"), "utf8"),
+) as { perpDexs: unknown; metaAndAssetCtxs: Record<string, unknown> }
 
 const pair = generateKeyPairSync("ec", { namedCurve: "P-256" })
 const pem = pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString()
@@ -102,6 +107,10 @@ async function fixture(opts: Options = {}) {
     calls.push({ host: url.host, path: url.pathname, query: url.search, body })
     const ok = (value: unknown) => Response.json(value)
     if (url.host === "api.hyperliquid.xyz" && url.pathname === "/info") {
+      // BE-3755: builder dexes answer from the captured mainnet fixture.
+      if (body.type === "perpDexs") return ok(BUILDER_DEX.perpDexs)
+      if (typeof body.dex === "string" && body.type === "metaAndAssetCtxs")
+        return ok(BUILDER_DEX.metaAndAssetCtxs[body.dex])
       if (body.type === "meta") return ok({ universe: [{ name: "BTC" }] })
       if (body.type === "userAbstraction") return ok(opts.mode ?? "default")
       if (body.type === "userFillsByTime" || body.type === "userFunding") return ok(opts.history?.(body) ?? [])
@@ -723,5 +732,86 @@ describe("fills and funding", () => {
     const out = JSON.parse(f.stdout.text.trim())
     expect(out.code).toBe("PERPS_UNAVAILABLE")
     expect(out.suggestion).toContain("Retry after 3s")
+  })
+})
+
+describe("BE-3755 builder-dex orders: terms before anything is signed", () => {
+  const terms = {
+    dex: "xyz",
+    dexName: "XYZ",
+    deployer: "0x88806a71d74ad0a510b350545c9ae490912f0888",
+    oracleSource: "deployer",
+    oracleSetters: ["0x1234567890545d1df9ee64b35fdd16966e08acec"],
+    marginMode: "isolated",
+    collateral: "USDC",
+    feeMultiplier: "3",
+    takerFeePct: "0.135",
+    makerFeePct: "0.045",
+    feeWarning: "xyz:TSLA charges 3x the main exchange's fee (its deployer sets it), above Candle's 2x warning line",
+  }
+  const tslaOpen = {
+    type: "order",
+    orders: [{ a: 110001, b: true, p: "387", s: "0.1", r: false, t: { limit: { tif: "Ioc" } }, c: CLOID }],
+    grouping: "na",
+    builder: { b: BUILDER, f: 100 },
+  }
+
+  test("open xyz:TSLA with --yes: dex, oracle, deployer, margin, collateral, venue fee and warning print before signing", async () => {
+    const f = await fixture({
+      build: buildFor(tslaOpen, {
+        preview: { coin: "xyz:TSLA", side: "long", size: "0.1", limitPx: "387", tif: "Ioc", midPx: "383.425", terms },
+      }),
+    })
+    const fetchImpl = f.deps.fetch
+    let shownAtSign: string | null = null
+    f.deps.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/sign")) shownAtSign = humanText(f.stdout.text)
+      return fetchImpl(input as never, init)
+    }) as typeof fetchImpl
+    expect(await run(["perps", "open", "xyz:TSLA", "long", "0.1", "--yes"], f.deps)).toBe(0)
+    // The venue check read xyz's own universe, and the order went to the exchange.
+    expect(f.calls.some((c) => c.body?.type === "metaAndAssetCtxs" && c.body?.dex === "xyz")).toBe(true)
+    expect(f.calls.some((c) => c.path === "/exchange")).toBe(true)
+    const shown = shownAtSign ?? ""
+    for (const fragment of [
+      "Market xyz:TSLA: builder dex xyz (XYZ), deployed by 0x88806a71d74ad0a510b350545c9ae490912f0888",
+      "its deployer sets the oracle price (0x1234567890545d1df9ee64b35fdd16966e08acec)",
+      "isolated margin only; collateral USDC",
+      "Hyperliquid venue fee: 3x the main exchange's (taker 0.135%, maker 0.045% at the base tier)",
+      "Candle's builder fee is separate",
+      "above Candle's 2x warning line",
+      "Candle builder",
+    ])
+      expect(shown).toContain(humanText(fragment))
+    // The venue fee and Candle's builder fee are separate lines.
+    const venueLine = shown.indexOf(humanText("Hyperliquid venue fee"))
+    const builderLine = shown.indexOf(humanText("Candle builder"))
+    expect(venueLine).toBeGreaterThanOrEqual(0)
+    expect(builderLine).toBeGreaterThan(venueLine)
+  })
+
+  test("a build for another dex's asset is refused before the relay, terms or not", async () => {
+    const wrong = { ...tslaOpen, orders: [{ ...tslaOpen.orders[0], a: 110002 }] }
+    const f = await fixture({ build: buildFor(wrong, { preview: { coin: "xyz:TSLA", terms } }) })
+    expect(await run(["perps", "open", "xyz:TSLA", "long", "0.1", "--yes", "--json"], f.deps)).toBe(1)
+    expect(f.calls.some((c) => c.path.endsWith("/sign"))).toBe(false)
+    expect(f.calls.some((c) => c.path === "/exchange")).toBe(false)
+  })
+
+  test("a main-exchange order shows its terms too, when the build carries them", async () => {
+    const main = { ...terms, dex: "", dexName: null, deployer: null, oracleSource: "validators", oracleSetters: [] }
+    const f = await fixture({
+      build: buildFor(orderAction(), {
+        preview: {
+          coin: "BTC",
+          terms: { ...main, marginMode: "cross", feeMultiplier: "1", takerFeePct: "0.045", feeWarning: null },
+        },
+      }),
+    })
+    expect(await run(["perps", "open", "BTC", "long", "0.01", "--yes"], f.deps)).toBe(0)
+    expect(humanText(f.stdout.text)).toContain(
+      humanText("Market BTC: Hyperliquid's main perp exchange; validators set the oracle price"),
+    )
+    expect(f.stdout.text).not.toContain("warning line")
   })
 })

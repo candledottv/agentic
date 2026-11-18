@@ -357,6 +357,51 @@ describe("plans", () => {
     })
   })
 
+  test("BE-3755: tpsl shows the build's dex terms and the above-2x fee warning before signing, --yes included", async () => {
+    const terms = {
+      dex: "xyz",
+      dexName: "XYZ",
+      deployer: "0xdeployer",
+      oracleSetters: [],
+      marginMode: "isolated",
+      collateral: "USDC",
+      feeMultiplier: 3,
+      takerFeePct: 0.135,
+      makerFeePct: 0.06,
+      feeWarning: "This dex charges 3x the main exchange's fee.",
+    }
+    const g = await fixture({
+      venue: { positions: [{ coin: "BTC", szi: "0.5" }] },
+      build: (path, body) => {
+        if (body === undefined) return { coin: "BTC", tracked: [], unowned: [] }
+        const built = tpslBuild(path, body)
+        return built ? { ...built, preview: { coin: "BTC", terms } } : undefined
+      },
+    })
+    expect(await run(["perps", "tpsl", "BTC", "--take-profit", "66000", "--yes", "--json"], g.deps)).toBe(0)
+    const out = g.stderr.text + g.stdout.text
+    expect(out).toContain("builder dex xyz")
+    expect(out).toContain("0xdeployer")
+    expect(out).toContain("Candle's builder fee is separate")
+    expect(out).toContain("3x the main exchange's fee")
+    expect(g.calls.some((c) => c.path.endsWith("/sign"))).toBe(true)
+  })
+
+  test("BE-3755: tpsl above 2x off a TTY without --yes is refused before any signature", async () => {
+    const g = await fixture({
+      tty: false,
+      venue: { positions: [{ coin: "BTC", szi: "0.5" }] },
+      build: (path, body) => {
+        if (body === undefined) return { coin: "BTC", tracked: [], unowned: [] }
+        const built = tpslBuild(path, body)
+        return built ? { ...built, preview: { coin: "BTC", terms: { dex: "xyz", feeWarning: "3x fee" } } } : undefined
+      },
+    })
+    // The plan confirm already needs --yes off a TTY; the fee warning is shown with it, nothing is signed.
+    expect(await run(["perps", "tpsl", "BTC", "--take-profit", "66000", "--json"], g.deps)).toBe(1)
+    expect(g.calls.some((c) => c.path.endsWith("/sign"))).toBe(false)
+  })
+
   test("off a TTY without --yes the plan is refused before anything is signed", async () => {
     const f = await fixture({
       tty: false,

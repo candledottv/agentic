@@ -3,6 +3,7 @@ import { generateKeyPairSync, verify } from "node:crypto"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import {
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
   hyperliquidActionHash,
@@ -11,6 +12,8 @@ import {
 } from "./hyperliquid"
 import type { FetchLike } from "./orchestrate"
 import { executePerps } from "./perps"
+import { registerToolSubset } from "./tools"
+import { TPSL_TERMS, tpslTermsFixture } from "./tpsl-terms.fixture"
 
 const pair = generateKeyPairSync("ec", { namedCurve: "P-256" })
 const pem = pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString()
@@ -133,6 +136,67 @@ function fake(
 
 const env = () => ({ CANDLE_KEY_SIGNER_PEM_FILE: pemFile, CANDLE_HYPERLIQUID_BUILDER: BUILDER })
 const OPEN = { coin: "BTC", side: "long", size: "0.01" }
+
+describe("MCP builder TP/SL disclosures", () => {
+  for (const leg of ["tp", "sl"] as const) {
+    for (const replace of [false, true]) {
+      for (const submit of [false, true]) {
+        test(`${leg} ${replace ? "replacement" : "attach"} retains disclosures (submit=${submit})`, async () => {
+          const f = tpslTermsFixture({
+            walletId: "wallet",
+            address: ADDRESS,
+            builder: BUILDER,
+            signature: SIGNATURE,
+            leg,
+            replace,
+          })
+          const fetcher: FetchLike = async (url, init) => ({
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify(f.route(url, init?.body ? JSON.parse(String(init.body)) : undefined)),
+          })
+          let handler: ((args: Record<string, unknown>) => Promise<CallToolResult>) | undefined
+          const server = {
+            registerTool(_name: string, _definition: unknown, call: typeof handler) {
+              handler = call
+            },
+          } as unknown as Parameters<typeof registerToolSubset>[0]
+          registerToolSubset(server, {
+            tools: ["candle_perps_tpsl"],
+            getConfig: () => cfg,
+            env: submit ? env() : { CANDLE_HYPERLIQUID_BUILDER: BUILDER },
+            fetch: fetcher,
+            localHyperliquid: true,
+          })
+          if (!handler) throw new Error("TP/SL tool was not registered")
+          const answer = await handler({
+            coin: "xyz:TSLA",
+            [leg === "tp" ? "takeProfit" : "stopLoss"]: f.triggerPx,
+            submit,
+          })
+          expect(answer.isError).toBeUndefined()
+          const content = answer.content[0]
+          if (content?.type !== "text") throw new Error("TP/SL tool did not return text")
+          const result = JSON.parse(content.text)
+          expect(result.complete).toBe(submit)
+          const built = result.steps.filter((s: { preview?: unknown }) => s.preview)
+          expect(built).toHaveLength(submit && replace ? 2 : 1)
+          for (const step of built) {
+            expect(step.preview.terms).toEqual(TPSL_TERMS)
+            expect(step.status).toBe(submit ? "confirmed" : "built")
+          }
+          expect(result.warnings.filter((w: string) => w === TPSL_TERMS.feeWarning)).toHaveLength(1)
+          expect(f.events.filter((e) => e === "sign")).toHaveLength(submit ? (replace ? 2 : 1) : 0)
+          expect(f.events.filter((e) => e === "exchange")).toHaveLength(submit ? (replace ? 2 : 1) : 0)
+          if (!submit && replace) {
+            expect(result.steps.map((s: { status: string }) => s.status)).toEqual(["built", "planned"])
+            expect(f.events).toEqual(["build:cancel"])
+          }
+        })
+      }
+    }
+  }
+})
 
 describe("the release builder pin", () => {
   test("ships the confirmed address and uses it without reading config", async () => {

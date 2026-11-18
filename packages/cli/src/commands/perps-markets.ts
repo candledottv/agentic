@@ -52,6 +52,8 @@ function flagCell(row: PerpsMarketRow): string {
   return [
     row.onlyIsolated ? "iso" : "",
     row.atOpenInterestCap ? "cap" : "",
+    // BE-3755: a builder market whose fee is above 2x the main exchange's.
+    row.terms?.feeWarning ? `fee:${row.terms.feeMultiplier}x` : "",
     row.candle.tradeable === false
       ? `x:${row.candle.reason}`
       : row.candle.tradeable === null
@@ -101,11 +103,33 @@ function writeMarkets(ctx: CommandContext, result: PerpsMarketsResult): void {
     "note",
     `Hyperliquid ${result.network}. OI floor ${formatUsd(result.gate.minOpenInterestUsd, { compact: true })} (${result.gate.source}). Tradeable now is Candle's build gate at read time, not a promise. OI caps may still refuse an order.`,
   )
+  // BE-3755: `--dex` lists the builder dexes it covered: who deployed each, who sets its oracle,
+  // its collateral, and whether Candle trades it now.
+  for (const dex of result.dexes ?? [])
+    notice(
+      ctx.deps,
+      "stdout",
+      "note",
+      safeText(
+        `Builder dex ${dex.name} (${dex.fullName}): deployer ${dex.deployer}; oracle set by ${dex.oracleSetters.join(", ")}; collateral ${dex.collateral ?? "unknown"}; ${dex.tradeable === true ? "tradeable" : dex.tradeable === false ? "not tradeable on Candle" : "unavailable"}.`,
+      ),
+    )
+}
+
+/** BE-3755: the terms shown before an order on one market (dex, oracle, deployer, margin, fee). */
+function termsLine(market: PerpsMarketRow): string {
+  const t = market.terms
+  const venue = t.dex
+    ? `builder dex ${t.dex}${t.dexName ? ` (${t.dexName})` : ""}, deployer ${t.deployer}, oracle set by ${t.oracleSetters.join(", ")}`
+    : "Hyperliquid main exchange, validator oracle"
+  return safeText(
+    `${market.coin}: ${venue}; ${t.marginMode === "isolated" ? "isolated margin only" : "cross or isolated margin"}; max ${market.maxLeverage}x; collateral ${t.collateral}; fee ${t.feeMultiplier}x the main exchange's (taker ${t.takerFeePct}%, maker ${t.makerFeePct}% at the base tier, before Candle's builder fee).`,
+  )
 }
 
 type Command = "markets" | "market" | "book" | "candles"
 const flags = {
-  markets: ["--sort", "--limit"],
+  markets: ["--sort", "--limit", "--dex"],
   market: [],
   book: ["--depth", "--sig-figs"],
   candles: ["--interval", "--count", "--end"],
@@ -143,6 +167,7 @@ async function read(ctx: CommandContext, argv: string[], command: Command): Prom
             sort: values["--sort"] as PerpsMarketSort | undefined,
             limit: number("--limit"),
             all: parsed.booleans.has("--all"),
+            dex: values["--dex"],
           })
         : command === "market"
           ? await reader.market(coin)
@@ -168,6 +193,9 @@ async function read(ctx: CommandContext, argv: string[], command: Command): Prom
       `Hyperliquid ${result.network}; OI floor $${result.gate.minOpenInterestUsd} (${result.gate.source}). Tradeability is Candle's build gate at read time, not a promise. OI caps may still refuse an order.`,
     )
     if ("market" in result) {
+      out(termsLine(result.market))
+      if (result.market.terms.feeWarning)
+        notice(ctx.deps, "stdout", "warning", safeText(result.market.terms.feeWarning))
       out(JSON.stringify({ ...result.market, coin: safeText(result.market.coin) }, null, 2))
     } else if ("bids" in result) {
       out(`${safeText(result.coin)}: BID PX / SIZE / ORDERS | ASK PX / SIZE / ORDERS`)

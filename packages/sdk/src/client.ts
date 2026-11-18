@@ -87,6 +87,7 @@ import {
   verifyPerpsBuildAgainstVenue,
 } from "./hyperliquid"
 import {
+  type PerpsBuildReview,
   type PerpsTpslParams,
   type PerpsWorkflowIo,
   type PerpsWorkflowResult,
@@ -7378,11 +7379,17 @@ export class CandleClient {
    * protection gap, named in `warnings`), confirms it gone, re-reads, then places the new one; a
    * partial result is reported as `complete: false`. Legs Candle did not build are listed in
    * `unowned` and never touched. Calling this is the caller's intent; there is no prompt.
+   * `submit: false` builds and checks only the first step (the cancel for a replacement), with
+   * its disclosures in `steps[].preview.terms` and fee warnings also in `warnings`. Submission
+   * retains each step's preview. `reviewBuild` can inspect and decline each step before signing.
    */
-  async perpsTpsl(params: PerpsWalletRef & PerpsTpslParams): Promise<PerpsWorkflowResult> {
+  async perpsTpsl(
+    params: PerpsWalletRef & PerpsTpslParams,
+    options: { reviewBuild?: PerpsBuildReview } = {},
+  ): Promise<PerpsWorkflowResult> {
     this.requireKey("perpsTpsl()")
     const { walletId, privyWalletId: _p, submit: _s, ...tpsl } = params
-    return runPerpsTpsl(await this.perpsWorkflowIo(params), tpsl)
+    return runPerpsTpsl(await this.perpsWorkflowIo(params, options.reviewBuild), tpsl)
   }
 
   /**
@@ -7395,7 +7402,7 @@ export class CandleClient {
     return runPerpsFlatten(await this.perpsWorkflowIo(params))
   }
 
-  private async perpsWorkflowIo(ref: PerpsWalletRef): Promise<PerpsWorkflowIo> {
+  private async perpsWorkflowIo(ref: PerpsWalletRef, reviewBuild?: PerpsBuildReview): Promise<PerpsWorkflowIo> {
     const address = await this.perpsWalletAddress(ref.walletId)
     const builder = this.perpsBuilder()
     const reduceOnly = await this.getPerpsReduceOnly().catch(() => null)
@@ -7420,6 +7427,7 @@ export class CandleClient {
           ? Promise.resolve(hyperliquidSignatureHex(embeddedSignature))
           : this.signLinkedTypedData({ linkedWalletId: ref.walletId, privyWalletId: ref.privyWalletId, typedData }),
       mode: ref.submit === false ? "no-submit" : "submit",
+      reviewBuild,
       cloid: () => {
         const bytes = new Uint8Array(16)
         globalThis.crypto.getRandomValues(bytes)

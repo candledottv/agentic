@@ -207,6 +207,33 @@ export function typedDataAuthorization(wallet: TradingWallet, typedData: Hyperli
   return { body, authorizationSignature: sign("sha256", Buffer.from(payload), wallet.signer).toString("base64") }
 }
 
+/**
+ * BE-3755 (scope 4): the market's terms, shown before every order is signed or sent: its dex,
+ * oracle and deployer, margin mode and collateral, and the venue's own fee, kept apart from Candle's
+ * builder fee. They come from Candle's build preview (Candle's read of Hyperliquid); none of them
+ * is bound to the signed action, so they inform the confirmation and never widen what is signed.
+ */
+export function termsLines(build: Json): { lines: string[]; warning: string | null } {
+  const preview = (build.preview ?? {}) as Record<string, unknown>
+  const t = preview.terms as Record<string, unknown> | undefined
+  if (!t || typeof t !== "object") return { lines: [], warning: null }
+  const coin = safeText(preview.coin ?? "this market")
+  const text = (value: unknown) => safeText(value ?? "unknown")
+  const setters = Array.isArray(t.oracleSetters) ? t.oracleSetters.map((a) => safeText(a)).join(", ") : ""
+  const venue =
+    typeof t.dex === "string" && t.dex !== ""
+      ? `builder dex ${text(t.dex)}${t.dexName ? ` (${text(t.dexName)})` : ""}, deployed by ${text(t.deployer)}; its deployer sets the oracle price${setters ? ` (${setters})` : ""}`
+      : "Hyperliquid's main perp exchange; validators set the oracle price"
+  const margin = t.marginMode === "isolated" ? "isolated margin only" : "cross or isolated margin"
+  return {
+    lines: [
+      `Market ${coin}: ${venue}; ${margin}; collateral ${text(t.collateral)}.`,
+      `Hyperliquid venue fee: ${text(t.feeMultiplier)}x the main exchange's (taker ${text(t.takerFeePct)}%, maker ${text(t.makerFeePct)}% at the base tier), paid to Hyperliquid and the dex. Candle's builder fee is separate.`,
+    ],
+    warning: typeof t.feeWarning === "string" && t.feeWarning !== "" ? safeText(t.feeWarning) : null,
+  }
+}
+
 function previewLines(build: Json): string[] {
   // Only action fields were bound to the typed data and checked against the request.
   const action = build.action as Record<string, unknown>
@@ -262,6 +289,10 @@ async function confirm(ctx: CommandContext, build: Json, address: string, yes: b
       "warning",
       `Builder trust override: ${builderPin(ctx)} (replaces this release's pin).\n`.trim(),
     )
+  // BE-3755: the market's terms come first, so they are on screen before any confirm, --yes included.
+  const terms = termsLines(build)
+  for (const line of terms.lines) notice(ctx.deps, ctx.json ? "stderr" : "stdout", "note", line)
+  if (terms.warning) notice(ctx.deps, ctx.json ? "stderr" : "stdout", "warning", terms.warning)
   for (const line of previewLines(build)) notice(ctx.deps, ctx.json ? "stderr" : "stdout", "note", `${line}\n`.trim())
   if (yes) return true
   if (!ctx.deps.isTTY.stdin)

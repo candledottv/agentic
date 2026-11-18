@@ -155,6 +155,14 @@ export declare function perpsSetupStatusProblem(status: Record<string, unknown>,
     mode: string;
 }): string | null;
 /**
+ * A Hyperliquid perp asset id: the main exchange's `0..9999`, or a builder dex's
+ * `100000 + perp_dex_index * 10000 + index_in_meta` with a dex index of at least 1. Spot ids
+ * (`10000..99999`), the unused `100000..109999` and outcome ids (from `100000000`) are not perps.
+ */
+export declare function hyperliquidPerpAsset(a: unknown): boolean;
+/** The dex a market name names: "" for `BTC`, `xyz` for `xyz:TSLA`, null when it is no market name. */
+export declare function hyperliquidCoinDex(coin: unknown): string | null;
+/**
  * A close percentage (spec D, section 8): a decimal above 0 and at most 100 with at most four
  * decimals, as millionths of the position (`"25"` is 250000). Null when it is not one.
  */
@@ -200,7 +208,7 @@ export declare const HYPERLIQUID_MID_DRIFT_BPS = 100;
 export declare const HYPERLIQUID_TPSL_SLIPPAGE_BPS = 500;
 /** What Hyperliquid's own `/info` says about the market an open or modify names. */
 export interface HyperliquidOrderMarket {
-    /** The coin's index in Hyperliquid's main perp universe. */
+    /** The coin's asset id: its main-universe index, or its builder-dex id (BE-3755). */
     asset: number;
     /** Hyperliquid's mid for the coin (its mark price when the book has no mid). */
     midPx: string;
@@ -281,19 +289,25 @@ export interface HyperliquidSnapshotPosition {
  */
 export interface HyperliquidWalletSnapshot {
     readAt: number;
+    /** BE-3755: the dex this snapshot read ("" for the main exchange). */
+    dex?: string;
+    /** BE-3755: the asset id of `universe[0]`: 0 on the main exchange, `100000 + dex * 10000` on a builder dex. */
+    assetBase?: number;
     universe: {
         name: string;
         szDecimals: number;
         maxLeverage: number;
         onlyIsolated: boolean;
     }[];
-    /** Mark price per asset index, null when the venue gave none. */
+    /** Mark price per universe index (asset id minus `assetBase`), null when the venue gave none. */
     marks: (string | null)[];
     positions: HyperliquidSnapshotPosition[];
     orders: HyperliquidSnapshotOrder[];
     unsupported: string[];
 }
-export declare function hyperliquidWalletSnapshot(fetcher: InfoFetcher, network: HyperliquidNetwork, address: string, now?: () => number): Promise<HyperliquidWalletSnapshot>;
+export declare function hyperliquidWalletSnapshot(fetcher: InfoFetcher, network: HyperliquidNetwork, address: string, now?: () => number, 
+/** BE-3755: a builder dex (`xyz`) reads that dex's universe, positions and orders; "" is the main exchange. */
+dex?: string): Promise<HyperliquidWalletSnapshot>;
 /** The snapshot's position in `coin` (case-insensitive), or null. */
 export declare function snapshotPosition(snapshot: HyperliquidWalletSnapshot, coin: string): HyperliquidSnapshotPosition | null;
 /** The size a take-profit / stop-loss attach protects: the held size, at the market's precision. */

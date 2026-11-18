@@ -12,13 +12,18 @@
  * target named.
  *
  * `packages/cli/src/hyperliquid-manage.ts` and `packages/mcp/src/hyperliquid-manage.ts` are
- * byte-identical copies of this file (drift tests enforce it). Its only import is `./hyperliquid`,
- * which is copied the same way.
+ * byte-identical copies of this file (drift tests enforce it). The signing and market helpers it
+ * imports are copied the same way.
  */
 import { type HyperliquidNetwork, type HyperliquidTypedData } from "./hyperliquid";
+import type { PerpsDexTerms } from "./hyperliquid-markets";
 /** At most this many signed steps per invocation (spec D, section 8); the caller invokes again. */
 export declare const PERPS_FLATTEN_MAX_STEPS = 100;
 export type PerpsStepStatus = "planned" | "built" | "submitted" | "confirmed" | "rejected" | "unknown" | "skipped";
+export interface PerpsWorkflowPreview extends Record<string, unknown> {
+    terms?: PerpsDexTerms;
+}
+export type PerpsBuildReview = (step: PerpsWorkflowStep, preview: PerpsWorkflowPreview) => Promise<boolean>;
 /** One step of a plan, as it ended. `exchangeBody` is kept whenever a signature exists but did not settle. */
 export interface PerpsWorkflowStep {
     step: number;
@@ -34,6 +39,8 @@ export interface PerpsWorkflowStep {
     /** The new order's cloid (an attach or a close), when it has one. */
     cloid: string | null;
     status: PerpsStepStatus;
+    /** The build's disclosures, including venue terms and fee warning; retained in every mode. */
+    preview?: PerpsWorkflowPreview;
     detail?: string;
     signature?: string;
     exchange?: unknown;
@@ -99,6 +106,14 @@ export interface PerpsWorkflowIo {
         steps: PerpsWorkflowStep[];
         warnings: string[];
     }): Promise<boolean>;
+    /**
+     * BE-3755 (scope 4): called for every built step, after the venue check and before anything is
+     * signed, with the build's own preview (the market's dex, oracle, deployer, margin, collateral and
+     * venue fee, and any fee warning). False declines the step: nothing is signed or submitted.
+     * No-submit returns the preview without invoking the hook. Agent callers may omit this hook;
+     * their invocation expresses intent, and the result still retains every built step's preview.
+     */
+    reviewBuild?: PerpsBuildReview;
     /** A random 16-byte cloid. */
     cloid(): string;
 }

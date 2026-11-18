@@ -44,6 +44,7 @@ import {
   runPerpsWrite,
   sharedWrite,
   slippage,
+  termsLines,
   typedDataAuthorization,
 } from "./perps"
 import { printTradingResult, tradingFailure } from "./swap"
@@ -239,6 +240,21 @@ async function workflowIo(
       if (!ctx.deps.isTTY.stdin)
         throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes.")
       return (await ctx.deps.promptLine("Sign and submit this plan? [y/N] ")).trim().toLowerCase() === "y"
+    },
+    // BE-3755 (scope 4): the build's market terms are shown before this step is signed, --yes included.
+    // A venue fee above 2x the main exchange's also needs its own yes; --yes accepts it.
+    reviewBuild: async (step, preview) => {
+      const terms = termsLines({ preview } as Json)
+      const to = ctx.json ? "stderr" : "stdout"
+      for (const line of terms.lines) notice(ctx.deps, to, "note", line)
+      if (terms.warning) notice(ctx.deps, to, "warning", terms.warning)
+      if (!terms.warning || opts.yes) return true
+      if (!ctx.deps.isTTY.stdin)
+        throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm this fee, or use --yes.")
+      return (
+        (await ctx.deps.promptLine(`Accept this venue fee for step ${step.step + 1}? [y/N] `)).trim().toLowerCase() ===
+        "y"
+      )
     },
     cloid: () => `0x${randomBytes(16).toString("hex")}`,
   }

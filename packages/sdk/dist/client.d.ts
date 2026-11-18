@@ -1,7 +1,7 @@
 import type { HoodTeeOperation } from "./hood-tee";
 import { type SignedTradeLeg } from "./errors";
 import { type HyperliquidNetwork, type HyperliquidSubmitOutcome, type HyperliquidTypedData } from "./hyperliquid";
-import { type PerpsTpslParams, type PerpsWorkflowResult } from "./hyperliquid-manage";
+import { type PerpsBuildReview, type PerpsTpslParams, type PerpsWorkflowResult } from "./hyperliquid-manage";
 import { type PerpsBookOptions, type PerpsBookResult, type PerpsCandlesOptions, type PerpsCandlesResult, type PerpsMarketResult, type PerpsMarketsOptions, type PerpsMarketsResult } from "./hyperliquid-markets";
 import type { HyperliquidPnlSection } from "./hyperliquid-pnl";
 import { type PerpsAccountLine, type PerpsAccountReport, type PerpsPortfolioSection, type PerpsPositionRow, type PerpsRiskReport, type PerpsRiskSettings, type PerpsRiskThresholds, type PerpsRiskThresholdsReport, type PerpsWatchEvent } from "./hyperliquid-risk";
@@ -4793,8 +4793,13 @@ export declare class CandleClient {
      * protection gap, named in `warnings`), confirms it gone, re-reads, then places the new one; a
      * partial result is reported as `complete: false`. Legs Candle did not build are listed in
      * `unowned` and never touched. Calling this is the caller's intent; there is no prompt.
+     * `submit: false` builds and checks only the first step (the cancel for a replacement), with
+     * its disclosures in `steps[].preview.terms` and fee warnings also in `warnings`. Submission
+     * retains each step's preview. `reviewBuild` can inspect and decline each step before signing.
      */
-    perpsTpsl(params: PerpsWalletRef & PerpsTpslParams): Promise<PerpsWorkflowResult>;
+    perpsTpsl(params: PerpsWalletRef & PerpsTpslParams, options?: {
+        reviewBuild?: PerpsBuildReview;
+    }): Promise<PerpsWorkflowResult>;
     /**
      * Cancel every open main-perp order on the wallet, then close every main-perp position (spec D,
      * section 8). At most 100 signed steps per call; `complete` only when a final read shows nothing
