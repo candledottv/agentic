@@ -98775,7 +98775,7 @@ async function lpRequest(ctx, key, path, body) {
   });
   if (!result2.ok) {
     if (result2.status === 404 && !result2.code)
-      throw new TradingError("LP_NOT_ENABLED", "This Candle deployment does not serve LP routes (LP_ENABLED is off there, or the API predates them).");
+      throw new TradingError("LP_NOT_ENABLED", "This Candle deployment does not serve LP routes (the API predates them).");
     throw new TradingError(result2.code ?? "REQUEST_FAILED", result2.message);
   }
   if (!result2.body || typeof result2.body !== "object")
@@ -98935,7 +98935,7 @@ async function lpPositions(args, ctx) {
 var EMBEDDED = "embedded";
 function embeddedFailure(result2, id) {
   if (result2.status === 404 && !result2.code)
-    return new TradingError("LP_NOT_ENABLED", "This Candle deployment does not serve LP routes (LP_ENABLED is off there, or the API predates them).");
+    return new TradingError("LP_NOT_ENABLED", "This Candle deployment does not serve LP routes (the API predates them).");
   const error = result2.raw?.error;
   const signature = typeof error?.signature === "string" ? error.signature : undefined;
   const stage = typeof error?.stage === "string" ? error.stage : undefined;

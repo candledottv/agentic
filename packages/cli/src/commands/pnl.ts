@@ -24,7 +24,7 @@
  *
  * ── LP (E2, BE-323) ──────────────────────────────────────────────────────────────────────────
  *
- * When the API serves LP (`LP_ENABLED`) either answer carries an `lp` section beside the token
+ * When the API serves LP either answer carries an `lp` section beside the token
  * figures, computed server-side from the same `activity` ledger (the rows LP `/confirm` wrote)
  * and the LP routes' pool read: realized (withdrawals against the cost basis at the add, plus
  * claimed fees), unrealized (open positions at their share of the pool plus unclaimed fees, at

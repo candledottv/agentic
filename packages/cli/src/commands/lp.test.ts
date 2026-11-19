@@ -39,7 +39,7 @@ interface Options {
   statuses?: Array<{ confirmationStatus: string | null; err: unknown } | null>
   /** The server already holds a confirmation for the build (a replay after a crash). */
   builtSignature?: string
-  /** `LP_ENABLED` off: the router answers a bare 404. */
+  /** An API without LP: the router answers a bare 404. */
   lpDisabled?: boolean
   /** Which wallet's positions list holds POSITION; both by default hold none but the first. */
   holder?: "wallet" | "wallet-2" | "none"

@@ -9,7 +9,7 @@
  * key is opened on any path in this file; local signing of a position close belongs to `tee sweep`
  * alone (P3-ED-6, `lp-close.ts`).
  *
- * The server half (#1200, behind `LP_ENABLED`) owns admission, the pre-artifact Ember spend gate on
+ * The server half (#1200) owns admission, the pre-artifact Ember spend gate on
  * an add, the thin-pool and Token-2022 warnings (R5, both pool tokens), the idempotent build per
  * client id, and the confirm that reads actual token deltas. This file only drives it.
  *
@@ -63,9 +63,9 @@ const CONFIRM_MAX_POLLS = 45
 type LpAction = "add" | "remove" | "claim"
 
 /**
- * One LP request. The LP router answers a plain 404 with no Candle error code while `LP_ENABLED`
- * is off (`agent-lp.ts`), which `request()` would report as a generic REQUEST_FAILED; naming it is
- * the difference between "the deployment has not enabled this" and "something broke".
+ * One LP request. An API that predates the LP router answers a plain 404 with no Candle error code,
+ * which `request()` would report as a generic REQUEST_FAILED; naming it is the difference between
+ * "the deployment does not serve this" and "something broke".
  */
 async function lpRequest(ctx: CommandContext, key: string, path: string, body?: Json): Promise<Json> {
   const result = await apiRequest(path, {
@@ -81,7 +81,7 @@ async function lpRequest(ctx: CommandContext, key: string, path: string, body?: 
     if (result.status === 404 && !result.code)
       throw new TradingError(
         "LP_NOT_ENABLED",
-        "This Candle deployment does not serve LP routes (LP_ENABLED is off there, or the API predates them).",
+        "This Candle deployment does not serve LP routes (the API predates them).",
       )
     throw new TradingError(result.code ?? "REQUEST_FAILED", result.message)
   }
@@ -277,7 +277,7 @@ function embeddedFailure(result: Extract<ApiResult, { ok: false }>, id: string):
   if (result.status === 404 && !result.code)
     return new TradingError(
       "LP_NOT_ENABLED",
-      "This Candle deployment does not serve LP routes (LP_ENABLED is off there, or the API predates them).",
+      "This Candle deployment does not serve LP routes (the API predates them).",
     )
   const error = (result.raw as { error?: { signature?: unknown; stage?: unknown } } | undefined)?.error
   const signature = typeof error?.signature === "string" ? error.signature : undefined

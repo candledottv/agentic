@@ -31,7 +31,7 @@
  *
  * ── LP positions (E2, BE-323) ────────────────────────────────────────────────────────────────
  *
- * When Candle's answer carries an `lp` section (the API serves LP, `LP_ENABLED`), each TEE
+ * When Candle's answer carries an `lp` section (the API serves LP), each TEE
  * wallet's Meteora DAMM v2 positions come with it: the position's share of the pool reserves plus
  * its unclaimed fees, valued server-side at the same marks as the token rows, from the LP routes'
  * own pool read. Nothing about a pool is computed here (no Meteora SDK in the CLI, P3-ED-6). The
