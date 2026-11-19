@@ -446,9 +446,10 @@ describe("candle perps watch (A-9, AC9 to AC12)", () => {
   test("a failed five-minute thresholds refresh keeps the last thresholds (A-9)", async () => {
     let f: Awaited<ReturnType<typeof fixture>>
     const reads = () => hyperliquidCalls(f.calls).filter((c) => c.body?.type === "clearinghouseState").length
-    // 18% from liquidation: warn under the stored 25%, ok under the 15% default.
+    // 18% from liquidation: warn under the stored 25%, ok under the 15% default. Call 1 is the
+    // U7 switch read and call 2 the initial thresholds; the refresh (call 3) is the one that fails.
     f = await fixture(
-      { liq: ["82.0"], stored: { warnDistanceBps: 2500 }, limitsFailFrom: 2 },
+      { liq: ["82.0"], stored: { warnDistanceBps: 2500 }, limitsFailFrom: 3 },
       { onTerminate: terminateAfter(() => reads(), 35) },
     )
     const code = await run(["perps", "watch", "--heartbeat", "0"], f.deps)

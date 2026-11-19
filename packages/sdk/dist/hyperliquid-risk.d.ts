@@ -65,6 +65,12 @@ export declare function perpsRiskProblem(t: PerpsRiskThresholds): string | null;
 export declare function perpsRiskFromLimits(body: unknown): {
     thresholds: PerpsRiskThresholdsReport;
     stored: PerpsRiskSettings | null;
+    /**
+     * U7 (BE-3860): whether the server's `HYPERLIQUID_UNIFIED_ACCOUNTS` switch is on, as
+     * `GET /keys/self/limits` reports it. Absent (an older API) or false: a unified wallet is
+     * answered exactly as today (`PERPS_ACCOUNT_MODE`).
+     */
+    unifiedAccounts: boolean;
 };
 /** The fetch every read here takes; the same shape spec B's reader takes. */
 export type HyperliquidInfoFetcher = PerpsMarketFetch;
@@ -98,6 +104,156 @@ export declare function readHyperliquidClearinghouse(fetcher: HyperliquidInfoFet
 export declare function readHyperliquidAccountMode(fetcher: HyperliquidInfoFetcher, network: HyperliquidRiskNetwork, address: string, opts?: HyperliquidInfoOptions): Promise<string>;
 /** The account modes whose perps collateral `clearinghouseState` describes (`perps-gate.ts`). */
 export declare const HYPERLIQUID_STANDARD_MODES: readonly string[];
+/** The mode Hyperliquid reports for a unified account. */
+export declare const HYPERLIQUID_UNIFIED_MODE = "unifiedAccount";
+/** USDC's spot token index: the collateral of the main exchange and of every dex Candle trades. */
+export declare const HYPERLIQUID_USDC_TOKEN = 0;
+/** One `spotClearinghouseState` balance. `total` includes `hold`; `token` is absent on non-tokens. */
+export interface UnifiedSpotBalance {
+    coin: string;
+    /** The spot token index; absent on entries that are not tokens (outcome balances), which are skipped. */
+    token?: number;
+    total: string;
+    hold: string;
+}
+/** One collateral token's spot balance, as a unified wallet's free collateral reads it. */
+export interface UnifiedCollateralBalance {
+    token: number;
+    /** The token's name as the venue printed it; null when the wallet holds none of it. */
+    coin: string | null;
+    total: string;
+    hold: string;
+    /** `total - hold`, floored at 0: what an order, a margin top-up or a withdrawal can still draw. */
+    free: string;
+}
+/**
+ * A unified wallet's balance of one collateral token (USDC unless named), from its spot state. A
+ * token the wallet holds none of has no entry on the venue, and reads as zero. A malformed amount,
+ * or the same token twice, throws: free collateral is never estimated.
+ */
+export declare function unifiedCollateralBalance(balances: readonly UnifiedSpotBalance[], token?: number): UnifiedCollateralBalance;
+/** What the ratio reads from one dex's `clearinghouseState`. */
+export interface UnifiedDexMargin {
+    /** "" is the main exchange. */
+    dex: string;
+    /** The dex's collateral, a spot token index. */
+    collateralToken: number;
+    crossMaintenanceMarginUsed: string;
+    positions: readonly {
+        leverage: {
+            type: string;
+        };
+        marginUsed: string;
+    }[];
+}
+/** One collateral token's side of the unified account ratio. */
+export interface UnifiedCollateralRow extends UnifiedCollateralBalance {
+    /** The dexes collateralised in this token ("" is the main exchange). */
+    dexes: string[];
+    /** `marginUsed` summed over the isolated positions on those dexes. */
+    isolatedMarginUsed: string;
+    /** `crossMaintenanceMarginUsed` summed over those dexes. */
+    crossMaintenanceMarginUsed: string;
+    /** `total - isolatedMarginUsed`: what backs the cross positions, the ratio's denominator. */
+    available: string;
+    /**
+     * `crossMaintenanceMarginUsed / available`; 0 with no cross exposure; null when there is cross
+     * exposure and nothing available to back it.
+     */
+    ratio: number | null;
+}
+export interface UnifiedAccountRatio {
+    /** One row per collateral token a dex uses, in token order. */
+    collateral: UnifiedCollateralRow[];
+    /**
+     * Hyperliquid's unified account ratio: the highest token's. Null when a token has cross exposure
+     * and nothing available (Hyperliquid's helper skips such a token; here it is never read as safe).
+     */
+    ratio: number | null;
+    /** The token whose ratio that is; null with no cross exposure anywhere. */
+    token: number | null;
+    /** The exact fraction behind `ratio`, for threshold comparisons; null when `ratio` is null or 0. */
+    exact: {
+        num: bigint;
+        den: bigint;
+    } | null;
+    /** A token has cross exposure and no available collateral. */
+    noEquity: boolean;
+}
+/**
+ * Hyperliquid's `computeUnifiedAccountRatio`, in exact decimals. Every dex state contributes its
+ * cross maintenance margin and its isolated positions' margin to its collateral token; each token's
+ * ratio is that cross margin over the token's spot total less the isolated margin; the account's
+ * ratio is the highest.
+ *
+ * One deliberate difference from the helper in Hyperliquid's docs: a token with cross exposure and
+ * no available collateral is skipped there (ratio 0). Here it is `noEquity` with a null ratio, so a
+ * risk read can never call it ok.
+ */
+export declare function unifiedAccountRatio(dexes: readonly UnifiedDexMargin[], balances: readonly UnifiedSpotBalance[]): UnifiedAccountRatio;
+/** `num / den > bps / 10000`, exactly (den > 0): the engine's margin comparison. */
+export declare function unifiedRatioAbove(exact: {
+    num: bigint;
+    den: bigint;
+}, bps: number): boolean;
+/** Sum of decimal strings, as the shortest decimal string. */
+export declare function sumDecimals(values: readonly string[], what: string): string;
+/** The unified block a unified wallet's risk and account documents carry beside the usual fields. */
+export interface PerpsUnifiedBlock {
+    /** Hyperliquid's unified account ratio, the highest collateral token's; the account line's `marginRatio`. */
+    ratio: number | null;
+    /** The collateral token (a spot token index) that ratio belongs to; null with no cross exposure. */
+    ratioToken: number | null;
+    /** One row per collateral token a dex uses: the spot balance, hold, and that token's ratio. */
+    collateral: UnifiedCollateralRow[];
+    /** The dex states this report read ("" is the main exchange). */
+    dexes: string[];
+}
+/** One dex's side of a unified wallet's read. `market` is null when the dex's marks were not read. */
+export interface UnifiedDexRead {
+    /** "" is the main exchange. */
+    dex: string;
+    collateralToken: number;
+    state: HyperliquidClearinghouse;
+    market: Pick<HyperliquidMarkets, "universe" | "ctxs"> | null;
+}
+/**
+ * The pure rule for a unified wallet: one report from one set of reads, no memory.
+ *
+ * Positions: the engine's own rule over every dex's positions (mode `default` only selects that
+ * rule; the report's mode is `unifiedAccount`), so a position is judged exactly as on a standard
+ * wallet. Margin: Hyperliquid's unified account ratio against this key's margin thresholds, with the
+ * engine's comparison (`ratio > threshold`, exactly; a value on a threshold is the lower level) and
+ * its E2 rule (cross exposure with nothing behind it is `critical`, `no equity`).
+ *
+ * The account line, for the USDC balance (the collateral of every dex Candle trades):
+ * `accountValueUsd` is the spot total, `freeMarginUsd` and `withdrawableUsd` are total less hold,
+ * `marginUsedUsd` is the positions' margin, `crossAccountValueUsd` is what backs the cross positions
+ * (total less isolated margin) and `marginRatio` is the unified ratio.
+ */
+export declare function unifiedRiskReport(dexes: readonly UnifiedDexRead[], balances: readonly UnifiedSpotBalance[], thresholds: PerpsRiskThresholdsReport, now: number, identity?: PerpsRiskIdentity): PerpsRiskReport & {
+    unified: PerpsUnifiedBlock;
+};
+/** One perp dex and the spot token that collateralises it. The main exchange is `name: ""`, index 0. */
+export interface HyperliquidDexCollateral {
+    name: string;
+    /** The position in Hyperliquid's `perpDexs` answer; 0 is the main exchange. */
+    index: number;
+    /** A spot token index; 0 is USDC. */
+    collateralToken: number;
+}
+/** A unified wallet's spot balances (`spotClearinghouseState`), parsed strictly. */
+export declare function readHyperliquidSpotBalances(fetcher: HyperliquidInfoFetcher, network: HyperliquidRiskNetwork, address: string, opts?: HyperliquidInfoOptions): Promise<UnifiedSpotBalance[]>;
+/**
+ * Every perp dex with its collateral token, the main exchange first, from `perpDexs` and
+ * `allPerpMetas` (the same pair, and the same order checks, as the server's U3 read). The dex list
+ * is metadata: a new dex is seen on the next read.
+ */
+export declare function readHyperliquidDexCollaterals(fetcher: HyperliquidInfoFetcher, network: HyperliquidRiskNetwork, opts?: HyperliquidInfoOptions): Promise<HyperliquidDexCollateral[]>;
+/** One builder dex's `clearinghouseState` for one address (the body's `dex` names it). */
+export declare function readHyperliquidDexClearinghouse(fetcher: HyperliquidInfoFetcher, network: HyperliquidRiskNetwork, address: string, dex: string, opts?: HyperliquidInfoOptions): Promise<HyperliquidClearinghouse>;
+/** One builder dex's `metaAndAssetCtxs` (the body's `dex` names it): its universe and its marks. */
+export declare function readHyperliquidDexMarkets(fetcher: HyperliquidInfoFetcher, network: HyperliquidRiskNetwork, dex: string, opts?: HyperliquidInfoOptions): Promise<Pick<HyperliquidMarkets, "universe" | "ctxs">>;
 export interface HyperliquidPositionState {
     coin: string;
     szi: string;
@@ -210,6 +366,11 @@ export interface PerpsRiskReport {
     /** Null when no level could be computed from the data (`unknown`). */
     account: PerpsAccountLine | null;
     positions: PerpsPositionRow[];
+    /**
+     * U7 (BE-3860): present only on a unified wallet's report, read while the server's
+     * `HYPERLIQUID_UNIFIED_ACCOUNTS` switch is on. Standard wallets never carry it.
+     */
+    unified?: PerpsUnifiedBlock;
     note: string;
 }
 export interface PerpsRiskIdentity {
@@ -236,13 +397,42 @@ export interface ReadPerpsRiskOptions extends HyperliquidInfoOptions {
     now: () => number;
     /** A mode already read (watch reads it every 5 minutes); omitted, it is read with the rest. */
     mode?: string;
+    /**
+     * U7 (BE-3860): whether the server's `HYPERLIQUID_UNIFIED_ACCOUNTS` switch is on, as
+     * `perpsRiskFromLimits` read it with the thresholds. Only with it true does a wallet whose own
+     * mode is `unifiedAccount` take the unified reads; otherwise it is answered exactly as today.
+     */
+    unifiedAccounts?: boolean;
+    /**
+     * U7 (BE-3860): the dex list with each dex's collateral token, already read (`perpDexs` +
+     * `allPerpMetas`). Given, the unified read skips those two requests: watch refreshes the list on
+     * its five-minute metadata cadence instead of every poll, and the one-shot reads leave it unset.
+     */
+    dexCollaterals?: readonly HyperliquidDexCollateral[];
 }
 /**
  * The A-8 read: `clearinghouseState`, `metaAndAssetCtxs` and (unless given) `userAbstraction` in
  * parallel, then the pure rule. Halves completing more than 30 s apart are `PERPS_READ_STALE`.
  * A failed read throws `HyperliquidReadError`; callers turn it into `PERPS_READ_FAILED`.
+ *
+ * U7 (BE-3860): the branch is the wallet's own mode. A wallet Hyperliquid reports as
+ * `unifiedAccount` takes the unified reads while `unifiedAccounts` is true (the server's switch,
+ * read with the thresholds); every other wallet, and every wallet while the switch is off or an
+ * older API did not report it, runs the standard rule below unchanged.
  */
 export declare function readPerpsRisk(opts: ReadPerpsRiskOptions): Promise<PerpsRiskReport>;
+/**
+ * U7 (BE-3860): the unified read, for a wallet whose own mode is `unifiedAccount` while the
+ * server's switch is on. Beside the three reads every risk read makes, it reads the wallet's spot
+ * balances, every builder dex's `clearinghouseState` (positions stay per dex, and each dex feeds the
+ * unified ratio), and the marks of each dex the wallet holds a position on. The same 30 s staleness
+ * rule covers the extra reads. A failed read throws `HyperliquidReadError`, as anywhere else.
+ */
+export declare function readUnifiedPerpsRisk(opts: ReadPerpsRiskOptions, main: {
+    state: HyperliquidClearinghouse;
+    market: HyperliquidMarkets;
+    mode: string;
+}, mainTimes: number[]): Promise<PerpsRiskReport>;
 /** The exit code a level carries (A-8): 0 ok, 10 warn, 11 critical, 1 for unknown. */
 export declare function perpsRiskExitCode(level: PerpsRiskLevel): 0 | 1 | 10 | 11;
 export interface PerpsRecentFigures {
@@ -287,6 +477,8 @@ export interface PerpsAccountReport extends PerpsAccountLineFields {
         reason: PerpsRiskReason | null;
         drivers: PerpsRiskDriver[];
     };
+    /** U7 (BE-3860): present only on a unified wallet's account document. */
+    unified?: PerpsUnifiedBlock;
 }
 type PerpsAccountLineFields = Partial<Omit<PerpsAccountLine, "mode" | "level">>;
 /** One report plus the recent window, in the A-10 shape. */
@@ -348,8 +540,17 @@ export declare const HYPERLIQUID_INFO_WEIGHTS: {
     readonly clearinghouseState: 2;
     readonly metaAndAssetCtxs: 20;
     readonly userAbstraction: 20;
+    readonly spotClearinghouseState: 2;
+    readonly perpDexs: 20;
+    readonly allPerpMetas: 20;
 };
 export declare function perpsWatchWeightPerMinute(intervalMs: number): number;
+/**
+ * U7 (BE-3860): a unified wallet's watcher weight: the standard figure, plus per poll the spot
+ * state, one `clearinghouseState` per builder dex and the marks of each dex the wallet holds a
+ * position on, plus the dex list once per five-minute refresh (not per poll).
+ */
+export declare function perpsWatchUnifiedWeightPerMinute(intervalMs: number, dexes: number, markedDexes: number): number;
 export interface WatchPerpsRiskOptions {
     fetcher: HyperliquidInfoFetcher;
     network: HyperliquidRiskNetwork;
@@ -365,6 +566,11 @@ export interface WatchPerpsRiskOptions {
     signal?: AbortSignal;
     /** Return at the first level change after the first reading, with that level. */
     onceLevelChange?: boolean;
+    /**
+     * U7 (BE-3860): the server's `HYPERLIQUID_UNIFIED_ACCOUNTS` switch, as the limits read reported
+     * it when the watch started. Static for the run: the switch is not turned on under a watcher.
+     */
+    unifiedAccounts?: boolean;
     onEvent: (event: PerpsWatchEvent) => void | Promise<void>;
 }
 /**

@@ -3050,6 +3050,8 @@ export interface PerpsRiskSettingsResult {
     perpsRisk: PerpsRiskSettings | null;
     /** What the engine applies, and where it came from (`defaults (server did not report)` on an older API). */
     effective: PerpsRiskThresholdsReport;
+    /** U7 (BE-3860): whether the server's unified-accounts switch is on; false when not reported. */
+    unifiedAccounts: boolean;
 }
 /** `PUT /keys/self/perps-risk` or `/keys/:prefix/perps-risk`. */
 export interface PerpsRiskWriteResult {

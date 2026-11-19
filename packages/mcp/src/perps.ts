@@ -56,7 +56,7 @@ import {
 import type { FetchLike, ToolText } from "./orchestrate"
 import { PERPS_HISTORY_MAX_LIMIT, PerpsHistoryError, readPerpsHistoryPage } from "./perps-history"
 
-import { executePerpsRisk, positionsAdditions } from "./perps-risk"
+import { engineInputs, executePerpsRisk, positionsAdditions } from "./perps-risk"
 
 /** BE-1582 (spec A-12): the read-only risk tools; perps-risk.ts runs them. None signs. */
 export const PERPS_RISK_TOOL_NAMES = [
@@ -564,12 +564,20 @@ export async function executePerps(
           `${error instanceof Error ? error.message : "Cannot read the account mode"}. Nothing was requested.`,
         )
       }
-      if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode))
-        return fail(
-          "PERPS_ACCOUNT_MODE",
-          `This Hyperliquid account is in ${mode} mode. Candle trades only a standard account and does not change modes; this is not a missing fee approval. Nothing was requested or signed.`,
-          { mode },
-        )
+      if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode)) {
+        // U7 (BE-3860): a unified wallet continues only while the server's switch is on; with it
+        // off (or an older API) the refusal is today's, with the unified-specific wording.
+        let unifiedOn = false
+        if (mode === "unifiedAccount") unifiedOn = (await engineInputs(cfg, fetch)).unifiedAccounts
+        if (!unifiedOn)
+          return fail(
+            "PERPS_ACCOUNT_MODE",
+            mode === "unifiedAccount"
+              ? "This Hyperliquid account is in unifiedAccount mode and Candle's unified accounts are off, so setup does not continue. This is not a missing fee approval. Nothing was requested or signed."
+              : `This Hyperliquid account is in ${mode} mode. Candle trades only a standard account and does not change modes; this is not a missing fee approval. Nothing was requested or signed.`,
+            { mode },
+          )
+      }
     }
     let build: Record<string, unknown>
     try {

@@ -130,6 +130,54 @@ describe("perpsRisk() and perpsAccount() (A-8, A-10)", () => {
     expect(calls.some((c) => /exchange|\/sign|perps\/(open|close|cancel|setup|leverage)/.test(c.url))).toBe(false)
   })
 
+  test("U7 (BE-3860): with the switch on, perpsRisk and perpsAccount take the unified path", async () => {
+    const calls: Call[] = []
+    const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
+    const impl = (async (input: unknown, init?: RequestInit) => {
+      const url = String(input)
+      const body = init?.body ? JSON.parse(String(init.body)) : undefined
+      calls.push({ method: init?.method ?? "GET", url, headers: {}, body })
+      if (url === "https://api.hyperliquid.xyz/info") {
+        if (body.type === "clearinghouseState") return json(STATE)
+        if (body.type === "metaAndAssetCtxs") return json(MARKET)
+        if (body.type === "userAbstraction") return json("unifiedAccount")
+        if (body.type === "spotClearinghouseState")
+          return json({ balances: [{ coin: "USDC", token: 0, total: "1000.0", hold: "100.0" }] })
+        if (body.type === "perpDexs") return json([null])
+        if (body.type === "allPerpMetas") return json([{ universe: [{ name: "BTC" }], collateralToken: 0 }])
+        if (body.type === "userFillsByTime") return json([{ coin: "BTC", closedPnl: "5.0", fee: "0.5" }])
+        if (body.type === "userFunding") return json([])
+      }
+      if (url.endsWith("/api/v1/agent/keys/self/limits"))
+        return json({
+          success: true,
+          perpsRisk: null,
+          perpsRiskEffective: {
+            warnDistanceBps: 1500,
+            criticalDistanceBps: 700,
+            warnMarginRatioBps: 6000,
+            criticalMarginRatioBps: 8000,
+            clearBandBps: 200,
+          },
+          unifiedAccounts: true,
+        })
+      if (url.endsWith("/api/v1/agent/wallets/trading"))
+        return json({ page: [{ id: WALLET, chain: "evm", address: ADDRESS }], scopes: [] })
+      return json({ error: { code: "NOT_FOUND" } }, 404)
+    }) as unknown as typeof fetch
+    const client = new CandleClient({ apiUrl: "https://api.test", apiKey: "cndl_test_key", fetch: impl })
+    const report = await client.perpsRisk({ walletId: WALLET })
+    expect(report).toMatchObject({
+      mode: "unifiedAccount",
+      level: "warn",
+      account: { accountValueUsd: "1000.0", freeMarginUsd: "900", marginRatio: 0.05 },
+      unified: { ratio: 0.05, ratioToken: 0, dexes: [""] },
+    })
+    expect(calls.some((c) => c.body?.type === "spotClearinghouseState")).toBe(true)
+    const account = await client.perpsAccount({ walletId: WALLET, since: Date.now() - 3_600_000 })
+    expect(account).toMatchObject({ mode: "unifiedAccount", withdrawableUsd: "900", unified: { ratioToken: 0 } })
+  })
+
   test("a failed limits read is the defaults, not a crash (E6)", async () => {
     const { client } = harness({ limitsStatus: 500 })
     const report = await client.perpsRisk({ walletId: WALLET, address: ADDRESS })
@@ -173,6 +221,7 @@ describe("thresholds (A-4)", () => {
         clearBandBps: 200,
         source: "key",
       },
+      unifiedAccounts: false,
     })
   })
 

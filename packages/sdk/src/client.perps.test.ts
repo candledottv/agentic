@@ -325,15 +325,68 @@ describe("perpsSetup", () => {
     expect(calls[1]?.body).toEqual({ type: "userAbstraction", user: ADDRESS })
   })
 
-  // Spec 2026-10-17 C, section 5.
+  // Spec 2026-10-17 C, section 5. U7 (BE-3860): a unified wallet is read the same way while the
+  // switch is off — the limits read says so — and admitted only while it is on.
+  const limits = (unifiedAccounts: boolean) =>
+    json(200, {
+      success: true,
+      perpsRisk: null,
+      perpsRiskEffective: {
+        warnDistanceBps: 1500,
+        criticalDistanceBps: 700,
+        warnMarginRatioBps: 6000,
+        criticalMarginRatioBps: 8000,
+        clearBandBps: 200,
+      },
+      unifiedAccounts,
+    })
+
   test("an unsupported mode on Hyperliquid is refused before setup is requested", async () => {
-    for (const mode of ["unifiedAccount", "portfolioMargin", "dexAbstraction", "unknownNewMode"]) {
+    for (const mode of ["portfolioMargin", "dexAbstraction", "unknownNewMode"]) {
       const { client: c, calls } = await client([trading(), abstraction(mode)])
       await expect(c.perpsSetup({ walletId: WALLET, privyWalletId: PRIVY_WALLET })).rejects.toThrow(
         `PERPS_ACCOUNT_MODE: the account is in ${mode} mode`,
       )
       expect(calls.some((call) => call.url.endsWith("/perps/setup"))).toBe(false)
     }
+  })
+
+  test("U7: a unified wallet is refused while the switch is off, with the unified wording", async () => {
+    const { client: c, calls } = await client([trading(), abstraction("unifiedAccount"), limits(false)])
+    await expect(c.perpsSetup({ walletId: WALLET, privyWalletId: PRIVY_WALLET })).rejects.toThrow(
+      "unifiedAccount mode and Candle's unified accounts are off",
+    )
+    expect(calls.some((call) => call.url.endsWith("/perps/setup"))).toBe(false)
+  })
+
+  test("U7: a unified wallet continues setup while the switch is on", async () => {
+    const status = {
+      success: true,
+      ready: true,
+      walletId: WALLET,
+      address: ADDRESS,
+      network: "mainnet",
+      mode: "unifiedAccount",
+      standardMode: false,
+      accountValue: "10",
+      withdrawable: "10",
+      builder: BUILDER,
+      approvedFeeTenthsBps: 100,
+    }
+    const { client: c, calls } = await client([
+      trading(),
+      abstraction("unifiedAccount"),
+      limits(true),
+      json(200, status),
+    ])
+    const result = await c.perpsSetup({ walletId: WALLET, privyWalletId: PRIVY_WALLET })
+    expect(result.ready).toBe(true)
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.test/api/v1/agent/wallets/trading",
+      "https://api.hyperliquid.xyz/info",
+      "https://api.test/api/v1/agent/keys/self/limits",
+      "https://api.test/api/v1/agent/perps/setup",
+    ])
   })
 
   test("an unreadable mode is an error, not a pass", async () => {

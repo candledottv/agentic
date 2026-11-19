@@ -109,6 +109,52 @@ test("candle_perps_risk: an unreadable account mode and a failed read are errors
   expect(json(down).error.code).toBe("PERPS_READ_FAILED")
 })
 
+test("candle_perps_risk (U7): a unified wallet is read through the unified path only while the switch is on", async () => {
+  // The switch off (the limits answer does not report it): today's PERPS_ACCOUNT_MODE refusal.
+  const off = json(await executePerps("candle_perps_risk", {}, cfg, {}, fake({ mode: "unifiedAccount" }).fetch))
+  expect(off.error.code).toBe("PERPS_ACCOUNT_MODE")
+
+  // The switch on: the limits read reports it, and the venue answers the unified reads.
+  const unified = fake({ mode: "unifiedAccount" })
+  const original = unified.fetch
+  void original
+  const calls: Call[] = []
+  const fetch = async (url: string, init?: RequestInit) => {
+    const body = init?.body ? JSON.parse(String(init.body)) : undefined
+    calls.push({ url, method: init?.method ?? "GET", body })
+    if (url.startsWith("https://api.hyperliquid.xyz/info")) {
+      if (body.type === "metaAndAssetCtxs")
+        return Response.json([{ universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] }, [{ markPx: "100.0" }]])
+      if (body.type === "userAbstraction") return Response.json("unifiedAccount")
+      if (body.type === "userFillsByTime" || body.type === "userFunding") return Response.json([])
+      if (body.type === "clearinghouseState") return Response.json(state("90.0"))
+      if (body.type === "spotClearinghouseState")
+        return Response.json({ balances: [{ coin: "USDC", token: 0, total: "1000.0", hold: "100.0" }] })
+      if (body.type === "perpDexs") return Response.json([null])
+      if (body.type === "allPerpMetas") return Response.json([{ universe: [{ name: "BTC" }], collateralToken: 0 }])
+    }
+    if (url.endsWith("/api/v1/agent/keys/self/limits"))
+      return Response.json({
+        success: true,
+        perpsRisk: null,
+        perpsRiskEffective: HYPERLIQUID_RISK_DEFAULTS,
+        unifiedAccounts: true,
+      })
+    if (url.endsWith("/api/v1/agent/wallets/trading"))
+      return Response.json({ page: [{ id: "wallet", chain: "evm", address: ADDRESS, label: "perps" }], scopes: [] })
+    throw new Error(`Unexpected ${url}`)
+  }
+  const result = await executePerps("candle_perps_risk", {}, cfg, {}, fetch as never)
+  expect(result.isError).toBeUndefined()
+  const report = json(result)
+  expect(report).toMatchObject({
+    mode: "unifiedAccount",
+    account: { accountValueUsd: "1000.0", freeMarginUsd: "900", withdrawableUsd: "900", marginRatio: 0.05 },
+    unified: { ratio: 0.05, ratioToken: 0, dexes: [""] },
+  })
+  expect(calls.some((c) => c.body?.type === "spotClearinghouseState")).toBe(true)
+})
+
 test("candle_perps_account: the account line, the window and the risk summary", async () => {
   const account = json(await executePerps("candle_perps_account", { since: "7d" }, cfg, {}, fake().fetch))
   expect(account).toMatchObject({

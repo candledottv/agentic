@@ -6924,7 +6924,7 @@ async function hyperliquidAccountMode(fetcher, network, address2) {
   return mode;
 }
 function perpsSetupStatusProblem(status, expect) {
-  if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(expect.mode))
+  if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(expect.mode) && expect.mode !== "unifiedAccount")
     return `the account is in ${expect.mode} mode on Hyperliquid; Candle trades only a standard account`;
   if (status.network !== expect.network)
     return `the setup answer is for ${String(status.network)}`;
@@ -6932,7 +6932,7 @@ function perpsSetupStatusProblem(status, expect) {
     return "the setup answer is for a different wallet";
   if (status.mode !== expect.mode)
     return "the setup answer reports a mode Hyperliquid does not";
-  if (status.standardMode !== true)
+  if (status.standardMode !== true && expect.mode !== "unifiedAccount")
     return "the setup answer does not report standard mode";
   if (typeof status.builder !== "string" || status.builder.toLowerCase() !== expect.builder.toLowerCase())
     return "the setup answer names a builder that is not Candle's";
@@ -8607,12 +8607,20 @@ function perpsRiskFromLimits(body) {
   const reported = "perpsRisk" in record || "perpsRiskEffective" in record;
   const stored = isRecord(record.perpsRisk) ? pickSettings(record.perpsRisk) : null;
   if (!reported)
-    return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults (server did not report)" }, stored };
+    return {
+      thresholds: { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults (server did not report)" },
+      stored,
+      unifiedAccounts: record.unifiedAccounts === true
+    };
   const effective = isRecord(record.perpsRiskEffective) ? effectivePerpsRisk(pickSettings(record.perpsRiskEffective)) : effectivePerpsRisk(stored);
   if (perpsRiskProblem(effective) !== null)
-    return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults (server did not report)" }, stored };
+    return {
+      thresholds: { ...HYPERLIQUID_RISK_DEFAULTS, source: "defaults (server did not report)" },
+      stored,
+      unifiedAccounts: record.unifiedAccounts === true
+    };
   const source = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
-  return { thresholds: { ...effective, source }, stored };
+  return { thresholds: { ...effective, source }, stored, unifiedAccounts: record.unifiedAccounts === true };
 }
 function pickSettings(raw) {
   const out = {};
@@ -8692,6 +8700,254 @@ async function readHyperliquidAccountMode(fetcher, network, address2, opts = {})
   if (typeof body !== "string" || body === "")
     throw new HyperliquidReadError("Unexpected userAbstraction shape");
   return body;
+}
+function unifiedDec(value, what) {
+  const scaled2 = dec(value);
+  if (scaled2 === null)
+    throw new HyperliquidReadError(`Unexpected ${what}`);
+  return scaled2;
+}
+function unifiedCollateralBalance(balances, token = HYPERLIQUID_USDC_TOKEN) {
+  const found = balances.filter((b) => b.token === token);
+  if (found.length > 1)
+    throw new HyperliquidReadError("Unexpected spotClearinghouseState (token listed twice)");
+  const entry = found[0];
+  if (!entry)
+    return { token, coin: null, total: "0", hold: "0", free: "0" };
+  const total = unifiedDec(entry.total, "spotClearinghouseState total");
+  const hold = unifiedDec(entry.hold, "spotClearinghouseState hold");
+  if (total < 0n || hold < 0n)
+    throw new HyperliquidReadError("Unexpected spotClearinghouseState (negative balance)");
+  const free = total - hold;
+  return { token, coin: entry.coin, total: entry.total, hold: entry.hold, free: formatDec(free > 0n ? free : 0n) };
+}
+function unifiedAccountRatio(dexes, balances) {
+  const byToken = new Map;
+  for (const dex of dexes) {
+    if (!Number.isSafeInteger(dex.collateralToken) || dex.collateralToken < 0)
+      throw new HyperliquidReadError("Unexpected dex collateral token");
+    const row = byToken.get(dex.collateralToken) ?? { dexes: [], cross: 0n, isolated: 0n };
+    row.dexes.push(dex.dex);
+    const cross = unifiedDec(dex.crossMaintenanceMarginUsed, "crossMaintenanceMarginUsed");
+    if (cross < 0n)
+      throw new HyperliquidReadError("Unexpected crossMaintenanceMarginUsed");
+    row.cross += cross;
+    for (const position of dex.positions) {
+      if (position.leverage.type !== "isolated")
+        continue;
+      const margin = unifiedDec(position.marginUsed, "position marginUsed");
+      if (margin < 0n)
+        throw new HyperliquidReadError("Unexpected position marginUsed");
+      row.isolated += margin;
+    }
+    byToken.set(dex.collateralToken, row);
+  }
+  const collateral = [];
+  let worst = null;
+  let noEquity = false;
+  for (const [token, row] of [...byToken].sort((a, b) => a[0] - b[0])) {
+    const balance = unifiedCollateralBalance(balances, token);
+    const available = unifiedDec(balance.total, "spotClearinghouseState total") - row.isolated;
+    let ratio = 0;
+    if (row.cross > 0n) {
+      if (available <= 0n) {
+        ratio = null;
+        noEquity = true;
+      } else {
+        ratio = ratioNumber(row.cross, available);
+        if (!worst || row.cross * worst.den > worst.num * available)
+          worst = { token, num: row.cross, den: available };
+      }
+    }
+    collateral.push({
+      ...balance,
+      dexes: row.dexes,
+      isolatedMarginUsed: formatDec(row.isolated),
+      crossMaintenanceMarginUsed: formatDec(row.cross),
+      available: formatDec(available),
+      ratio
+    });
+  }
+  if (noEquity)
+    return { collateral, ratio: null, token: null, exact: null, noEquity };
+  if (!worst)
+    return { collateral, ratio: 0, token: null, exact: null, noEquity };
+  return {
+    collateral,
+    ratio: ratioNumber(worst.num, worst.den),
+    token: worst.token,
+    exact: { num: worst.num, den: worst.den },
+    noEquity
+  };
+}
+function unifiedRatioAbove(exact, bps) {
+  return exact.num * 10000n > BigInt(bps) * exact.den;
+}
+function sumDecimals(values, what) {
+  return formatDec(values.reduce((sum, value) => sum + unifiedDec(value, what), 0n));
+}
+function unifiedRiskReport(dexes, balances, thresholds, now, identity2 = { walletId: "", address: "", network: "mainnet" }) {
+  const marked = dexes.filter((d) => d.market !== null);
+  const merged = {
+    marginSummary: { accountValue: "0", totalMarginUsed: "0" },
+    crossMarginSummary: { accountValue: "0", totalMarginUsed: "0" },
+    crossMaintenanceMarginUsed: "0",
+    withdrawable: "0",
+    positions: dexes.flatMap((d) => d.state.positions)
+  };
+  const marks = {
+    universe: marked.flatMap((d) => d.market?.universe ?? []),
+    ctxs: marked.flatMap((d) => d.market?.ctxs ?? []),
+    marginTables: new Map
+  };
+  const positions = hyperliquidRiskReport(merged, marks, "default", thresholds, now, identity2);
+  const figure = unifiedAccountRatio(dexes.map((d) => ({
+    dex: d.dex,
+    collateralToken: d.collateralToken,
+    crossMaintenanceMarginUsed: d.state.crossMaintenanceMarginUsed,
+    positions: d.state.positions
+  })), balances);
+  const drivers = [...positions.drivers];
+  let level = positions.level;
+  let nearestMargin = null;
+  const t = thresholds;
+  if (figure.noEquity) {
+    drivers.push({
+      kind: "margin",
+      level: "critical",
+      marginRatio: null,
+      threshold: t.criticalMarginRatioBps / 1e4,
+      reason: "no equity"
+    });
+    level = "critical";
+  } else if (figure.exact && figure.ratio !== null) {
+    const marginLevel = unifiedRatioAbove(figure.exact, t.criticalMarginRatioBps) ? "critical" : unifiedRatioAbove(figure.exact, t.warnMarginRatioBps) ? "warn" : "ok";
+    if (marginLevel === "ok") {
+      nearestMargin = {
+        kind: "margin",
+        level: "ok",
+        marginRatio: figure.ratio,
+        threshold: t.warnMarginRatioBps / 1e4
+      };
+    } else {
+      drivers.push({
+        kind: "margin",
+        level: marginLevel,
+        marginRatio: figure.ratio,
+        threshold: (marginLevel === "critical" ? t.criticalMarginRatioBps : t.warnMarginRatioBps) / 1e4
+      });
+      if (UNIFIED_RANK[marginLevel] > UNIFIED_RANK[level])
+        level = marginLevel;
+    }
+  }
+  drivers.sort((a, b) => UNIFIED_RANK[b.level] - UNIFIED_RANK[a.level]);
+  let closest = null;
+  if (level === "ok") {
+    const position = positions.closest;
+    closest = position ?? nearestMargin;
+    if (position && nearestMargin && unifiedHeadroom(nearestMargin) < unifiedHeadroom(position))
+      closest = nearestMargin;
+  }
+  const usdc = figure.collateral.find((row) => row.token === HYPERLIQUID_USDC_TOKEN);
+  const balance = usdc ?? unifiedCollateralBalance(balances, HYPERLIQUID_USDC_TOKEN);
+  const usdcDexes = dexes.filter((d) => d.collateralToken === HYPERLIQUID_USDC_TOKEN);
+  const account = {
+    accountValueUsd: balance.total,
+    marginUsedUsd: sumDecimals(usdcDexes.flatMap((d) => d.state.positions.map((p) => p.marginUsed)), "position marginUsed"),
+    crossAccountValueUsd: usdc?.available ?? balance.total,
+    freeMarginUsd: balance.free,
+    withdrawableUsd: balance.free,
+    crossMaintenanceMarginUsedUsd: usdc?.crossMaintenanceMarginUsed ?? "0",
+    marginRatio: figure.ratio,
+    unrealizedPnlUsd: positions.account?.unrealizedPnlUsd ?? "0",
+    positionCount: positions.positions.length,
+    mode: HYPERLIQUID_UNIFIED_MODE,
+    level
+  };
+  return {
+    ...positions,
+    mode: HYPERLIQUID_UNIFIED_MODE,
+    level,
+    reason: null,
+    drivers,
+    closest,
+    account,
+    unified: {
+      ratio: figure.ratio,
+      ratioToken: figure.token,
+      collateral: figure.collateral,
+      dexes: dexes.map((d) => d.dex)
+    }
+  };
+}
+function unifiedHeadroom(driver) {
+  const threshold = driver.threshold ?? 0;
+  if (driver.kind === "margin")
+    return 1 - (driver.marginRatio ?? 0) / threshold;
+  return (driver.liquidationDistance ?? 0) / threshold - 1;
+}
+function parseUnifiedSpotBalances(body) {
+  const bad = (what) => new HyperliquidReadError(`Unexpected spotClearinghouseState shape (${what})`);
+  if (!isRecord(body) || !Array.isArray(body.balances))
+    throw bad("balances");
+  return body.balances.map((entry) => {
+    if (!isRecord(entry) || typeof entry.coin !== "string" || entry.coin === "")
+      throw bad("entry");
+    if (!isDecString(entry.total) || !isDecString(entry.hold))
+      throw bad("entry amount");
+    if (entry.token !== undefined && (!Number.isSafeInteger(entry.token) || entry.token < 0))
+      throw bad("entry token");
+    if (entry.coin === "USDC" && entry.token !== HYPERLIQUID_USDC_TOKEN)
+      throw bad("USDC token index");
+    return {
+      coin: entry.coin,
+      ...entry.token !== undefined ? { token: entry.token } : {},
+      total: entry.total,
+      hold: entry.hold
+    };
+  });
+}
+async function readHyperliquidSpotBalances(fetcher, network, address2, opts = {}) {
+  return parseUnifiedSpotBalances(await hyperliquidInfo(fetcher, network, { type: "spotClearinghouseState", user: address2.toLowerCase() }, opts));
+}
+async function readHyperliquidDexCollaterals(fetcher, network, opts = {}) {
+  const [dexs, metas] = await Promise.all([
+    hyperliquidInfo(fetcher, network, { type: "perpDexs" }, opts),
+    hyperliquidInfo(fetcher, network, { type: "allPerpMetas" }, opts)
+  ]);
+  const bad = (what) => new HyperliquidReadError(`Unexpected dex metadata (${what})`);
+  if (!Array.isArray(dexs) || dexs[0] !== null)
+    throw bad("perpDexs shape");
+  const names = dexs.flatMap((dex, index) => {
+    if (dex === null && index === 0)
+      return [];
+    if (!isRecord(dex) || typeof dex.name !== "string" || !/^[A-Za-z0-9]{1,16}$/.test(dex.name))
+      throw bad("perpDexs entry");
+    return [dex.name];
+  });
+  if (!Array.isArray(metas) || metas.length !== names.length + 1)
+    throw bad("list snapshot mismatch");
+  return ["", ...names].map((name, index) => {
+    const entry = metas[index];
+    const meta = Array.isArray(entry) ? entry[0] : entry;
+    if (!isRecord(meta) || !Number.isSafeInteger(meta.collateralToken) || meta.collateralToken < 0 || !Array.isArray(meta.universe))
+      throw bad("missing collateral metadata");
+    if (name !== "" && !meta.universe.every((asset) => isRecord(asset) && typeof asset.name === "string" && asset.name.startsWith(`${name}:`)))
+      throw bad("ordering mismatch");
+    return { name, index, collateralToken: meta.collateralToken };
+  });
+}
+async function readHyperliquidDexClearinghouse(fetcher, network, address2, dex, opts = {}) {
+  return parseClearinghouse(await hyperliquidInfo(fetcher, network, { type: "clearinghouseState", user: address2.toLowerCase(), dex }, opts));
+}
+async function readHyperliquidDexMarkets(fetcher, network, dex, opts = {}) {
+  const body = await hyperliquidInfo(fetcher, network, { type: "metaAndAssetCtxs", dex }, opts);
+  if (!Array.isArray(body) || body.length !== 2)
+    throw new HyperliquidReadError("Unexpected metaAndAssetCtxs shape");
+  const [meta, ctxs] = body;
+  if (!isRecord(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
+    throw new HyperliquidReadError("Unexpected metaAndAssetCtxs shape");
+  return { universe: meta.universe, ctxs };
 }
 function parseClearinghouse(body) {
   const bad = (what) => new HyperliquidReadError(`Unexpected clearinghouseState shape (${what})`);
@@ -8930,7 +9186,33 @@ async function readPerpsRisk(opts) {
   const earliest = Math.min(...times);
   if (Math.max(...times) - earliest > PERPS_RISK_STALE_MS)
     return unknownRiskReport(identity2, opts.thresholds, "PERPS_READ_STALE", earliest, mode.value);
+  if (opts.unifiedAccounts === true && mode.value === HYPERLIQUID_UNIFIED_MODE)
+    return readUnifiedPerpsRisk(opts, { state: state.value, market: market.value, mode: mode.value }, times);
   return hyperliquidRiskReport(state.value, market.value, mode.value, opts.thresholds, earliest, identity2);
+}
+async function readUnifiedPerpsRisk(opts, main, mainTimes) {
+  const identity2 = { walletId: opts.walletId, address: opts.address, network: opts.network };
+  const timed = async (read, times2) => {
+    const value = await read;
+    times2.push(opts.now());
+    return value;
+  };
+  const times = [...mainTimes];
+  const [balances, collaterals] = await Promise.all([
+    timed(readHyperliquidSpotBalances(opts.fetcher, opts.network, opts.address, opts), times),
+    opts.dexCollaterals !== undefined ? opts.dexCollaterals : timed(readHyperliquidDexCollaterals(opts.fetcher, opts.network, opts), times)
+  ]);
+  const dexes = await Promise.all(collaterals.map(async (dex) => {
+    if (dex.name === "")
+      return { dex: "", collateralToken: dex.collateralToken, state: main.state, market: main.market };
+    const state = await timed(readHyperliquidDexClearinghouse(opts.fetcher, opts.network, opts.address, dex.name, opts), times);
+    const market = state.positions.length > 0 ? await timed(readHyperliquidDexMarkets(opts.fetcher, opts.network, dex.name, opts), times) : null;
+    return { dex: dex.name, collateralToken: dex.collateralToken, state, market };
+  }));
+  const earliest = Math.min(...times);
+  if (Math.max(...times) - earliest > PERPS_RISK_STALE_MS)
+    return unknownRiskReport(identity2, opts.thresholds, "PERPS_READ_STALE", earliest, main.mode);
+  return unifiedRiskReport(dexes, balances, opts.thresholds, earliest, identity2);
 }
 function isMainPerpCoin(coin) {
   return typeof coin === "string" && coin !== "" && !coin.includes(":") && !coin.includes("/") && !coin.startsWith("@");
@@ -9000,7 +9282,8 @@ function perpsAccountReport(report, recent) {
     readAt: report.readAt,
     ...line,
     recent,
-    risk: { level: report.level, reason: report.reason, drivers: report.drivers }
+    risk: { level: report.level, reason: report.reason, drivers: report.drivers },
+    ...report.unified ? { unified: report.unified } : {}
   };
 }
 async function perpsPortfolioSection(fetcher, network, wallets, opts = {}) {
@@ -9112,7 +9395,7 @@ function isRecord(value) {
 function isParsedClearinghouse(value) {
   return isRecord(value) && Array.isArray(value.positions) && !("assetPositions" in value);
 }
-var HYPERLIQUID_RISK_INFO_URLS, PERPS_RISK_FIELDS, HYPERLIQUID_RISK_DEFAULTS, HyperliquidReadError, INFO_TIMEOUT_MS = 5000, RATE_LIMIT_RETRY_MS = 1000, HYPERLIQUID_STANDARD_MODES, PERPS_RISK_NOTE = "Phase 1 has no server-side monitor: nothing warns you unless you poll this or run candle perps watch.", RANK, PERPS_RISK_STALE_MS = 30000, PERPS_FILLS_RESPONSE_CAP = 2000, PERPS_FUNDING_RESPONSE_CAP = 500, PERPS_RECENT_MAX_MS, PERPS_PORTFOLIO_MAX_ACCOUNTS = 100, PORTFOLIO_READS_IN_FLIGHT = 8, SCALE = 18, ONE2, DEC_RE, LOOSE_DEC_RE;
+var HYPERLIQUID_RISK_INFO_URLS, PERPS_RISK_FIELDS, HYPERLIQUID_RISK_DEFAULTS, HyperliquidReadError, INFO_TIMEOUT_MS = 5000, RATE_LIMIT_RETRY_MS = 1000, HYPERLIQUID_STANDARD_MODES, HYPERLIQUID_UNIFIED_MODE = "unifiedAccount", HYPERLIQUID_USDC_TOKEN = 0, UNIFIED_RANK, PERPS_RISK_NOTE = "Phase 1 has no server-side monitor: nothing warns you unless you poll this or run candle perps watch.", RANK, PERPS_RISK_STALE_MS = 30000, PERPS_FILLS_RESPONSE_CAP = 2000, PERPS_FUNDING_RESPONSE_CAP = 500, PERPS_RECENT_MAX_MS, PERPS_PORTFOLIO_MAX_ACCOUNTS = 100, PORTFOLIO_READS_IN_FLIGHT = 8, SCALE = 18, ONE2, DEC_RE, LOOSE_DEC_RE;
 var init_hyperliquid_risk = __esm(() => {
   init_hyperliquid_markets();
   HYPERLIQUID_RISK_INFO_URLS = {
@@ -9143,6 +9426,7 @@ var init_hyperliquid_risk = __esm(() => {
     }
   };
   HYPERLIQUID_STANDARD_MODES = ["default", "disabled"];
+  UNIFIED_RANK = { ok: 0, warn: 1, critical: 2 };
   RANK = { ok: 0, warn: 1, critical: 2 };
   PERPS_RECENT_MAX_MS = 30 * 24 * 60 * 60 * 1000;
   ONE2 = 10n ** BigInt(SCALE);
@@ -9151,11 +9435,12 @@ var init_hyperliquid_risk = __esm(() => {
 });
 
 // ../mcp/src/perps-risk.ts
-async function thresholds(cfg, fetch2) {
+async function engineInputs(cfg, fetch2) {
   try {
-    return perpsRiskFromLimits(await call(cfg, fetch2, "GET", "/api/v1/agent/keys/self/limits")).thresholds;
+    const { thresholds, unifiedAccounts } = perpsRiskFromLimits(await call(cfg, fetch2, "GET", "/api/v1/agent/keys/self/limits"));
+    return { thresholds, unifiedAccounts };
   } catch {
-    return perpsRiskFromLimits(null).thresholds;
+    return { thresholds: perpsRiskFromLimits(null).thresholds, unifiedAccounts: false };
   }
 }
 function sinceStart(value, now) {
@@ -9199,12 +9484,14 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
     if (typeof start === "string")
       return fail("MCP_VALIDATION", start);
     const net = network(env);
+    const { thresholds, unifiedAccounts } = await engineInputs(cfg, fetch2);
     const report = readPerpsRisk({
       fetcher: fetcherOf(fetch2),
       network: net,
       walletId: row.id,
       address: row.address,
-      thresholds: await thresholds(cfg, fetch2),
+      thresholds,
+      ...unifiedAccounts ? { unifiedAccounts: true } : {},
       now: Date.now
     });
     if (tool === "candle_perps_account") {
@@ -9227,13 +9514,19 @@ async function executePerpsRisk(tool, args, cfg, env, fetch2) {
   }
 }
 async function positionsAdditions(cfg, fetch2, env, row) {
-  const t = await thresholds(cfg, fetch2);
+  const { thresholds, unifiedAccounts } = await engineInputs(cfg, fetch2);
   const identity2 = { walletId: row.id, address: row.address, network: network(env) };
   let report;
   try {
-    report = await readPerpsRisk({ ...identity2, fetcher: fetcherOf(fetch2), thresholds: t, now: Date.now });
+    report = await readPerpsRisk({
+      ...identity2,
+      fetcher: fetcherOf(fetch2),
+      thresholds,
+      ...unifiedAccounts ? { unifiedAccounts: true } : {},
+      now: Date.now
+    });
   } catch {
-    report = unknownRiskReport(identity2, t, "PERPS_READ_FAILED", Date.now());
+    report = unknownRiskReport(identity2, thresholds, "PERPS_READ_FAILED", Date.now());
   }
   const { positions, ...risk } = report;
   return { rows: positions, accountLine: report.account, risk };
@@ -9520,8 +9813,13 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       } catch (error) {
         return fail("PERPS_UNAVAILABLE", `${error instanceof Error ? error.message : "Cannot read the account mode"}. Nothing was requested.`);
       }
-      if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode))
-        return fail("PERPS_ACCOUNT_MODE", `This Hyperliquid account is in ${mode} mode. Candle trades only a standard account and does not change modes; this is not a missing fee approval. Nothing was requested or signed.`, { mode });
+      if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode)) {
+        let unifiedOn = false;
+        if (mode === "unifiedAccount")
+          unifiedOn = (await engineInputs(cfg, fetch2)).unifiedAccounts;
+        if (!unifiedOn)
+          return fail("PERPS_ACCOUNT_MODE", mode === "unifiedAccount" ? "This Hyperliquid account is in unifiedAccount mode and Candle's unified accounts are off, so setup does not continue. This is not a missing fee approval. Nothing was requested or signed." : `This Hyperliquid account is in ${mode} mode. Candle trades only a standard account and does not change modes; this is not a missing fee approval. Nothing was requested or signed.`, { mode });
+      }
     }
     let build;
     try {
@@ -80457,7 +80755,7 @@ var HELP = {
     group: "Trade",
     intro: "Trade Hyperliquid perps from this key's EVM TEE wallet",
     summary: "Trade Hyperliquid perpetuals from this key's EVM TEE wallet",
-    description: "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). A key gets an EVM TEE wallet by promoting one from the vault: candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix>, and candle tee signer new --key <prefix> on the machine that trades it; candle tee new is Solana only. Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). candle pnl --profile <name> shows the profile's Hyperliquid P&L under its own heading, over every EVM TEE wallet bound to the profile: realized, funding, fees, unrealized and the net, which is also counted in the profile's Total. Live positions and risk are shown by candle perps positions and candle portfolio. Account-wide candle pnl and its By agent table cover ledger trades only; a key with only perps activity has no row there. account, positions, risk and watch read Hyperliquid's public API directly from this machine and sign nothing: risk and watch exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code when no level could be read (unknown), so a script never mistakes \"could not tell\" for ok. A position is warn under its key's warn distance from liquidation (default 15%) or when the cross margin ratio is above the warn ratio (default 0.6); critical under 7% or above 0.8; a position with no Hyperliquid mark is at least warn. risk is one stateless read; watch adds hysteresis (a level clears only past its threshold by the clear band, default 2 points). One watcher at the default 10 s interval spends about 136 of the 1,200 request weight per minute Hyperliquid allows per IP. Funding paid since open is Hyperliquid's sign: positive is paid. Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch. Candle's server may also watch this wallet; GET /perps/risk reports whether it does. modify, margin, tpsl, schedule-cancel, flatten and close --pct are built, checked against this machine's own read of Hyperliquid, signed and submitted like every other write; tpsl and flatten are plans of several such steps, confirmed once (or --yes), and a plan that does not finish says so and exits 1 (3 when a signed step's submit did not answer). A key that is reduce-only (reduce-only on) can close, cancel, protect, schedule a cancel and add isolated margin, and nothing that opens or grows exposure; only the owner's device token turns it off, and it cancels no resting order and revokes no signed action.",
+    description: "markets, market, book and candles read directly from Hyperliquid with any Candle agent key and no signer or wallet. Candle supplies only the OI gate config; its build gate is not an execution promise. Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). A key gets an EVM TEE wallet by promoting one from the vault: candle vault new-key --chain evm, then candle vault promote --from <cold> --to-key <prefix>, and candle tee signer new --key <prefix> on the machine that trades it; candle tee new is Solana only. Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay; withdrawals move USDC back through Relay to the key's own Solana or Hood TEE wallet (scope perps:withdraw, opt-in, after one vault unlock and a typed confirm). candle pnl --profile <name> shows the profile's Hyperliquid P&L under its own heading, over every EVM TEE wallet bound to the profile: realized, funding, fees, unrealized and the net, which is also counted in the profile's Total. Live positions and risk are shown by candle perps positions and candle portfolio. Account-wide candle pnl and its By agent table cover ledger trades only; a key with only perps activity has no row there. account, positions, risk and watch read Hyperliquid's public API directly from this machine and sign nothing: risk and watch exit 0 (ok), 10 (warn) or 11 (critical), and 1 with a PERPS_* code when no level could be read (unknown), so a script never mistakes \"could not tell\" for ok. A position is warn under its key's warn distance from liquidation (default 15%) or when the cross margin ratio is above the warn ratio (default 0.6); critical under 7% or above 0.8; a position with no Hyperliquid mark is at least warn. risk is one stateless read; watch adds hysteresis (a level clears only past its threshold by the clear band, default 2 points). One watcher at the default 10 s interval spends about 136 of the 1,200 request weight per minute Hyperliquid allows per IP; a unified-account watcher spends more — per poll the spot state and one account read per builder dex, plus the marks of each dex it holds a position on, with the dex list read once every five minutes (about 250 with 8 dexes and no positions, about 490 with positions on 2 of them), so two or three unified watchers on one IP reach the limit. Funding paid since open is Hyperliquid's sign: positive is paid. Until Candle's server-side monitor exists, nothing warns you unless you poll candle perps risk or run candle perps watch. Candle's server may also watch this wallet; GET /perps/risk reports whether it does. A wallet Hyperliquid reports as unifiedAccount is read through the unified path — balances and holds from its spot state, positions from every dex, and Hyperliquid's unified account ratio as the margin ratio — only while Candle's unified accounts are on (GET /keys/self/limits says so with unifiedAccounts); while they are off, or on an older API, its risk reads answer unknown with PERPS_ACCOUNT_MODE, exactly as before, and a standard wallet is read the same way whatever the switch says. modify, margin, tpsl, schedule-cancel, flatten and close --pct are built, checked against this machine's own read of Hyperliquid, signed and submitted like every other write; tpsl and flatten are plans of several such steps, confirmed once (or --yes), and a plan that does not finish says so and exits 1 (3 when a signed step's submit did not answer). A key that is reduce-only (reduce-only on) can close, cancel, protect, schedule a cancel and add isolated margin, and nothing that opens or grows exposure; only the owner's device token turns it off, and it cancels no resting order and revokes no signed action.",
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
       {
@@ -100245,7 +100543,7 @@ async function hyperliquidAccountMode2(fetcher, network2, address3) {
   return mode;
 }
 function perpsSetupStatusProblem2(status, expect) {
-  if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES2.includes(expect.mode))
+  if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES2.includes(expect.mode) && expect.mode !== "unifiedAccount")
     return `the account is in ${expect.mode} mode on Hyperliquid; Candle trades only a standard account`;
   if (status.network !== expect.network)
     return `the setup answer is for ${String(status.network)}`;
@@ -100253,7 +100551,7 @@ function perpsSetupStatusProblem2(status, expect) {
     return "the setup answer is for a different wallet";
   if (status.mode !== expect.mode)
     return "the setup answer reports a mode Hyperliquid does not";
-  if (status.standardMode !== true)
+  if (status.standardMode !== true && expect.mode !== "unifiedAccount")
     return "the setup answer does not report standard mode";
   if (typeof status.builder !== "string" || status.builder.toLowerCase() !== expect.builder.toLowerCase())
     return "the setup answer names a builder that is not Candle's";
@@ -101610,12 +101908,20 @@ function perpsRiskFromLimits2(body) {
   const reported = "perpsRisk" in record6 || "perpsRiskEffective" in record6;
   const stored = isRecord3(record6.perpsRisk) ? pickSettings2(record6.perpsRisk) : null;
   if (!reported)
-    return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" }, stored };
+    return {
+      thresholds: { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" },
+      stored,
+      unifiedAccounts: record6.unifiedAccounts === true
+    };
   const effective = isRecord3(record6.perpsRiskEffective) ? effectivePerpsRisk2(pickSettings2(record6.perpsRiskEffective)) : effectivePerpsRisk2(stored);
   if (perpsRiskProblem2(effective) !== null)
-    return { thresholds: { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" }, stored };
+    return {
+      thresholds: { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" },
+      stored,
+      unifiedAccounts: record6.unifiedAccounts === true
+    };
   const source2 = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
-  return { thresholds: { ...effective, source: source2 }, stored };
+  return { thresholds: { ...effective, source: source2 }, stored, unifiedAccounts: record6.unifiedAccounts === true };
 }
 function pickSettings2(raw2) {
   const out = {};
@@ -101709,6 +102015,257 @@ async function readHyperliquidAccountMode2(fetcher, network2, address3, opts = {
   return body;
 }
 var HYPERLIQUID_STANDARD_MODES2 = ["default", "disabled"];
+var HYPERLIQUID_UNIFIED_MODE2 = "unifiedAccount";
+var HYPERLIQUID_USDC_TOKEN2 = 0;
+function unifiedDec2(value, what) {
+  const scaled3 = dec2(value);
+  if (scaled3 === null)
+    throw new HyperliquidReadError2(`Unexpected ${what}`);
+  return scaled3;
+}
+function unifiedCollateralBalance2(balances, token2 = HYPERLIQUID_USDC_TOKEN2) {
+  const found = balances.filter((b) => b.token === token2);
+  if (found.length > 1)
+    throw new HyperliquidReadError2("Unexpected spotClearinghouseState (token listed twice)");
+  const entry2 = found[0];
+  if (!entry2)
+    return { token: token2, coin: null, total: "0", hold: "0", free: "0" };
+  const total = unifiedDec2(entry2.total, "spotClearinghouseState total");
+  const hold = unifiedDec2(entry2.hold, "spotClearinghouseState hold");
+  if (total < 0n || hold < 0n)
+    throw new HyperliquidReadError2("Unexpected spotClearinghouseState (negative balance)");
+  const free = total - hold;
+  return { token: token2, coin: entry2.coin, total: entry2.total, hold: entry2.hold, free: formatDec2(free > 0n ? free : 0n) };
+}
+function unifiedAccountRatio2(dexes, balances) {
+  const byToken = new Map;
+  for (const dex of dexes) {
+    if (!Number.isSafeInteger(dex.collateralToken) || dex.collateralToken < 0)
+      throw new HyperliquidReadError2("Unexpected dex collateral token");
+    const row2 = byToken.get(dex.collateralToken) ?? { dexes: [], cross: 0n, isolated: 0n };
+    row2.dexes.push(dex.dex);
+    const cross = unifiedDec2(dex.crossMaintenanceMarginUsed, "crossMaintenanceMarginUsed");
+    if (cross < 0n)
+      throw new HyperliquidReadError2("Unexpected crossMaintenanceMarginUsed");
+    row2.cross += cross;
+    for (const position of dex.positions) {
+      if (position.leverage.type !== "isolated")
+        continue;
+      const margin = unifiedDec2(position.marginUsed, "position marginUsed");
+      if (margin < 0n)
+        throw new HyperliquidReadError2("Unexpected position marginUsed");
+      row2.isolated += margin;
+    }
+    byToken.set(dex.collateralToken, row2);
+  }
+  const collateral = [];
+  let worst = null;
+  let noEquity = false;
+  for (const [token2, row2] of [...byToken].sort((a, b) => a[0] - b[0])) {
+    const balance = unifiedCollateralBalance2(balances, token2);
+    const available = unifiedDec2(balance.total, "spotClearinghouseState total") - row2.isolated;
+    let ratio = 0;
+    if (row2.cross > 0n) {
+      if (available <= 0n) {
+        ratio = null;
+        noEquity = true;
+      } else {
+        ratio = ratioNumber2(row2.cross, available);
+        if (!worst || row2.cross * worst.den > worst.num * available)
+          worst = { token: token2, num: row2.cross, den: available };
+      }
+    }
+    collateral.push({
+      ...balance,
+      dexes: row2.dexes,
+      isolatedMarginUsed: formatDec2(row2.isolated),
+      crossMaintenanceMarginUsed: formatDec2(row2.cross),
+      available: formatDec2(available),
+      ratio
+    });
+  }
+  if (noEquity)
+    return { collateral, ratio: null, token: null, exact: null, noEquity };
+  if (!worst)
+    return { collateral, ratio: 0, token: null, exact: null, noEquity };
+  return {
+    collateral,
+    ratio: ratioNumber2(worst.num, worst.den),
+    token: worst.token,
+    exact: { num: worst.num, den: worst.den },
+    noEquity
+  };
+}
+function unifiedRatioAbove2(exact, bps2) {
+  return exact.num * 10000n > BigInt(bps2) * exact.den;
+}
+function sumDecimals2(values, what) {
+  return formatDec2(values.reduce((sum, value) => sum + unifiedDec2(value, what), 0n));
+}
+var UNIFIED_RANK2 = { ok: 0, warn: 1, critical: 2 };
+function unifiedRiskReport2(dexes, balances, thresholds, now, identity4 = { walletId: "", address: "", network: "mainnet" }) {
+  const marked = dexes.filter((d) => d.market !== null);
+  const merged = {
+    marginSummary: { accountValue: "0", totalMarginUsed: "0" },
+    crossMarginSummary: { accountValue: "0", totalMarginUsed: "0" },
+    crossMaintenanceMarginUsed: "0",
+    withdrawable: "0",
+    positions: dexes.flatMap((d) => d.state.positions)
+  };
+  const marks = {
+    universe: marked.flatMap((d) => d.market?.universe ?? []),
+    ctxs: marked.flatMap((d) => d.market?.ctxs ?? []),
+    marginTables: new Map
+  };
+  const positions = hyperliquidRiskReport2(merged, marks, "default", thresholds, now, identity4);
+  const figure = unifiedAccountRatio2(dexes.map((d) => ({
+    dex: d.dex,
+    collateralToken: d.collateralToken,
+    crossMaintenanceMarginUsed: d.state.crossMaintenanceMarginUsed,
+    positions: d.state.positions
+  })), balances);
+  const drivers = [...positions.drivers];
+  let level = positions.level;
+  let nearestMargin = null;
+  const t = thresholds;
+  if (figure.noEquity) {
+    drivers.push({
+      kind: "margin",
+      level: "critical",
+      marginRatio: null,
+      threshold: t.criticalMarginRatioBps / 1e4,
+      reason: "no equity"
+    });
+    level = "critical";
+  } else if (figure.exact && figure.ratio !== null) {
+    const marginLevel = unifiedRatioAbove2(figure.exact, t.criticalMarginRatioBps) ? "critical" : unifiedRatioAbove2(figure.exact, t.warnMarginRatioBps) ? "warn" : "ok";
+    if (marginLevel === "ok") {
+      nearestMargin = {
+        kind: "margin",
+        level: "ok",
+        marginRatio: figure.ratio,
+        threshold: t.warnMarginRatioBps / 1e4
+      };
+    } else {
+      drivers.push({
+        kind: "margin",
+        level: marginLevel,
+        marginRatio: figure.ratio,
+        threshold: (marginLevel === "critical" ? t.criticalMarginRatioBps : t.warnMarginRatioBps) / 1e4
+      });
+      if (UNIFIED_RANK2[marginLevel] > UNIFIED_RANK2[level])
+        level = marginLevel;
+    }
+  }
+  drivers.sort((a, b) => UNIFIED_RANK2[b.level] - UNIFIED_RANK2[a.level]);
+  let closest = null;
+  if (level === "ok") {
+    const position = positions.closest;
+    closest = position ?? nearestMargin;
+    if (position && nearestMargin && unifiedHeadroom2(nearestMargin) < unifiedHeadroom2(position))
+      closest = nearestMargin;
+  }
+  const usdc = figure.collateral.find((row2) => row2.token === HYPERLIQUID_USDC_TOKEN2);
+  const balance = usdc ?? unifiedCollateralBalance2(balances, HYPERLIQUID_USDC_TOKEN2);
+  const usdcDexes = dexes.filter((d) => d.collateralToken === HYPERLIQUID_USDC_TOKEN2);
+  const account = {
+    accountValueUsd: balance.total,
+    marginUsedUsd: sumDecimals2(usdcDexes.flatMap((d) => d.state.positions.map((p) => p.marginUsed)), "position marginUsed"),
+    crossAccountValueUsd: usdc?.available ?? balance.total,
+    freeMarginUsd: balance.free,
+    withdrawableUsd: balance.free,
+    crossMaintenanceMarginUsedUsd: usdc?.crossMaintenanceMarginUsed ?? "0",
+    marginRatio: figure.ratio,
+    unrealizedPnlUsd: positions.account?.unrealizedPnlUsd ?? "0",
+    positionCount: positions.positions.length,
+    mode: HYPERLIQUID_UNIFIED_MODE2,
+    level
+  };
+  return {
+    ...positions,
+    mode: HYPERLIQUID_UNIFIED_MODE2,
+    level,
+    reason: null,
+    drivers,
+    closest,
+    account,
+    unified: {
+      ratio: figure.ratio,
+      ratioToken: figure.token,
+      collateral: figure.collateral,
+      dexes: dexes.map((d) => d.dex)
+    }
+  };
+}
+function unifiedHeadroom2(driver) {
+  const threshold = driver.threshold ?? 0;
+  if (driver.kind === "margin")
+    return 1 - (driver.marginRatio ?? 0) / threshold;
+  return (driver.liquidationDistance ?? 0) / threshold - 1;
+}
+function parseUnifiedSpotBalances2(body) {
+  const bad = (what) => new HyperliquidReadError2(`Unexpected spotClearinghouseState shape (${what})`);
+  if (!isRecord3(body) || !Array.isArray(body.balances))
+    throw bad("balances");
+  return body.balances.map((entry2) => {
+    if (!isRecord3(entry2) || typeof entry2.coin !== "string" || entry2.coin === "")
+      throw bad("entry");
+    if (!isDecString2(entry2.total) || !isDecString2(entry2.hold))
+      throw bad("entry amount");
+    if (entry2.token !== undefined && (!Number.isSafeInteger(entry2.token) || entry2.token < 0))
+      throw bad("entry token");
+    if (entry2.coin === "USDC" && entry2.token !== HYPERLIQUID_USDC_TOKEN2)
+      throw bad("USDC token index");
+    return {
+      coin: entry2.coin,
+      ...entry2.token !== undefined ? { token: entry2.token } : {},
+      total: entry2.total,
+      hold: entry2.hold
+    };
+  });
+}
+async function readHyperliquidSpotBalances2(fetcher, network2, address3, opts = {}) {
+  return parseUnifiedSpotBalances2(await hyperliquidInfo2(fetcher, network2, { type: "spotClearinghouseState", user: address3.toLowerCase() }, opts));
+}
+async function readHyperliquidDexCollaterals2(fetcher, network2, opts = {}) {
+  const [dexs, metas] = await Promise.all([
+    hyperliquidInfo2(fetcher, network2, { type: "perpDexs" }, opts),
+    hyperliquidInfo2(fetcher, network2, { type: "allPerpMetas" }, opts)
+  ]);
+  const bad = (what) => new HyperliquidReadError2(`Unexpected dex metadata (${what})`);
+  if (!Array.isArray(dexs) || dexs[0] !== null)
+    throw bad("perpDexs shape");
+  const names = dexs.flatMap((dex, index) => {
+    if (dex === null && index === 0)
+      return [];
+    if (!isRecord3(dex) || typeof dex.name !== "string" || !/^[A-Za-z0-9]{1,16}$/.test(dex.name))
+      throw bad("perpDexs entry");
+    return [dex.name];
+  });
+  if (!Array.isArray(metas) || metas.length !== names.length + 1)
+    throw bad("list snapshot mismatch");
+  return ["", ...names].map((name2, index) => {
+    const entry2 = metas[index];
+    const meta = Array.isArray(entry2) ? entry2[0] : entry2;
+    if (!isRecord3(meta) || !Number.isSafeInteger(meta.collateralToken) || meta.collateralToken < 0 || !Array.isArray(meta.universe))
+      throw bad("missing collateral metadata");
+    if (name2 !== "" && !meta.universe.every((asset) => isRecord3(asset) && typeof asset.name === "string" && asset.name.startsWith(`${name2}:`)))
+      throw bad("ordering mismatch");
+    return { name: name2, index, collateralToken: meta.collateralToken };
+  });
+}
+async function readHyperliquidDexClearinghouse2(fetcher, network2, address3, dex, opts = {}) {
+  return parseClearinghouse2(await hyperliquidInfo2(fetcher, network2, { type: "clearinghouseState", user: address3.toLowerCase(), dex }, opts));
+}
+async function readHyperliquidDexMarkets2(fetcher, network2, dex, opts = {}) {
+  const body = await hyperliquidInfo2(fetcher, network2, { type: "metaAndAssetCtxs", dex }, opts);
+  if (!Array.isArray(body) || body.length !== 2)
+    throw new HyperliquidReadError2("Unexpected metaAndAssetCtxs shape");
+  const [meta, ctxs] = body;
+  if (!isRecord3(meta) || !Array.isArray(meta.universe) || !Array.isArray(ctxs) || meta.universe.length !== ctxs.length)
+    throw new HyperliquidReadError2("Unexpected metaAndAssetCtxs shape");
+  return { universe: meta.universe, ctxs };
+}
 function parseClearinghouse2(body) {
   const bad = (what) => new HyperliquidReadError2(`Unexpected clearinghouseState shape (${what})`);
   if (!isRecord3(body))
@@ -101767,7 +102324,7 @@ var RANK2 = { ok: 0, warn: 1, critical: 2 };
 function worse2(a, b) {
   return RANK2[a] >= RANK2[b] ? a : b;
 }
-function hyperliquidRiskReport2(state, market, mode, thresholds2, now, identity4 = { walletId: "", address: "", network: "mainnet" }) {
+function hyperliquidRiskReport2(state, market, mode, thresholds, now, identity4 = { walletId: "", address: "", network: "mainnet" }) {
   const base2 = {
     schema: "candle.perps.risk/1",
     walletId: identity4.walletId,
@@ -101775,7 +102332,7 @@ function hyperliquidRiskReport2(state, market, mode, thresholds2, now, identity4
     network: identity4.network,
     mode,
     readAt: new Date(now).toISOString(),
-    thresholds: thresholds2,
+    thresholds,
     note: PERPS_RISK_NOTE2
   };
   if (!HYPERLIQUID_STANDARD_MODES2.includes(mode)) {
@@ -101793,7 +102350,7 @@ function hyperliquidRiskReport2(state, market, mode, thresholds2, now, identity4
   if (!market || !Array.isArray(market.universe) || !Array.isArray(market.ctxs))
     throw new HyperliquidReadError2("Unexpected metaAndAssetCtxs shape");
   const markets = market;
-  const t = thresholds2;
+  const t = thresholds;
   const drivers = [];
   const nearest = [];
   let level = "ok";
@@ -101917,7 +102474,7 @@ function hyperliquidRiskReport2(state, market, mode, thresholds2, now, identity4
     positions
   };
 }
-function unknownRiskReport2(identity4, thresholds2, reason, now, mode = null) {
+function unknownRiskReport2(identity4, thresholds, reason, now, mode = null) {
   return {
     schema: "candle.perps.risk/1",
     ...identity4,
@@ -101927,7 +102484,7 @@ function unknownRiskReport2(identity4, thresholds2, reason, now, mode = null) {
     reason,
     drivers: [],
     closest: null,
-    thresholds: thresholds2,
+    thresholds,
     account: null,
     positions: [],
     note: PERPS_RISK_NOTE2
@@ -101949,7 +102506,33 @@ async function readPerpsRisk2(opts) {
   const earliest = Math.min(...times);
   if (Math.max(...times) - earliest > PERPS_RISK_STALE_MS2)
     return unknownRiskReport2(identity4, opts.thresholds, "PERPS_READ_STALE", earliest, mode.value);
+  if (opts.unifiedAccounts === true && mode.value === HYPERLIQUID_UNIFIED_MODE2)
+    return readUnifiedPerpsRisk2(opts, { state: state.value, market: market.value, mode: mode.value }, times);
   return hyperliquidRiskReport2(state.value, market.value, mode.value, opts.thresholds, earliest, identity4);
+}
+async function readUnifiedPerpsRisk2(opts, main, mainTimes) {
+  const identity4 = { walletId: opts.walletId, address: opts.address, network: opts.network };
+  const timed = async (read2, times2) => {
+    const value = await read2;
+    times2.push(opts.now());
+    return value;
+  };
+  const times = [...mainTimes];
+  const [balances, collaterals] = await Promise.all([
+    timed(readHyperliquidSpotBalances2(opts.fetcher, opts.network, opts.address, opts), times),
+    opts.dexCollaterals !== undefined ? opts.dexCollaterals : timed(readHyperliquidDexCollaterals2(opts.fetcher, opts.network, opts), times)
+  ]);
+  const dexes = await Promise.all(collaterals.map(async (dex) => {
+    if (dex.name === "")
+      return { dex: "", collateralToken: dex.collateralToken, state: main.state, market: main.market };
+    const state = await timed(readHyperliquidDexClearinghouse2(opts.fetcher, opts.network, opts.address, dex.name, opts), times);
+    const market = state.positions.length > 0 ? await timed(readHyperliquidDexMarkets2(opts.fetcher, opts.network, dex.name, opts), times) : null;
+    return { dex: dex.name, collateralToken: dex.collateralToken, state, market };
+  }));
+  const earliest = Math.min(...times);
+  if (Math.max(...times) - earliest > PERPS_RISK_STALE_MS2)
+    return unknownRiskReport2(identity4, opts.thresholds, "PERPS_READ_STALE", earliest, main.mode);
+  return unifiedRiskReport2(dexes, balances, opts.thresholds, earliest, identity4);
 }
 function perpsRiskExitCode(level) {
   return level === "ok" ? 0 : level === "warn" ? 10 : level === "critical" ? 11 : 1;
@@ -102025,7 +102608,8 @@ function perpsAccountReport2(report2, recent) {
     readAt: report2.readAt,
     ...line,
     recent,
-    risk: { level: report2.level, reason: report2.reason, drivers: report2.drivers }
+    risk: { level: report2.level, reason: report2.reason, drivers: report2.drivers },
+    ...report2.unified ? { unified: report2.unified } : {}
   };
 }
 function perpsRiskClears(report2, leaving) {
@@ -102074,7 +102658,14 @@ var PERPS_WATCH_MIN_INTERVAL_MS = 5000;
 var PERPS_WATCH_MAX_INTERVAL_MS = 300000;
 var PERPS_WATCH_DEFAULT_HEARTBEAT_MS = 60000;
 var PERPS_WATCH_REFRESH_MS = 300000;
-var HYPERLIQUID_INFO_WEIGHTS = { clearinghouseState: 2, metaAndAssetCtxs: 20, userAbstraction: 20 };
+var HYPERLIQUID_INFO_WEIGHTS = {
+  clearinghouseState: 2,
+  metaAndAssetCtxs: 20,
+  userAbstraction: 20,
+  spotClearinghouseState: 2,
+  perpDexs: 20,
+  allPerpMetas: 20
+};
 function perpsWatchWeightPerMinute(intervalMs) {
   const polls = 60000 / intervalMs;
   const modeReads = 60000 / PERPS_WATCH_REFRESH_MS;
@@ -102086,15 +102677,16 @@ async function watchPerpsRisk(opts) {
   const identity4 = { walletId: opts.walletId, address: opts.address, network: opts.network };
   const sleep = (ms) => abortableSleep(opts.sleep, ms, opts.signal);
   const info3 = { sleep: opts.sleep };
-  let thresholds2;
+  let thresholds;
   try {
-    thresholds2 = await opts.thresholds();
+    thresholds = await opts.thresholds();
   } catch {
-    thresholds2 = { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" };
+    thresholds = { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults (server did not report)" };
   }
   let thresholdsAt = opts.now();
   let mode;
   let modeAt = Number.NEGATIVE_INFINITY;
+  let dexCollaterals;
   let level = "unknown";
   let lastGoodAt = null;
   let staleReported = false;
@@ -102107,14 +102699,14 @@ async function watchPerpsRisk(opts) {
     at: new Date(opts.now()).toISOString(),
     intervalSeconds: baseInterval / 1000,
     heartbeatSeconds: heartbeatMs / 1000,
-    thresholds: thresholds2,
+    thresholds,
     weightPerMinute: perpsWatchWeightPerMinute(baseInterval)
   });
   while (!opts.signal?.aborted) {
     if (opts.now() - thresholdsAt >= PERPS_WATCH_REFRESH_MS) {
       thresholdsAt = opts.now();
       try {
-        thresholds2 = await opts.thresholds();
+        thresholds = await opts.thresholds();
       } catch {}
     }
     let report2 = null;
@@ -102122,8 +102714,19 @@ async function watchPerpsRisk(opts) {
       if (mode === undefined || opts.now() - modeAt >= PERPS_WATCH_REFRESH_MS) {
         mode = await readHyperliquidAccountMode2(opts.fetcher, opts.network, opts.address, info3);
         modeAt = opts.now();
+        if (opts.unifiedAccounts === true && mode === HYPERLIQUID_UNIFIED_MODE2)
+          dexCollaterals = await readHyperliquidDexCollaterals2(opts.fetcher, opts.network, info3);
       }
-      report2 = await readPerpsRisk2({ ...identity4, fetcher: opts.fetcher, thresholds: thresholds2, now: opts.now, mode, ...info3 });
+      report2 = await readPerpsRisk2({
+        ...identity4,
+        fetcher: opts.fetcher,
+        thresholds,
+        now: opts.now,
+        mode,
+        ...opts.unifiedAccounts === true ? { unifiedAccounts: true } : {},
+        ...dexCollaterals ? { dexCollaterals } : {},
+        ...info3
+      });
       interval = baseInterval;
     } catch (error) {
       const rateLimited = error instanceof HyperliquidReadError2 && error.rateLimited;
@@ -102140,7 +102743,7 @@ async function watchPerpsRisk(opts) {
         const previous = level;
         level = "unknown";
         staleReported = true;
-        const stale = unknownRiskReport2(identity4, thresholds2, "PERPS_READ_STALE", opts.now(), mode ?? null);
+        const stale = unknownRiskReport2(identity4, thresholds, "PERPS_READ_STALE", opts.now(), mode ?? null);
         await opts.onEvent({ ...stale, event: "level", level, ruleLevel: "unknown", previous });
         if (opts.onceLevelChange && established)
           return { level };
@@ -102210,7 +102813,7 @@ async function perpsPortfolioSection2(fetcher, network2, wallets2, opts = {}) {
       return { read: false, reason: error instanceof Error ? error.message : "Hyperliquid market read failed" };
     }
   }
-  const thresholds2 = { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults" };
+  const thresholds = { ...HYPERLIQUID_RISK_DEFAULTS2, source: "defaults" };
   const results = new Array(considered.length).fill(null);
   const failures = new Array(considered.length).fill(null);
   let next = 0;
@@ -102220,7 +102823,7 @@ async function perpsPortfolioSection2(fetcher, network2, wallets2, opts = {}) {
       const wallet3 = considered[at3];
       try {
         const state = await readHyperliquidClearinghouse2(fetcher, network2, wallet3.address, opts);
-        const report2 = hyperliquidRiskReport2(state, markets, "default", thresholds2, now());
+        const report2 = hyperliquidRiskReport2(state, markets, "default", thresholds, now());
         results[at3] = {
           address: wallet3.address,
           ...wallet3.label !== undefined ? { label: wallet3.label } : {},
@@ -102326,12 +102929,25 @@ function usage7(ctx, line) {
 }
 var fetcherOf2 = (ctx) => ctx.deps.fetch;
 var infoOpts = (ctx) => ({ sleep: ctx.deps.sleep });
-async function perpsThresholdsFor(ctx, key) {
+async function perpsEngineInputs(ctx, key) {
   try {
-    return await perpsThresholdsStrict(ctx, key);
+    const result2 = await apiRequest("/api/v1/agent/keys/self/limits", {
+      apiUrl: ctx.apiUrl,
+      credentials: { apiKey: key },
+      auth: "key",
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env
+    });
+    if (!result2.ok)
+      throw new Error("thresholds read failed");
+    const { thresholds, unifiedAccounts } = perpsRiskFromLimits2(result2.body);
+    return { thresholds, unifiedAccounts };
   } catch {
-    return perpsRiskFromLimits2(null).thresholds;
+    return { thresholds: perpsRiskFromLimits2(null).thresholds, unifiedAccounts: false };
   }
+}
+async function perpsUnifiedAccountsFor(ctx, key) {
+  return (await perpsEngineInputs(ctx, key)).unifiedAccounts;
 }
 async function perpsThresholdsStrict(ctx, key) {
   const result2 = await apiRequest("/api/v1/agent/keys/self/limits", {
@@ -102351,7 +102967,7 @@ function readFailure(error) {
   return error;
 }
 function unknownFailure(report2) {
-  const message = report2.reason === "PERPS_ACCOUNT_MODE" ? `Hyperliquid reports this account in ${safeText(report2.mode)} mode, whose perps margin clearinghouseState does not describe. No level was computed.` : report2.reason === "PERPS_READ_STALE" ? "The Hyperliquid reads completed more than 30 s apart. No level was computed; run it again." : "Hyperliquid could not be read. No level was computed.";
+  const message = report2.reason === "PERPS_ACCOUNT_MODE" ? report2.mode === "unifiedAccount" ? "Hyperliquid reports this account in unifiedAccount mode, and Candle's unified accounts are off, so its risk is not read here. No level was computed." : `Hyperliquid reports this account in ${safeText(report2.mode)} mode, whose perps margin clearinghouseState does not describe. No level was computed.` : report2.reason === "PERPS_READ_STALE" ? "The Hyperliquid reads completed more than 30 s apart. No level was computed; run it again." : "Hyperliquid could not be read. No level was computed.";
   return new TradingError(report2.reason ?? "PERPS_READ_FAILED", message, { details: { report: report2 } });
 }
 var pct3 = (fraction) => fraction === null ? "-" : `${(fraction * 100).toFixed(1)}%`;
@@ -102389,7 +103005,7 @@ function levelCell(row2) {
     return "n/a";
   return row2.liquidationPx === null ? "ok" : "n/a";
 }
-function writeAccountFields(ctx, line) {
+function writeAccountFields(ctx, line, unified) {
   const missing = symbols(terminalStyle(ctx.deps, "stdout")).missing;
   writeFields(ctx.deps, "stdout", [
     ["Account value", usdField(line.accountValueUsd, missing)],
@@ -102400,8 +103016,19 @@ function writeAccountFields(ctx, line) {
     ["Margin ratio", line.marginRatio === null ? "none (no cross equity)" : line.marginRatio.toFixed(4)],
     ["Unrealized", usdField(line.unrealizedPnlUsd, missing, true)],
     ["Positions", line.positionCount],
-    ["Mode", safeText(line.mode)]
+    ["Mode", safeText(line.mode)],
+    ...unified ? unifiedFields(unified) : []
   ]);
+}
+function unifiedFields(unified) {
+  const row2 = unified.collateral.find((c) => c.token === unified.ratioToken);
+  return [
+    [
+      "Unified ratio",
+      unified.ratio === null ? "none (no available collateral)" : `${unified.ratio.toFixed(4)} (${row2?.coin ?? String(unified.ratioToken)})`
+    ],
+    ["Unified dexes", unified.dexes.map((d) => d === "" ? "main" : d).join(", ")]
+  ];
 }
 function usdField(value, missing, signed = false) {
   if (value === null || value === undefined || value === "")
@@ -102489,7 +103116,7 @@ function writeRiskText(ctx, report2) {
   const lead = report2.drivers[0] ?? report2.closest;
   const also = report2.drivers.slice(1).map((driver) => describeDriver(driver));
   const account = report2.account;
-  const thresholds2 = report2.thresholds;
+  const thresholds = report2.thresholds;
   const lines = [
     painted,
     "",
@@ -102512,7 +103139,8 @@ function writeRiskText(ctx, report2) {
       ["Margin ratio", account.marginRatio === null ? "none (no cross equity)" : account.marginRatio.toFixed(4)],
       ["Unrealized", usdField(account.unrealizedPnlUsd, sym.missing, true)],
       ["Positions", String(account.positionCount)],
-      ["Mode", safeText(account.mode)]
+      ["Mode", safeText(account.mode)],
+      ...report2.unified ? unifiedFields(report2.unified) : []
     ], style) : [`${" ".repeat(2)}No account figures.`],
     "",
     riskPositionsTable(report2.positions, style),
@@ -102520,16 +103148,16 @@ function writeRiskText(ctx, report2) {
     heading("Thresholds", style),
     "",
     ...fields([
-      ["Source", thresholds2.source],
+      ["Source", thresholds.source],
       [
         "Warn",
-        `under ${(thresholds2.warnDistanceBps / 100).toFixed(1)}% or ratio above ${(thresholds2.warnMarginRatioBps / 1e4).toFixed(2)}`
+        `under ${(thresholds.warnDistanceBps / 100).toFixed(1)}% or ratio above ${(thresholds.warnMarginRatioBps / 1e4).toFixed(2)}`
       ],
       [
         "Critical",
-        `under ${(thresholds2.criticalDistanceBps / 100).toFixed(1)}% or above ${(thresholds2.criticalMarginRatioBps / 1e4).toFixed(2)}`
+        `under ${(thresholds.criticalDistanceBps / 100).toFixed(1)}% or above ${(thresholds.criticalMarginRatioBps / 1e4).toFixed(2)}`
       ],
-      ["Clear band", `${(thresholds2.clearBandBps / 100).toFixed(1)} points`]
+      ["Clear band", `${(thresholds.clearBandBps / 100).toFixed(1)} points`]
     ], style)
   ];
   ctx.deps.stdout.write(`${lines.join(`
@@ -102546,13 +103174,14 @@ async function perpsRisk(args, ctx) {
   try {
     const key = await tradingKey(ctx);
     const { row: row2 } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
-    const thresholds2 = await perpsThresholdsFor(ctx, key);
+    const { thresholds, unifiedAccounts } = await perpsEngineInputs(ctx, key);
     const report2 = await readPerpsRisk2({
       fetcher: fetcherOf2(ctx),
       network: perpsNetwork(ctx),
       walletId: row2.id,
       address: row2.address,
-      thresholds: thresholds2,
+      thresholds,
+      ...unifiedAccounts ? { unifiedAccounts: true } : {},
       now: ctx.deps.now,
       ...infoOpts(ctx)
     }).catch((error) => {
@@ -102601,7 +103230,7 @@ async function perpsAccount(args, ctx) {
   try {
     const key = await tradingKey(ctx);
     const { row: row2 } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
-    const thresholds2 = await perpsThresholdsFor(ctx, key);
+    const { thresholds, unifiedAccounts } = await perpsEngineInputs(ctx, key);
     const network2 = perpsNetwork(ctx);
     const [report2, recent] = await Promise.all([
       readPerpsRisk2({
@@ -102609,7 +103238,8 @@ async function perpsAccount(args, ctx) {
         network: network2,
         walletId: row2.id,
         address: row2.address,
-        thresholds: thresholds2,
+        thresholds,
+        ...unifiedAccounts ? { unifiedAccounts: true } : {},
         now: ctx.deps.now,
         ...infoOpts(ctx)
       }),
@@ -102636,7 +103266,7 @@ function writeAccountText(ctx, account, report2) {
     ["Read at", formatTime(account.readAt)]
   ]);
   if (report2.account)
-    writeAccountFields(ctx, report2.account);
+    writeAccountFields(ctx, report2.account, report2.unified);
   else
     notice(ctx.deps, "stdout", "warning", `No account figures: ${safeText(report2.reason)}.
 `.trim());
@@ -102656,14 +103286,15 @@ function writeAccountText(ctx, account, report2) {
 `.trim());
 }
 async function positionsAdditions2(ctx, key, row2) {
-  const thresholds2 = await perpsThresholdsFor(ctx, key);
+  const { thresholds, unifiedAccounts } = await perpsEngineInputs(ctx, key);
   const identity4 = { walletId: row2.id, address: row2.address, network: perpsNetwork(ctx) };
   let report2;
   try {
     report2 = await readPerpsRisk2({
       ...identity4,
       fetcher: fetcherOf2(ctx),
-      thresholds: thresholds2,
+      thresholds,
+      ...unifiedAccounts ? { unifiedAccounts: true } : {},
       now: ctx.deps.now,
       ...infoOpts(ctx)
     });
@@ -102677,7 +103308,7 @@ async function positionsAdditions2(ctx, key, row2) {
       reason: "PERPS_READ_FAILED",
       drivers: [],
       closest: null,
-      thresholds: thresholds2,
+      thresholds,
       account: null,
       positions: [],
       note: NO_MONITOR
@@ -102690,7 +103321,7 @@ function writePositionsText(ctx, additions) {
   ctx.deps.stdout.write(`${riskPositionsTable(additions.rows, terminalStyle(ctx.deps, "stdout"))}
 `);
   if (additions.accountLine)
-    writeAccountFields(ctx, additions.accountLine);
+    writeAccountFields(ctx, additions.accountLine, additions.risk.unified);
   notice(ctx.deps, "stdout", "note", `${riskLine(additions.risk)}
 `.trim());
 }
@@ -102738,6 +103369,12 @@ async function perpsWatch(args, ctx) {
       line({ event: "hook", hook: name2, level, ...result2, durationMs: ctx.deps.now() - started });
     }));
   };
+  let unifiedAccounts = false;
+  try {
+    unifiedAccounts = await perpsUnifiedAccountsFor(ctx, key);
+  } catch {
+    unifiedAccounts = false;
+  }
   try {
     const result2 = await watchPerpsRisk({
       fetcher: fetcherOf2(ctx),
@@ -102745,6 +103382,7 @@ async function perpsWatch(args, ctx) {
       walletId: row2.id,
       address: row2.address,
       thresholds: () => perpsThresholdsStrict(ctx, key),
+      ...unifiedAccounts ? { unifiedAccounts: true } : {},
       intervalMs: interval * 1000,
       heartbeatMs: heartbeat * 1000,
       now: ctx.deps.now,
@@ -102813,14 +103451,14 @@ async function perpsThresholds(args, ctx) {
       writeFailure(ctx.deps, result2, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json);
       return 1;
     }
-    const { thresholds: thresholds2, stored } = perpsRiskFromLimits2(result2.body);
-    const { source: source2, ...effective } = thresholds2;
+    const { thresholds, stored } = perpsRiskFromLimits2(result2.body);
+    const { source: source2, ...effective } = thresholds;
     if (ctx.json) {
       ctx.deps.stdout.write(`${JSON.stringify({ stored, effective, source: source2, defaults: HYPERLIQUID_RISK_DEFAULTS2 })}
 `);
       return 0;
     }
-    writeThresholds(ctx, thresholds2);
+    writeThresholds(ctx, thresholds);
     if (stored && Object.keys(stored).length > 0)
       writeFields(ctx.deps, "stdout", Object.entries(stored).map(([field, value]) => [field, value]), "Stored on this key");
     else
@@ -103182,8 +103820,20 @@ async function runPerpsWrite(ctx, opts) {
     } catch (error) {
       throw new TradingError("PERPS_UNAVAILABLE", `${error instanceof Error ? error.message : "Cannot read the account mode from Hyperliquid"}. Nothing was requested.`);
     }
-    if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES2.includes(mode))
-      throw new TradingError("PERPS_ACCOUNT_MODE", `This Hyperliquid account is in ${safeText(mode)} mode. Candle trades only a standard account and does not change modes; switch it back to standard mode on Hyperliquid, then run setup again. This is not a missing fee approval. Nothing was requested or signed.`);
+    if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES2.includes(mode)) {
+      let unifiedOn = false;
+      if (mode === "unifiedAccount") {
+        try {
+          unifiedOn = await perpsUnifiedAccountsFor(ctx, key);
+        } catch {
+          unifiedOn = false;
+        }
+      }
+      if (unifiedOn)
+        notice(ctx.deps, "stderr", "note", "Hyperliquid reports this account in unifiedAccount mode and Candle's unified accounts are on; setup continues on the unified path.".trim());
+      else
+        throw new TradingError("PERPS_ACCOUNT_MODE", mode === "unifiedAccount" ? "This Hyperliquid account is in unifiedAccount mode and Candle's unified accounts are off, so setup does not continue. This is not a missing fee approval. Nothing was requested or signed." : `This Hyperliquid account is in ${safeText(mode)} mode. Candle trades only a standard account and does not change modes; switch it back to standard mode on Hyperliquid, then run setup again. This is not a missing fee approval. Nothing was requested or signed.`);
+    }
   }
   if (wallet3.id === "embedded" && ["open", "close"].includes(method) && opts.body.clientId == null) {
     opts.body = { ...opts.body, clientId: `0x${randomUUID11().replaceAll("-", "")}` };

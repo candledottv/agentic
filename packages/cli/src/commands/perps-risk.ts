@@ -66,6 +66,36 @@ export async function perpsThresholdsFor(ctx: CommandContext, key: string): Prom
   }
 }
 
+/**
+ * U7 (BE-3860): the thresholds and the server's `HYPERLIQUID_UNIFIED_ACCOUNTS` switch from ONE
+ * limits read. A failed read or an older API is the defaults with the switch off: a unified wallet
+ * is then answered as today.
+ */
+export async function perpsEngineInputs(
+  ctx: CommandContext,
+  key: string,
+): Promise<{ thresholds: PerpsRiskThresholdsReport; unifiedAccounts: boolean }> {
+  try {
+    const result = await apiRequest("/api/v1/agent/keys/self/limits", {
+      apiUrl: ctx.apiUrl,
+      credentials: { apiKey: key },
+      auth: "key",
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env,
+    })
+    if (!result.ok) throw new Error("thresholds read failed")
+    const { thresholds, unifiedAccounts } = perpsRiskFromLimits(result.body)
+    return { thresholds, unifiedAccounts }
+  } catch {
+    return { thresholds: perpsRiskFromLimits(null).thresholds, unifiedAccounts: false }
+  }
+}
+
+/** The switch alone, for the paths that already read the thresholds (watch, setup). */
+export async function perpsUnifiedAccountsFor(ctx: CommandContext, key: string): Promise<boolean> {
+  return (await perpsEngineInputs(ctx, key)).unifiedAccounts
+}
+
 /** The same read, but a failed one throws: watch keeps its last thresholds on a failed refresh (A-9). */
 async function perpsThresholdsStrict(ctx: CommandContext, key: string): Promise<PerpsRiskThresholdsReport> {
   const result = await apiRequest("/api/v1/agent/keys/self/limits", {
@@ -90,7 +120,9 @@ function readFailure(error: unknown): unknown {
 function unknownFailure(report: PerpsRiskReport): TradingError {
   const message =
     report.reason === "PERPS_ACCOUNT_MODE"
-      ? `Hyperliquid reports this account in ${safeText(report.mode)} mode, whose perps margin clearinghouseState does not describe. No level was computed.`
+      ? report.mode === "unifiedAccount"
+        ? "Hyperliquid reports this account in unifiedAccount mode, and Candle's unified accounts are off, so its risk is not read here. No level was computed."
+        : `Hyperliquid reports this account in ${safeText(report.mode)} mode, whose perps margin clearinghouseState does not describe. No level was computed.`
       : report.reason === "PERPS_READ_STALE"
         ? "The Hyperliquid reads completed more than 30 s apart. No level was computed; run it again."
         : "Hyperliquid could not be read. No level was computed."
@@ -143,7 +175,7 @@ function levelCell(row: Pick<PerpsPositionRow, "level" | "markPx" | "liquidation
   return row.liquidationPx === null ? "ok" : "n/a"
 }
 
-function writeAccountFields(ctx: CommandContext, line: PerpsAccountLine): void {
+function writeAccountFields(ctx: CommandContext, line: PerpsAccountLine, unified?: PerpsRiskReport["unified"]): void {
   const missing = symbols(terminalStyle(ctx.deps, "stdout")).missing
   writeFields(ctx.deps, "stdout", [
     ["Account value", usdField(line.accountValueUsd, missing)],
@@ -155,7 +187,22 @@ function writeAccountFields(ctx: CommandContext, line: PerpsAccountLine): void {
     ["Unrealized", usdField(line.unrealizedPnlUsd, missing, true)],
     ["Positions", line.positionCount],
     ["Mode", safeText(line.mode)],
+    ...(unified ? unifiedFields(unified) : []),
   ])
+}
+
+/** The unified block's two display rows: the ratio with its collateral token, and the dexes read. */
+function unifiedFields(unified: NonNullable<PerpsRiskReport["unified"]>): [string, string][] {
+  const row = unified.collateral.find((c) => c.token === unified.ratioToken)
+  return [
+    [
+      "Unified ratio",
+      unified.ratio === null
+        ? "none (no available collateral)"
+        : `${unified.ratio.toFixed(4)} (${row?.coin ?? String(unified.ratioToken)})`,
+    ],
+    ["Unified dexes", unified.dexes.map((d) => (d === "" ? "main" : d)).join(", ")],
+  ]
 }
 
 function usdField(value: string | null | undefined, missing: string, signed = false): string {
@@ -337,6 +384,7 @@ function writeRiskText(ctx: CommandContext, report: PerpsRiskReport): void {
             ["Unrealized", usdField(account.unrealizedPnlUsd, sym.missing, true)],
             ["Positions", String(account.positionCount)],
             ["Mode", safeText(account.mode)],
+            ...(report.unified ? unifiedFields(report.unified) : []),
           ],
           style,
         )
@@ -376,13 +424,14 @@ export async function perpsRisk(args: string[], ctx: CommandContext): Promise<nu
   try {
     const key = await tradingKey(ctx)
     const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"])
-    const thresholds = await perpsThresholdsFor(ctx, key)
+    const { thresholds, unifiedAccounts } = await perpsEngineInputs(ctx, key)
     const report = await readPerpsRisk({
       fetcher: fetcherOf(ctx),
       network: perpsNetwork(ctx),
       walletId: row.id,
       address: row.address,
       thresholds,
+      ...(unifiedAccounts ? { unifiedAccounts: true } : {}),
       now: ctx.deps.now,
       ...infoOpts(ctx),
     }).catch((error) => {
@@ -430,7 +479,7 @@ export async function perpsAccount(args: string[], ctx: CommandContext): Promise
   try {
     const key = await tradingKey(ctx)
     const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"])
-    const thresholds = await perpsThresholdsFor(ctx, key)
+    const { thresholds, unifiedAccounts } = await perpsEngineInputs(ctx, key)
     const network = perpsNetwork(ctx)
     const [report, recent] = await Promise.all([
       readPerpsRisk({
@@ -439,6 +488,7 @@ export async function perpsAccount(args: string[], ctx: CommandContext): Promise
         walletId: row.id,
         address: row.address,
         thresholds,
+        ...(unifiedAccounts ? { unifiedAccounts: true } : {}),
         now: ctx.deps.now,
         ...infoOpts(ctx),
       }),
@@ -464,7 +514,7 @@ function writeAccountText(ctx: CommandContext, account: PerpsAccountReport, repo
     ["Hyperliquid network", account.network],
     ["Read at", formatTime(account.readAt)],
   ])
-  if (report.account) writeAccountFields(ctx, report.account)
+  if (report.account) writeAccountFields(ctx, report.account, report.unified)
   else notice(ctx.deps, "stdout", "warning", `No account figures: ${safeText(report.reason)}.\n`.trim())
   const r = account.recent
   const hours = Math.round((r.endTime - r.startTime) / 3_600_000)
@@ -495,7 +545,7 @@ export async function positionsAdditions(
   accountLine: PerpsAccountLine | null
   risk: Omit<PerpsRiskReport, "positions">
 }> {
-  const thresholds = await perpsThresholdsFor(ctx, key)
+  const { thresholds, unifiedAccounts } = await perpsEngineInputs(ctx, key)
   const identity = { walletId: row.id, address: row.address, network: perpsNetwork(ctx) }
   let report: PerpsRiskReport
   try {
@@ -503,6 +553,7 @@ export async function positionsAdditions(
       ...identity,
       fetcher: fetcherOf(ctx),
       thresholds,
+      ...(unifiedAccounts ? { unifiedAccounts: true } : {}),
       now: ctx.deps.now,
       ...infoOpts(ctx),
     })
@@ -531,7 +582,7 @@ export function writePositionsText(
   additions: Awaited<ReturnType<typeof positionsAdditions>>,
 ): void {
   ctx.deps.stdout.write(`${riskPositionsTable(additions.rows, terminalStyle(ctx.deps, "stdout"))}\n`)
-  if (additions.accountLine) writeAccountFields(ctx, additions.accountLine)
+  if (additions.accountLine) writeAccountFields(ctx, additions.accountLine, additions.risk.unified)
   notice(ctx.deps, "stdout", "note", `${riskLine(additions.risk)}\n`.trim())
 }
 
@@ -596,6 +647,12 @@ export async function perpsWatch(args: string[], ctx: CommandContext): Promise<n
       }),
     )
   }
+  let unifiedAccounts = false
+  try {
+    unifiedAccounts = await perpsUnifiedAccountsFor(ctx, key)
+  } catch {
+    unifiedAccounts = false
+  }
   try {
     const result = await watchPerpsRisk({
       fetcher: fetcherOf(ctx),
@@ -603,6 +660,7 @@ export async function perpsWatch(args: string[], ctx: CommandContext): Promise<n
       walletId: row.id,
       address: row.address,
       thresholds: () => perpsThresholdsStrict(ctx, key),
+      ...(unifiedAccounts ? { unifiedAccounts: true } : {}),
       intervalMs: interval * 1_000,
       heartbeatMs: heartbeat * 1_000,
       now: ctx.deps.now,

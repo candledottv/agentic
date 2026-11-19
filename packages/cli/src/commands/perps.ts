@@ -92,7 +92,7 @@ import {
   tradingKey,
   tradingPayer,
 } from "../trading"
-import { positionsAdditions, writePositionsText } from "./perps-risk"
+import { perpsUnifiedAccountsFor, positionsAdditions, writePositionsText } from "./perps-risk"
 import { lazySolanaClient, printTradingResult, tradingFailure, tradingRead } from "./swap"
 
 export const PERPS_SCOPE = "perps:write"
@@ -376,11 +376,32 @@ export async function runPerpsWrite(
         `${error instanceof Error ? error.message : "Cannot read the account mode from Hyperliquid"}. Nothing was requested.`,
       )
     }
-    if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode))
-      throw new TradingError(
-        "PERPS_ACCOUNT_MODE",
-        `This Hyperliquid account is in ${safeText(mode)} mode. Candle trades only a standard account and does not change modes; switch it back to standard mode on Hyperliquid, then run setup again. This is not a missing fee approval. Nothing was requested or signed.`,
-      )
+    if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode)) {
+      // U7 (BE-3860): a unified wallet continues on Candle's unified path only while the server's
+      // switch is on; with it off (or an older API) the refusal below is today's, word for word.
+      let unifiedOn = false
+      if (mode === "unifiedAccount") {
+        try {
+          unifiedOn = await perpsUnifiedAccountsFor(ctx, key)
+        } catch {
+          unifiedOn = false
+        }
+      }
+      if (unifiedOn)
+        notice(
+          ctx.deps,
+          "stderr",
+          "note",
+          "Hyperliquid reports this account in unifiedAccount mode and Candle's unified accounts are on; setup continues on the unified path.".trim(),
+        )
+      else
+        throw new TradingError(
+          "PERPS_ACCOUNT_MODE",
+          mode === "unifiedAccount"
+            ? "This Hyperliquid account is in unifiedAccount mode and Candle's unified accounts are off, so setup does not continue. This is not a missing fee approval. Nothing was requested or signed."
+            : `This Hyperliquid account is in ${safeText(mode)} mode. Candle trades only a standard account and does not change modes; switch it back to standard mode on Hyperliquid, then run setup again. This is not a missing fee approval. Nothing was requested or signed.`,
+        )
+    }
   }
   if (wallet.id === "embedded" && ["open", "close"].includes(method) && opts.body.clientId == null) {
     opts.body = { ...opts.body, clientId: `0x${randomUUID().replaceAll("-", "")}` }

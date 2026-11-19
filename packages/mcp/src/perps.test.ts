@@ -427,6 +427,33 @@ describe("candle_perps_setup and the account mode", () => {
     }
   })
 
+  test("U7 (BE-3860): a unified wallet is refused while the switch is off, admitted while it is on", async () => {
+    /** The fake plus a limits answer that names the switch. */
+    const withLimits = (f: ReturnType<typeof fake>, unifiedAccounts: boolean) => {
+      const inner = f.fetch
+      const fetch = (async (url: string, init?: RequestInit) => {
+        if (String(url).endsWith("/api/v1/agent/keys/self/limits"))
+          return Response.json({ success: true, perpsRisk: null, unifiedAccounts })
+        return (inner as unknown as (u: string, i?: RequestInit) => Promise<Response>)(url, init)
+      }) as never
+      return { calls: f.calls, fetch }
+    }
+    const off = withLimits(fake({ mode: "unifiedAccount", build: ready() }), false)
+    const refused = await executePerps("candle_perps_setup", {}, cfg, env(), off.fetch)
+    expect(refused.isError).toBe(true)
+    expect(JSON.parse(refused.text).error.message).toContain("Candle's unified accounts are off")
+    expect(off.calls.some((c) => c.url.endsWith("/perps/setup"))).toBe(false)
+
+    const on = withLimits(
+      fake({ mode: "unifiedAccount", build: ready({ mode: "unifiedAccount", standardMode: false }) }),
+      true,
+    )
+    const result = await executePerps("candle_perps_setup", {}, cfg, env(), on.fetch)
+    expect(result.isError).toBeUndefined()
+    expect(JSON.parse(result.text)).toMatchObject({ ready: true, mode: "unifiedAccount" })
+    expect(on.calls.some((c) => c.url.endsWith("/perps/setup"))).toBe(true)
+  })
+
   test("a dishonest ready answer is refused; an honest one is returned", async () => {
     for (const lie of [{ mode: "disabled" }, { builder: OTHER }, { address: OTHER }]) {
       const f = fake({ build: ready(lie) })

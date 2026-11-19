@@ -17,14 +17,17 @@ import {
   type PerpsRiskLevel,
   type PerpsRiskThresholdsReport,
   type PerpsWatchEvent,
+  parseClearinghouse,
   perpsAccountReport,
   perpsPortfolioSection,
   perpsRiskExitCode,
   perpsRiskFromLimits,
   perpsRiskStep,
+  perpsWatchUnifiedWeightPerMinute,
   perpsWatchWeightPerMinute,
   readPerpsRisk,
   summarizePerpsRecent,
+  unifiedRiskReport,
   watchPerpsRisk,
 } from "./hyperliquid-risk"
 
@@ -816,5 +819,394 @@ describe("portfolio section (A-11, AC1 subtotal)", () => {
       "past the 100-address cap",
     ])
     expect(section.read && section.empty).toBe(100)
+  })
+})
+
+// ── Unified accounts (U7, BE-3860; build map 2026-11-18 sections 3 and 3a) ──────────────────
+
+describe("unified accounts (U7)", () => {
+  const UNIFIED = { ...ID, address: "0x00000000000000000000000000000000000000bb" }
+
+  // In unified mode a perp dex's own balance fields are not meaningful: the main state prints no
+  // balance; the positions and the maintenance margin are still there.
+  const UNIFIED_MAIN = clearinghouse({
+    positions: [atDistance(0.12, { marginUsed: "61.0" })],
+    accountValue: "0.0",
+    crossValue: "0.0",
+    marginUsed: "61.0",
+    crossMarginUsed: "61.0",
+    maint: "50.0",
+    withdrawable: "0.0",
+  })
+  const XYZ_STATE = clearinghouse({
+    positions: [
+      {
+        coin: "xyz:TSLA",
+        szi: "-2.0",
+        type: "isolated",
+        liquidationPx: "125.0",
+        marginUsed: "100.0",
+        unrealizedPnl: "-20.0",
+      },
+    ],
+    accountValue: "0.0",
+    crossValue: "0.0",
+    marginUsed: "100.0",
+    crossMarginUsed: "0.0",
+    maint: "25.0",
+    withdrawable: "0.0",
+  })
+  const FLAT = clearinghouse({
+    positions: [],
+    accountValue: "0.0",
+    crossValue: "0.0",
+    marginUsed: "0.0",
+    crossMarginUsed: "0.0",
+    maint: "0.0",
+    withdrawable: "0.0",
+  })
+  const SPOT = { balances: [{ coin: "USDC", token: 0, total: "1000.0", hold: "161.0", entryNtl: "0.0" }] }
+  const PERP_DEXS = [null, { name: "xyz", deployer: "0x00000000000000000000000000000000000000d1" }]
+  const ALL_PERP_METAS = [
+    { universe: [{ name: "BTC" }], collateralToken: 0 },
+    { universe: [{ name: "xyz:TSLA" }], collateralToken: 0 },
+  ]
+  const XYZ_MARKET = market({ "xyz:TSLA": "250.0" })
+
+  /** The venue by request: the unified wallet's answers, with every request recorded. */
+  function venue(log: string[] = [], spot: unknown = SPOT): HyperliquidInfoFetcher {
+    return async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { type: string; dex?: string }
+      log.push(body.dex ? `${body.type}:${body.dex}` : body.type)
+      const answer = (() => {
+        switch (body.type) {
+          case "userAbstraction":
+            return "unifiedAccount"
+          case "clearinghouseState":
+            return body.dex === "xyz" ? XYZ_STATE : UNIFIED_MAIN
+          case "metaAndAssetCtxs":
+            return body.dex === "xyz" ? XYZ_MARKET : market({ BTC: "100.0" })
+          case "spotClearinghouseState":
+            return spot
+          case "perpDexs":
+            return PERP_DEXS
+          case "allPerpMetas":
+            return ALL_PERP_METAS
+          default:
+            throw new Error(`unexpected ${body.type}`)
+        }
+      })()
+      return { ok: true, status: 200, text: async () => JSON.stringify(answer) }
+    }
+  }
+
+  test("the switch off (or an older API): a unified wallet is answered exactly as today", async () => {
+    for (const unifiedAccounts of [undefined, false]) {
+      const log: string[] = []
+      const r = await readPerpsRisk({
+        ...UNIFIED,
+        fetcher: venue(log),
+        thresholds: T,
+        ...(unifiedAccounts === false ? { unifiedAccounts: false } : {}),
+        now: () => 1_000,
+      })
+      expect(r).toMatchObject({ level: "unknown", reason: "PERPS_ACCOUNT_MODE", mode: "unifiedAccount", account: null })
+      expect("unified" in r).toBe(false)
+      expect(log.sort()).toEqual(["clearinghouseState", "metaAndAssetCtxs", "userAbstraction"])
+    }
+  })
+
+  test("a standard wallet keeps today's read and report, whatever the switch says", async () => {
+    const log: string[] = []
+    const standard: HyperliquidInfoFetcher = async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { type: string }
+      log.push(body.type)
+      const answer =
+        body.type === "userAbstraction"
+          ? "default"
+          : body.type === "clearinghouseState"
+            ? clearinghouse({ positions: [atDistance(0.05)] })
+            : market({ BTC: "100.0" })
+      return { ok: true, status: 200, text: async () => JSON.stringify(answer) }
+    }
+    const r = await readPerpsRisk({ ...ID, fetcher: standard, thresholds: T, unifiedAccounts: true, now: () => 1_000 })
+    expect(r).toEqual(await readPerpsRisk({ ...ID, fetcher: standard, thresholds: T, now: () => 1_000 }))
+    expect("unified" in r).toBe(false)
+    expect(log.filter((t) => !["clearinghouseState", "metaAndAssetCtxs", "userAbstraction"].includes(t))).toEqual([])
+  })
+
+  test("the switch on: collateral from the spot state, positions from every dex, the unified ratio", async () => {
+    const log: string[] = []
+    const r = await readPerpsRisk({
+      ...UNIFIED,
+      fetcher: venue(log),
+      thresholds: T,
+      unifiedAccounts: true,
+      now: () => 1_000,
+    })
+    expect(r).toMatchObject({
+      schema: "candle.perps.risk/1",
+      mode: "unifiedAccount",
+      level: "warn",
+      reason: null,
+      account: {
+        accountValueUsd: "1000.0",
+        marginUsedUsd: "161",
+        crossAccountValueUsd: "900",
+        freeMarginUsd: "839",
+        withdrawableUsd: "839",
+        crossMaintenanceMarginUsedUsd: "75",
+        marginRatio: 0.083333333333,
+        positionCount: 2,
+        mode: "unifiedAccount",
+      },
+      unified: { ratio: 0.083333333333, ratioToken: 0, dexes: ["", "xyz"] },
+    })
+    // BTC is 12% from liquidation (under the 15% warn); TSLA is 50% (ok). The margin ratio is far from warn.
+    expect(r.drivers).toEqual([
+      { kind: "position", coin: "BTC", level: "warn", liquidationDistance: 0.12, threshold: 0.15 },
+    ])
+    expect(r.positions.map((p) => [p.coin, p.markPx, p.level])).toEqual([
+      ["BTC", "100.0", "warn"],
+      ["xyz:TSLA", "250.0", "ok"],
+    ])
+    expect(r.unified?.collateral[0]).toMatchObject({
+      token: 0,
+      coin: "USDC",
+      total: "1000.0",
+      hold: "161.0",
+      free: "839",
+      dexes: ["", "xyz"],
+      isolatedMarginUsed: "100",
+      crossMaintenanceMarginUsed: "75",
+      available: "900",
+      ratio: 0.083333333333,
+    })
+    expect(log.sort()).toEqual(
+      [
+        "clearinghouseState",
+        "clearinghouseState:xyz",
+        "metaAndAssetCtxs",
+        "metaAndAssetCtxs:xyz",
+        "userAbstraction",
+        "spotClearinghouseState",
+        "perpDexs",
+        "allPerpMetas",
+      ].sort(),
+    )
+  })
+
+  test("the account document carries the same unified block", () => {
+    const base = unifiedRiskReport(
+      [
+        {
+          dex: "",
+          collateralToken: 0,
+          state: parseClearinghouse(UNIFIED_MAIN),
+          market: { universe: snapshot({ BTC: "100.0" }).universe, ctxs: snapshot({ BTC: "100.0" }).ctxs },
+        },
+      ],
+      SPOT.balances,
+      T,
+      1_000,
+      UNIFIED,
+    )
+    const account = perpsAccountReport(base, {
+      startTime: 0,
+      endTime: 1,
+      realizedPnlUsd: "0",
+      feesUsd: "0",
+      fundingUsd: "0",
+      fills: 0,
+      fundingPayments: 0,
+      truncated: false,
+    })
+    expect(account.mode).toBe("unifiedAccount")
+    expect(account.unified).toEqual(base.unified)
+  })
+
+  test("cross exposure with nothing behind it is critical with no ratio (E2)", () => {
+    // Isolated margin 50 against a 50 USDC spot total: nothing available behind the cross margin.
+    const starvedState = clearinghouse({
+      positions: [{ coin: "ETH", szi: "1.0", type: "isolated", marginUsed: "50.0" }],
+      accountValue: "0.0",
+      crossValue: "0.0",
+      marginUsed: "50.0",
+      crossMarginUsed: "0.0",
+      maint: "5.0",
+      withdrawable: "0.0",
+    })
+    const starved = unifiedRiskReport(
+      [{ dex: "", collateralToken: 0, state: parseClearinghouse(starvedState), market: null }],
+      [{ coin: "USDC", token: 0, total: "50", hold: "0" }],
+      T,
+      1_000,
+      UNIFIED,
+    )
+    expect(starved).toMatchObject({ level: "critical", unified: { ratio: null, ratioToken: null } })
+    expect(starved.drivers[0]).toEqual({
+      kind: "margin",
+      level: "critical",
+      marginRatio: null,
+      threshold: 0.8,
+      reason: "no equity",
+    })
+  })
+
+  test("a malformed or unreadable unified read is never a level", async () => {
+    for (const spot of [
+      {},
+      { balances: [{ coin: "USDC", token: 0, total: 1000, hold: "0" }] },
+      { balances: [{ coin: "USDC", token: 0, total: "lots", hold: "0" }] },
+      { balances: [{ coin: "USDC", token: 7, total: "1000", hold: "0" }] },
+    ]) {
+      const error = await readPerpsRisk({
+        ...UNIFIED,
+        fetcher: venue([], spot),
+        thresholds: T,
+        unifiedAccounts: true,
+        now: () => 1_000,
+      }).catch((e) => e)
+      expect(error).toBeInstanceOf(HyperliquidReadError)
+    }
+  })
+
+  test("a dex list that does not match its metadata is refused", async () => {
+    const bad: HyperliquidInfoFetcher = async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { type: string }
+      const answer =
+        body.type === "userAbstraction"
+          ? "unifiedAccount"
+          : body.type === "perpDexs"
+            ? PERP_DEXS
+            : body.type === "allPerpMetas"
+              ? ALL_PERP_METAS.slice(0, 1)
+              : body.type === "spotClearinghouseState"
+                ? SPOT
+                : body.type === "clearinghouseState"
+                  ? UNIFIED_MAIN
+                  : market({ BTC: "100.0" })
+      return { ok: true, status: 200, text: async () => JSON.stringify(answer) }
+    }
+    const error = await readPerpsRisk({
+      ...UNIFIED,
+      fetcher: bad,
+      thresholds: T,
+      unifiedAccounts: true,
+      now: () => 1_000,
+    }).catch((e) => e)
+    expect(error).toBeInstanceOf(HyperliquidReadError)
+  })
+
+  test("a flat unified wallet with no dex exposure: ok, ratio 0, the balance still reported", () => {
+    const flat = clearinghouse({
+      positions: [],
+      accountValue: "0.0",
+      crossValue: "0.0",
+      marginUsed: "0.0",
+      crossMarginUsed: "0.0",
+      maint: "0.0",
+      withdrawable: "0.0",
+    })
+    const r = unifiedRiskReport(
+      [{ dex: "", collateralToken: 0, state: parseClearinghouse(flat), market: null }],
+      SPOT.balances,
+      T,
+      1_000,
+      UNIFIED,
+    )
+    expect(r).toMatchObject({
+      level: "ok",
+      drivers: [],
+      positions: [],
+      account: { accountValueUsd: "1000.0", freeMarginUsd: "839", marginRatio: 0, positionCount: 0 },
+      unified: { ratio: 0, ratioToken: null, dexes: [""] },
+    })
+  })
+
+  test("perpsRiskFromLimits reports the server's unified-accounts switch", () => {
+    expect(perpsRiskFromLimits({ success: true, unifiedAccounts: true }).unifiedAccounts).toBe(true)
+    expect(perpsRiskFromLimits({ success: true }).unifiedAccounts).toBe(false)
+    expect(perpsRiskFromLimits(null).unifiedAccounts).toBe(false)
+  })
+})
+
+// ── The unified watcher's reads and weight (U7, FAIL-fix findings) ───────────────────────────
+
+describe("a unified watcher (U7)", () => {
+  const UNIFIED = { ...ID, address: "0x00000000000000000000000000000000000000bb" }
+  const FLAT = clearinghouse({
+    positions: [],
+    accountValue: "0.0",
+    crossValue: "0.0",
+    marginUsed: "0.0",
+    crossMarginUsed: "0.0",
+    maint: "0.0",
+    withdrawable: "0.0",
+  })
+  const SPOT = { balances: [{ coin: "USDC", token: 0, total: "1000.0", hold: "0.0" }] }
+
+  test("reads the dex list once per five-minute refresh, not on every poll", async () => {
+    let clock = 0
+    let polls = 0
+    const controller = new AbortController()
+    const events: PerpsWatchEvent[] = []
+    const counts: Record<string, number> = {}
+    const fetcher: HyperliquidInfoFetcher = async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { type: string }
+      counts[body.type] = (counts[body.type] ?? 0) + 1
+      const answer =
+        body.type === "userAbstraction"
+          ? "unifiedAccount"
+          : body.type === "clearinghouseState"
+            ? FLAT
+            : body.type === "metaAndAssetCtxs"
+              ? market({ BTC: "100.0" })
+              : body.type === "spotClearinghouseState"
+                ? SPOT
+                : body.type === "perpDexs"
+                  ? [null, { name: "xyz" }]
+                  : body.type === "allPerpMetas"
+                    ? [
+                        { universe: [{ name: "BTC" }], collateralToken: 0 },
+                        { universe: [{ name: "xyz:P" }], collateralToken: 0 },
+                      ]
+                    : undefined
+      if (answer === undefined) throw new Error(`unexpected ${body.type}`)
+      if (body.type === "clearinghouseState" && ++polls >= 3) controller.abort()
+      return { ok: true, status: 200, text: async () => JSON.stringify(answer) }
+    }
+    await watchPerpsRisk({
+      ...UNIFIED,
+      fetcher,
+      unifiedAccounts: true,
+      thresholds: async () => T,
+      intervalMs: 10_000,
+      heartbeatMs: 0,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms
+      },
+      signal: controller.signal,
+      onEvent: (event) => {
+        events.push(event)
+      },
+    })
+    expect(events.filter((e) => e.event === "level")).toEqual([
+      expect.objectContaining({ level: "ok", mode: "unifiedAccount" }),
+    ])
+    // Three polls, one dex list: the list is metadata on the five-minute cadence.
+    expect(counts.clearinghouseState).toBeGreaterThanOrEqual(2)
+    expect(counts.spotClearinghouseState).toBeGreaterThanOrEqual(2)
+    expect(counts.perpDexs).toBe(1)
+    expect(counts.allPerpMetas).toBe(1)
+  })
+
+  test("perpsWatchUnifiedWeightPerMinute states the heavier figure", () => {
+    expect(perpsWatchUnifiedWeightPerMinute(10_000, 0, 0)).toBe(136 + 6 * 2 + 8)
+    // 8 builder dexes, none marked: 136 + 6*(2 + 16) + 8 = 252.
+    expect(perpsWatchUnifiedWeightPerMinute(10_000, 8, 0)).toBe(252)
+    // 8 builder dexes, positions on 2: 252 + 6*40 = 492.
+    expect(perpsWatchUnifiedWeightPerMinute(10_000, 8, 2)).toBe(492)
   })
 })

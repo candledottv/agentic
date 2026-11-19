@@ -409,18 +409,26 @@ describe("setup: account mode and the setup answer", () => {
   })
   const expectOk = { network: "mainnet" as const, address: ADDR, builder: BUILDER, mode: "default" }
 
-  test("only default and disabled are standard", () => {
+  test("only default and disabled are standard (unifiedAccount is admitted beside them, U7)", () => {
     expect(HYPERLIQUID_STANDARD_ACCOUNT_MODES).toEqual(["default", "disabled"])
     expect(perpsSetupStatusProblem(status(), expectOk)).toBeNull()
     expect(perpsSetupStatusProblem(status({ mode: "disabled" }), { ...expectOk, mode: "disabled" })).toBeNull()
-    for (const mode of ["unifiedAccount", "portfolioMargin", "dexAbstraction", "somethingNew"]) {
+    for (const mode of ["portfolioMargin", "dexAbstraction", "somethingNew"]) {
       expect(perpsSetupStatusProblem(status({ mode }), { ...expectOk, mode })).toContain(`${mode} mode`)
     }
+    // U7 (BE-3860): a unified wallet's answer carries its own mode and no standardMode claim; the
+    // mode check has already pinned it to what this machine read from the venue.
+    expect(
+      perpsSetupStatusProblem(status({ mode: "unifiedAccount", standardMode: false }), {
+        ...expectOk,
+        mode: "unifiedAccount",
+      }),
+    ).toBeNull()
   })
 
   test("a dishonest ready answer is rejected", () => {
-    expect(perpsSetupStatusProblem(status({ mode: "default" }), { ...expectOk, mode: "unifiedAccount" })).toContain(
-      "unifiedAccount",
+    expect(perpsSetupStatusProblem(status({ mode: "default" }), { ...expectOk, mode: "unifiedAccount" })).toBe(
+      "the setup answer reports a mode Hyperliquid does not",
     )
     expect(perpsSetupStatusProblem(status({ mode: "disabled" }), expectOk)).toBe(
       "the setup answer reports a mode Hyperliquid does not",

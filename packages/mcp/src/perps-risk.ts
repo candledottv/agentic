@@ -68,12 +68,23 @@ const network = (env: Record<string, string | undefined>): HyperliquidRiskNetwor
 
 const fetcherOf = (fetch: FetchLike) => fetch as unknown as HyperliquidInfoFetcher
 
-async function thresholds(cfg: RequestConfig, fetch: FetchLike): Promise<PerpsRiskThresholdsReport> {
+/**
+ * U7 (BE-3860): the thresholds and the server's `HYPERLIQUID_UNIFIED_ACCOUNTS` switch from ONE
+ * limits read. A failed read or an older API is the defaults with the switch off: a unified wallet
+ * is then answered as today.
+ */
+export async function engineInputs(
+  cfg: RequestConfig,
+  fetch: FetchLike,
+): Promise<{ thresholds: PerpsRiskThresholdsReport; unifiedAccounts: boolean }> {
   try {
-    return perpsRiskFromLimits(await call(cfg, fetch, "GET", "/api/v1/agent/keys/self/limits")).thresholds
+    const { thresholds, unifiedAccounts } = perpsRiskFromLimits(
+      await call(cfg, fetch, "GET", "/api/v1/agent/keys/self/limits"),
+    )
+    return { thresholds, unifiedAccounts }
   } catch {
-    // E6: a failed thresholds read is never a refusal.
-    return perpsRiskFromLimits(null).thresholds
+    // E6: a failed read is never a refusal.
+    return { thresholds: perpsRiskFromLimits(null).thresholds, unifiedAccounts: false }
   }
 }
 
@@ -124,12 +135,14 @@ export async function executePerpsRisk(
     const start = tool === "candle_perps_account" ? sinceStart(args.since, now) : now
     if (typeof start === "string") return fail("MCP_VALIDATION", start)
     const net = network(env)
+    const { thresholds, unifiedAccounts } = await engineInputs(cfg, fetch)
     const report = readPerpsRisk({
       fetcher: fetcherOf(fetch),
       network: net,
       walletId: row.id,
       address: row.address,
-      thresholds: await thresholds(cfg, fetch),
+      thresholds,
+      ...(unifiedAccounts ? { unifiedAccounts: true } : {}),
       now: Date.now,
     })
     if (tool === "candle_perps_account") {
@@ -162,13 +175,19 @@ export async function positionsAdditions(
   accountLine: PerpsAccountLine | null
   risk: Omit<PerpsRiskReport, "positions">
 }> {
-  const t = await thresholds(cfg, fetch)
+  const { thresholds, unifiedAccounts } = await engineInputs(cfg, fetch)
   const identity = { walletId: row.id, address: row.address, network: network(env) }
   let report: PerpsRiskReport
   try {
-    report = await readPerpsRisk({ ...identity, fetcher: fetcherOf(fetch), thresholds: t, now: Date.now })
+    report = await readPerpsRisk({
+      ...identity,
+      fetcher: fetcherOf(fetch),
+      thresholds,
+      ...(unifiedAccounts ? { unifiedAccounts: true } : {}),
+      now: Date.now,
+    })
   } catch {
-    report = unknownRiskReport(identity, t, "PERPS_READ_FAILED", Date.now())
+    report = unknownRiskReport(identity, thresholds, "PERPS_READ_FAILED", Date.now())
   }
   const { positions, ...risk } = report
   return { rows: positions, accountLine: report.account, risk }

@@ -386,13 +386,16 @@ export function perpsSetupStatusProblem(
   status: Record<string, unknown>,
   expect: { network: HyperliquidNetwork; address: string; builder: string; mode: string },
 ): string | null {
-  if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(expect.mode))
+  if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(expect.mode) && expect.mode !== "unifiedAccount")
     return `the account is in ${expect.mode} mode on Hyperliquid; Candle trades only a standard account`
   if (status.network !== expect.network) return `the setup answer is for ${String(status.network)}`
   if (typeof status.address !== "string" || status.address.toLowerCase() !== expect.address.toLowerCase())
     return "the setup answer is for a different wallet"
   if (status.mode !== expect.mode) return "the setup answer reports a mode Hyperliquid does not"
-  if (status.standardMode !== true) return "the setup answer does not report standard mode"
+  // U7 (BE-3860): a unified wallet's answer reports its own mode instead; the mode check above
+  // already pinned it to what this machine read from the venue.
+  if (status.standardMode !== true && expect.mode !== "unifiedAccount")
+    return "the setup answer does not report standard mode"
   if (typeof status.builder !== "string" || status.builder.toLowerCase() !== expect.builder.toLowerCase())
     return "the setup answer names a builder that is not Candle's"
   if (

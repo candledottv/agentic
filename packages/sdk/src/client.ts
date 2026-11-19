@@ -3235,6 +3235,8 @@ export interface PerpsRiskSettingsResult {
   perpsRisk: PerpsRiskSettings | null
   /** What the engine applies, and where it came from (`defaults (server did not report)` on an older API). */
   effective: PerpsRiskThresholdsReport
+  /** U7 (BE-3860): whether the server's unified-accounts switch is on; false when not reported. */
+  unifiedAccounts: boolean
 }
 
 /** `PUT /keys/self/perps-risk` or `/keys/:prefix/perps-risk`. */
@@ -6798,10 +6800,24 @@ export class CandleClient {
     const builder = this.perpsBuilder()
     const address = await this.perpsWalletAddress(params.walletId)
     const mode = await hyperliquidAccountMode(this.fetchImpl, this.hyperliquidNetwork, address)
-    if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode))
-      throw new Error(
-        `perps: PERPS_ACCOUNT_MODE: the account is in ${mode} mode on Hyperliquid; Candle trades only a standard account. Nothing was requested or signed.`,
-      )
+    if (!HYPERLIQUID_STANDARD_ACCOUNT_MODES.includes(mode)) {
+      // U7 (BE-3860): a unified wallet continues only while the server's switch is on; with it off
+      // (or an older API) the refusal is today's, with the unified-specific wording.
+      let unifiedOn = false
+      if (mode === "unifiedAccount") {
+        try {
+          unifiedOn = (await this.perpsThresholdsOrDefaults()).unifiedAccounts
+        } catch {
+          unifiedOn = false
+        }
+      }
+      if (!unifiedOn)
+        throw new Error(
+          mode === "unifiedAccount"
+            ? "perps: PERPS_ACCOUNT_MODE: this account is in unifiedAccount mode and Candle's unified accounts are off, so setup does not continue. This is not a missing fee approval. Nothing was requested or signed."
+            : `perps: PERPS_ACCOUNT_MODE: the account is in ${mode} mode on Hyperliquid; Candle trades only a standard account. Nothing was requested or signed.`,
+        )
+    }
     const res = await this.requestJson<PerpsAccountStatus & { ready: boolean } & Partial<PerpsBuild>>(
       "POST",
       "/api/v1/agent/perps/setup",
@@ -6970,7 +6986,7 @@ export class CandleClient {
       "GET",
       `/api/v1/agent/perps/positions?walletId=${encodeURIComponent(walletId)}`,
     )
-    const { effective } = await this.perpsThresholdsOrDefaults()
+    const { effective, unifiedAccounts } = await this.perpsThresholdsOrDefaults()
     const identity = { walletId, address: server.address, network: this.hyperliquidNetwork }
     let report: PerpsRiskReport
     try {
@@ -6978,6 +6994,7 @@ export class CandleClient {
         ...identity,
         fetcher: this.fetchImpl as unknown as HyperliquidInfoFetcher,
         thresholds: effective,
+        ...(unifiedAccounts ? { unifiedAccounts: true } : {}),
         now: Date.now,
       })
     } catch {
@@ -7084,10 +7101,10 @@ export class CandleClient {
   /** The key's risk thresholds: stored and effective. An older API reports none: the defaults, sourced so. */
   async getPerpsRisk(): Promise<PerpsRiskSettingsResult> {
     this.requireKey("getPerpsRisk()")
-    const { thresholds, stored } = perpsRiskFromLimits(
+    const { thresholds, stored, unifiedAccounts } = perpsRiskFromLimits(
       await this.requestJson<unknown>("GET", "/api/v1/agent/keys/self/limits"),
     )
-    return { perpsRisk: stored, effective: thresholds }
+    return { perpsRisk: stored, effective: thresholds, unifiedAccounts }
   }
 
   /**
@@ -7127,13 +7144,14 @@ export class CandleClient {
   async perpsRisk(params: { walletId: string; address?: string }): Promise<PerpsRiskReport> {
     this.requireKey("perpsRisk()")
     const address = params.address ?? (await this.perpsWalletAddress(params.walletId))
-    const { effective } = await this.perpsThresholdsOrDefaults()
+    const { effective, unifiedAccounts } = await this.perpsThresholdsOrDefaults()
     return readPerpsRisk({
       fetcher: this.fetchImpl as unknown as HyperliquidInfoFetcher,
       network: this.hyperliquidNetwork,
       walletId: params.walletId,
       address,
       thresholds: effective,
+      ...(unifiedAccounts ? { unifiedAccounts: true } : {}),
       now: Date.now,
     })
   }
@@ -7150,7 +7168,7 @@ export class CandleClient {
     if (!Number.isSafeInteger(startTime) || startTime >= now || now - startTime > PERPS_RECENT_MAX_MS)
       throw new Error("perpsAccount(): since must be an epoch-ms time within the last 30 days")
     const address = params.address ?? (await this.perpsWalletAddress(params.walletId))
-    const { effective } = await this.perpsThresholdsOrDefaults()
+    const { effective, unifiedAccounts } = await this.perpsThresholdsOrDefaults()
     const fetcher = this.fetchImpl as unknown as HyperliquidInfoFetcher
     const [report, recent] = await Promise.all([
       readPerpsRisk({
@@ -7159,6 +7177,7 @@ export class CandleClient {
         walletId: params.walletId,
         address,
         thresholds: effective,
+        ...(unifiedAccounts ? { unifiedAccounts: true } : {}),
         now: Date.now,
       }),
       readPerpsRecent(fetcher, this.hyperliquidNetwork, address, { startTime, endTime: now }),
@@ -7183,12 +7202,20 @@ export class CandleClient {
   }): Promise<{ level: PerpsRiskReport["level"] }> {
     this.requireKey("watchPerpsRisk()")
     const address = params.address ?? (await this.perpsWalletAddress(params.walletId))
+    let unifiedSwitch = false
+    try {
+      unifiedSwitch = (await this.getPerpsRisk()).unifiedAccounts
+    } catch {
+      // E6: a failed limits read is never a refusal; the watch runs on today's reads.
+    }
     return watchPerpsRisk({
       fetcher: this.fetchImpl as unknown as HyperliquidInfoFetcher,
       network: this.hyperliquidNetwork,
       walletId: params.walletId,
       address,
       thresholds: async () => (await this.getPerpsRisk()).effective,
+      // U7: the switch as the run's first limits read reported it; static for the run.
+      ...(unifiedSwitch ? { unifiedAccounts: true } : {}),
       ...(params.intervalMs !== undefined ? { intervalMs: params.intervalMs } : {}),
       ...(params.heartbeatMs !== undefined ? { heartbeatMs: params.heartbeatMs } : {}),
       ...(params.signal ? { signal: params.signal } : {}),
@@ -7294,7 +7321,7 @@ export class CandleClient {
     } catch {
       // E6: a failed thresholds read is never a refusal.
       const { thresholds, stored } = perpsRiskFromLimits(null)
-      return { perpsRisk: stored, effective: thresholds }
+      return { perpsRisk: stored, effective: thresholds, unifiedAccounts: false }
     }
   }
 
