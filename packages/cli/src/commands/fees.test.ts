@@ -158,6 +158,28 @@ describe("candle fees claim (FE-438)", () => {
     expect(f.stdout.text).toContain("Nothing was sent.")
   })
 
+  test("a dry run refused for a curve whose authority the deployment does not hold says why (BE-3976)", async () => {
+    const f = fixture({
+      [PATH]: () =>
+        Response.json({
+          success: true,
+          mint: "MintA",
+          chain: "solana",
+          dryRun: true,
+          recipient: "W1",
+          claimable: false,
+          reason: "curve_authority_not_held",
+          claimed: [],
+          remaining: [SOL],
+        }),
+    })
+    expect(await run(["fees", "claim", "MintA", "--dry-run"], f.deps)).toBe(0)
+    expect(f.stdout.text).toContain(
+      "Would be refused: the fees sit on a bonding curve whose authority this Candle deployment does not hold",
+    )
+    expect(f.stdout.text).toContain("1.5 SOL")
+  })
+
   test("a real claim posts dryRun false and prints the transaction and what remains", async () => {
     const f = fixture({
       [PATH]: () =>

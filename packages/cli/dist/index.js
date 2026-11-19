@@ -94516,7 +94516,8 @@ var REASON_WORDS = {
   claimable_by_key: "claimable by this key",
   claimable_via_web_session: "the fees go to this account's web wallet; a signed-in session claims them",
   insufficient_gas: "the recipient wallet cannot cover the network fee",
-  gas_estimate_unavailable: "the network fee could not be estimated; retry"
+  gas_estimate_unavailable: "the network fee could not be estimated; retry",
+  curve_authority_not_held: "the fees sit on a bonding curve whose authority this Candle deployment does not hold, so they cannot be collected here"
 };
 var HOOD_OUTCOME_WORDS = {
   complete: "complete",
