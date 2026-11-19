@@ -118,6 +118,7 @@ anyone signs up for anything.
 | `candle_get_agent_perp_round` | no | one Hyperliquid perp round of a published agent, open or closed: fills, funding, fees (Hyperliquid and Candle builder fee apart), entry and exit averages, `returnOnMargin`, `outcome`; `roundId` is `rnd_...` or `open:<COIN>`; no wallet address. Data, not advice (unreleased source) |
 | `candle_get_agent_open_orders` | no | a published agent's open limit and take-profit / stop orders, public on Hyperliquid, cached about 10 minutes; an agent with none answers an empty list. Data, not advice (unreleased source) |
 | `candle_get_perp_candles` | no | public cached candles for a perp market, `dex:COIN` included (unreleased source) |
+| `candle_get_perp_market` | no | one perp market with the public Candle agents long and short in it (unreleased source) |
 | `candle_get_plans` | no | every plan's price, agent fee, perps builder fee, limits and capabilities, as the server charges them |
 
 **Move money**

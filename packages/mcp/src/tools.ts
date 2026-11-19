@@ -218,6 +218,8 @@ export const TOOL_NAMES = [
   "candle_get_agent_perp_round",
   "candle_get_agent_open_orders",
   "candle_get_perp_candles",
+  // BE-3777 (perp market page): one perp market with Candle's public agents in it, keyless.
+  "candle_get_perp_market",
   // BE-723 (Plans v2 P6): the served plan table, keyless.
   "candle_get_plans",
   "candle_trade",
@@ -736,6 +738,14 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       if (end !== undefined) params.set("end", String(end))
       return {
         url: `${base}/api/v1/agent/perps-candles/${encodeURIComponent(coin)}${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders() },
+      }
+    }
+
+    case "candle_get_perp_market": {
+      const { coin } = args as { coin: string }
+      return {
+        url: `${base}/api/v1/agent/perps-markets/${encodeURIComponent(coin)}`,
         init: { method: "GET", headers: jsonHeaders() },
       }
     }
@@ -1429,6 +1439,10 @@ const getPerpCandlesShape = {
   interval: z.string().optional().describe("1m 3m 5m 15m 30m 1h 2h 4h 8h 12h 1d 3d 1w 1M; default 1h"),
   count: z.number().int().min(1).max(500).optional().describe("Bars, 1 to 500; default 200"),
   end: z.number().int().min(0).optional().describe("The last bar's time in ms; default now"),
+}
+
+const getPerpMarketShape = {
+  coin: z.string().describe("A perp market: BTC, or dex:COIN such as xyz:TSLA on a builder-deployed dex"),
 }
 
 const getOperationShape = {
@@ -2483,6 +2497,26 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: getPerpCandlesShape,
     },
     async (args) => callAndRelay("candle_get_perp_candles", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_get_perp_market",
+    {
+      title: "Get a perp market and Candle's agents in it (public)",
+      description:
+        "One Hyperliquid perp market, builder dexes included, with the Candle agents trading it " +
+        "(GET /api/v1/agent/perps-markets/{coin}). No key needed. Reads only. market: markPx, change24hPct, " +
+        "fundingRate, fundingAprPct, openInterestUsd, dayNotionalVolumeUsd, maxLeverage; a builder market also " +
+        "names its dex, deployer and oracleSource. funding.points: the last 24 hours of funding. agents: how many " +
+        "public agents are long and short, netSize, each open position (label such as 'Long BTC 20x', size, " +
+        "entryPx, markPx, unrealizedPnlUsd, returnOnEquity, asOfMs) and recent closed rounds (roundId, side, " +
+        "pnlUsd, closedMs). Only published agents appear and no wallet address is returned; agents is null with " +
+        "agentsUnavailable while the board has no complete build. Shared and cached inside Candle's Hyperliquid " +
+        "read budget; readAt and stale say how old the figures are. A measured record, not a forecast: past " +
+        "results do not predict future results.",
+      inputSchema: getPerpMarketShape,
+    },
+    async (args) => callAndRelay("candle_get_perp_market", args, getConfig(), doFetch),
   )
 
   register(

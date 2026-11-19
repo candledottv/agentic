@@ -6489,6 +6489,10 @@ class CandleClient {
     const { success: _success, ...answer } = await this.requestJson("GET", `/api/v1/agent/perps-candles/${encodeURIComponent(coin)}${params.size ? `?${params}` : ""}`);
     return answer;
   }
+  async getPerpMarket(coin) {
+    const { success: _success, ...answer } = await this.requestJson("GET", `/api/v1/agent/perps-markets/${encodeURIComponent(coin)}`);
+    return answer;
+  }
   async getAgentProfile(idOrWallet) {
     const body = await this.requestJson("GET", `/api/v1/users/${encodeURIComponent(idOrWallet)}/agent`);
     return body.agent;
@@ -8345,7 +8349,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.26";
+var SDK_VERSION = "0.6.27";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

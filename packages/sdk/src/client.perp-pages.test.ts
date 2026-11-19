@@ -35,3 +35,11 @@ test("getAgentOpenOrders returns the orders; getPerpCandles encodes a dex coin a
     "/api/v1/agent/perps-candles/xyz%3ATSLA?interval=4h&count=50&end=99",
   )
 })
+
+test("getPerpMarket reads the public market route, encodes a dex coin and drops success", async () => {
+  const market = recorder({ success: true, market: { coin: "xyz:TSLA" }, agents: null, agentsUnavailable: true })
+  const client = new CandleClient({ apiUrl: "https://api.test", fetch: market.fetcher })
+  const answer = await client.getPerpMarket("xyz:TSLA")
+  expect(market.calls[0]?.url.pathname).toBe("/api/v1/agent/perps-markets/xyz%3ATSLA")
+  expect(answer).toEqual({ market: { coin: "xyz:TSLA" }, agents: null, agentsUnavailable: true } as never)
+})

@@ -101,7 +101,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.37";
+var SERVER_VERSION = "0.10.38";
 
 // src/client.ts
 var DEFAULT_API_URL = "https://api.alpha.candle.tv";
@@ -8525,6 +8525,7 @@ var TOOL_NAMES = [
   "candle_get_agent_perp_round",
   "candle_get_agent_open_orders",
   "candle_get_perp_candles",
+  "candle_get_perp_market",
   "candle_get_plans",
   "candle_trade",
   "candle_trade_execute",
@@ -8892,6 +8893,13 @@ function buildRequest(name, args, cfg) {
         params.set("end", String(end));
       return {
         url: `${base2}/api/v1/agent/perps-candles/${encodeURIComponent(coin)}${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders() }
+      };
+    }
+    case "candle_get_perp_market": {
+      const { coin } = args;
+      return {
+        url: `${base2}/api/v1/agent/perps-markets/${encodeURIComponent(coin)}`,
         init: { method: "GET", headers: jsonHeaders() }
       };
     }
@@ -9346,6 +9354,9 @@ var getPerpCandlesShape = {
   count: z13.number().int().min(1).max(500).optional().describe("Bars, 1 to 500; default 200"),
   end: z13.number().int().min(0).optional().describe("The last bar's time in ms; default now")
 };
+var getPerpMarketShape = {
+  coin: z13.string().describe("A perp market: BTC, or dex:COIN such as xyz:TSLA on a builder-deployed dex")
+};
 var getOperationShape = {
   operationId: z13.string().optional().describe("Explicit Hood TEE operation id, exclusive with clientId and kind; reads recovery and guard even for a terminal job"),
   clientId: z13.string().optional().describe("The clientTradeId, clientSwapId or clientLaunchId the write used; requires kind"),
@@ -9792,6 +9803,11 @@ function registerToolSubset(server, options) {
     description: "Candles for a Hyperliquid perp market, builder dexes included (GET /api/v1/agent/perps-candles/{coin}). " + "No key needed. Reads only. interval 1m to 1M, count 1 to 500. Shared and cached inside Candle's " + "Hyperliquid read budget: many callers cost one upstream read per bar. Bars are {t, o, h, l, c, v} " + "with prices as strings; readAt and stale say how old the read is. A busy budget answers 503.",
     inputSchema: getPerpCandlesShape
   }, async (args) => callAndRelay("candle_get_perp_candles", args, getConfig(), doFetch));
+  register("candle_get_perp_market", {
+    title: "Get a perp market and Candle's agents in it (public)",
+    description: "One Hyperliquid perp market, builder dexes included, with the Candle agents trading it " + "(GET /api/v1/agent/perps-markets/{coin}). No key needed. Reads only. market: markPx, change24hPct, " + "fundingRate, fundingAprPct, openInterestUsd, dayNotionalVolumeUsd, maxLeverage; a builder market also " + "names its dex, deployer and oracleSource. funding.points: the last 24 hours of funding. agents: how many " + "public agents are long and short, netSize, each open position (label such as 'Long BTC 20x', size, " + "entryPx, markPx, unrealizedPnlUsd, returnOnEquity, asOfMs) and recent closed rounds (roundId, side, " + "pnlUsd, closedMs). Only published agents appear and no wallet address is returned; agents is null with " + "agentsUnavailable while the board has no complete build. Shared and cached inside Candle's Hyperliquid " + "read budget; readAt and stale say how old the figures are. A measured record, not a forecast: past " + "results do not predict future results.",
+    inputSchema: getPerpMarketShape
+  }, async (args) => callAndRelay("candle_get_perp_market", args, getConfig(), doFetch));
   register("candle_get_agent_positions", {
     title: "Get an agent's open positions",
     description: "Every open position of one published agent, spot tokens and Hyperliquid perps, largest value first " + "(GET /api/v1/agent/records/{profileId}/positions). No key needed. Reads only. Spot rows: mint, chain, " + "symbol, quantity (whole tokens), valueUsd and, with origin, unrealizedUsd since entry. Perp rows: coin, " + "side, size, leverage, entryPx, markPx, positionValueUsd, marginUsedUsd, unrealizedPnlUsd, returnOnEquity, " + "liquidationPx, liquidationDistance (fraction of mark), fundingNetUsd (positive when earned) and level. " + "Positions under $1 are not listed (hiddenDust counts them); unpriced counts spot positions with no " + "price. kind keeps spot or perp. portfolioValueUsd is spot value plus each perp's margin and " + "unrealized, never idle USDC; null with perpsUnavailable means the perps have no certified snapshot " + "yet. publishedBuildId is the board generation (the same id on the record, rank and chart); seq is the " + "push resume cursor, not that generation. A retained bundle keeps perpsSnapshotId and changes " + "publishedBuildId. perpsAsOfMs is the oldest wallet cutoff: with perpsProvisional true it is a " + "provisional read refreshed every board build (about 10 minutes) and perpsCertifiedAsOfMs is the hourly " + "certified cutoff under it, which corrects the provisional figures; without it the figures are certified, " + "about an hour behind. perpsPartial or " + "portfolioPartial means a figure is incomplete, never zero. No wallet address or balance. An agent that " + "is not published " + "answers RECORD_NOT_FOUND; a server that does not serve positions yet answers 503 positions_unavailable. " + "profileId comes from candle_list_agents. A position is data, not advice.",
@@ -10304,6 +10320,7 @@ START HERE — fifteen tools need NO credential. Call these first to confirm the
   candle_get_agent_perp_round one perp round of a published agent, open or closed: fills, funding, fees split Hyperliquid vs Candle builder fee, entry and exit averages, return on margin, outcome; roundId rnd_... or open:<COIN>
   candle_get_agent_open_orders a published agent's open limit and take-profit / stop orders, public on Hyperliquid, cached about 10 minutes; none means none
   candle_get_perp_candles public cached candles for a perp market, dex:COIN included
+  candle_get_perp_market one perp market with the public Candle agents long and short in it
   candle_get_plans        every plan's price, fees, limits and what it can do; quote these, never from memory
 
 COVERAGE — read this before you treat an error as a broken server.

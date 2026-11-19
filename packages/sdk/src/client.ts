@@ -1240,6 +1240,77 @@ export interface PerpCandles {
   stale: boolean
 }
 
+/** BE-3777: a public agent as the perp market read names it. Never a wallet address. */
+export interface PerpMarketAgent {
+  profileId: string
+  slug: string | null
+  name: string | null
+  avatarUrl: string | null
+}
+export interface PerpMarketAgentPosition {
+  agent: PerpMarketAgent
+  /** "Long BTC 20x". */
+  label: string
+  coin: string
+  side: "long" | "short"
+  leverage: { value: number; type: string }
+  size: string
+  entryPx: string
+  markPx: string | null
+  positionValueUsd: string
+  unrealizedPnlUsd: string
+  /** P&L over initial margin, as a fraction (0.125 is +12.5%). */
+  returnOnEquity: string
+  asOfMs: number | null
+}
+export interface PerpMarketAgentRound {
+  agent: PerpMarketAgent
+  roundId: string | null
+  coin: string
+  side: "long" | "short"
+  leverage: { value: number; type: string } | null
+  pnlUsd: number
+  liquidated: boolean
+  closedMs: number
+}
+/** `GET /api/v1/agent/perps-markets/:coin`, without `success`. Public and cached; no wallet address anywhere. */
+export interface PerpMarket {
+  network: "mainnet" | "testnet"
+  market: {
+    coin: string
+    dex: string | null
+    dexName: string | null
+    deployer: string | null
+    oracleSource: "validators" | "deployer"
+    markPx: string | null
+    change24hPct: string | null
+    fundingRate: string | null
+    fundingAprPct: string | null
+    openInterestUsd: string | null
+    dayNotionalVolumeUsd: string | null
+    maxLeverage: number
+    onlyIsolated: boolean
+    isDelisted: boolean
+  }
+  readAt: number
+  stale: boolean
+  funding: { points: { time: number; fundingRate: string; fundingAprPct: string }[]; readAt: number; stale: boolean }
+  /** Null (with `agentsUnavailable`) while the board has no complete build. */
+  agents: {
+    coin: string
+    long: number
+    short: number
+    /** Long size minus short size, in coin units. */
+    netSize: string
+    netValueUsd: string
+    positions: PerpMarketAgentPosition[]
+    rounds: PerpMarketAgentRound[]
+    asOfMs: number | null
+    truncated: boolean
+  } | null
+  agentsUnavailable: boolean
+}
+
 /**
  * GET /api/v1/agent/records/:profileId/positions, without `success`. Every open position, largest
  * value first; positions under $1 are counted in `hiddenDust`, not listed. Perps come from the same
@@ -4933,6 +5004,18 @@ export class CandleClient {
     return answer
   }
 
+  /**
+   * One perp market with Candle's public agents in it (`GET /api/v1/agent/perps-markets/:coin`, no credential):
+   * Hyperliquid's public figures, 24 hours of funding, and how many published agents are long and short.
+   */
+  async getPerpMarket(coin: string): Promise<PerpMarket> {
+    const { success: _success, ...answer } = await this.requestJson<{ success: true } & PerpMarket>(
+      "GET",
+      `/api/v1/agent/perps-markets/${encodeURIComponent(coin)}`,
+    )
+    return answer
+  }
+
   async getAgentProfile(idOrWallet: string): Promise<AgentProfile> {
     const body = await this.requestJson<{ success: true; agent: AgentProfile }>(
       "GET",
@@ -8220,7 +8303,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.26"
+export const SDK_VERSION = "0.6.27"
 
 let sdkUpdateWarned = false
 

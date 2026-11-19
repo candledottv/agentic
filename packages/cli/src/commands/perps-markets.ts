@@ -9,6 +9,7 @@
 
 import { ApiKeyFileError } from "../../../mcp/src/api-key-file"
 import { parseArgs } from "../args"
+import { apiRequest } from "../client"
 import { type CommandContext, resolveApiKey } from "../deps"
 import {
   PerpsMarketError,
@@ -18,7 +19,7 @@ import {
   type PerpsMarketsResult,
 } from "../hyperliquid-markets"
 import { notice, symbols, terminalStyle } from "../presentation"
-import { renderTable, writeLocalFailure, writeUsageFailure } from "../render"
+import { formatTime, renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import { terminalLines } from "../terminal-text"
 import { safeText } from "../trading"
 import { formatUsd } from "../usd"
@@ -127,6 +128,131 @@ function termsLine(market: PerpsMarketRow): string {
   )
 }
 
+interface MarketAgentsAnswer {
+  market: {
+    coin: string
+    dex: string | null
+    dexName: string | null
+    deployer: string | null
+    oracleSource: string
+    markPx: string | null
+    change24hPct: string | null
+    fundingRate: string | null
+    fundingAprPct: string | null
+    openInterestUsd: string | null
+    dayNotionalVolumeUsd: string | null
+  }
+  readAt: number
+  agents: {
+    long: number
+    short: number
+    netSize: string
+    positions: {
+      agent: { name: string | null; slug: string | null; profileId: string }
+      label: string
+      size: string
+      entryPx: string
+      markPx: string | null
+      unrealizedPnlUsd: string
+      returnOnEquity: string
+      asOfMs: number | null
+    }[]
+    rounds: {
+      agent: { name: string | null; slug: string | null; profileId: string }
+      roundId: string | null
+      side: string
+      pnlUsd: number
+      closedMs: number
+    }[]
+  } | null
+}
+const agentName = (a: { name: string | null; slug: string | null; profileId: string }) =>
+  safeText(a.name ?? a.slug ?? a.profileId)
+const roe = (fraction: string) => {
+  const n = Number(fraction) * 100
+  return Number.isFinite(n) ? `${n >= 0 ? "+" : ""}${n.toFixed(1)}%` : "-"
+}
+
+/**
+ * `candle perps market <coin> --agents` (BE-3777): the public market read, which needs no key. The
+ * market figures and the published agents long and short in it, from `GET /api/v1/agent/perps-markets/:coin`.
+ */
+async function marketAgents(ctx: CommandContext, coin: string): Promise<number> {
+  try {
+    const result = await apiRequest(`/api/v1/agent/perps-markets/${encodeURIComponent(coin)}`, {
+      apiUrl: ctx.apiUrl,
+      credentials: {},
+      auth: "none",
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env,
+    })
+    if (!result.ok) {
+      writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: "none" }, ctx.json)
+      return 1
+    }
+    if (ctx.json) {
+      ctx.deps.stdout.write(`${JSON.stringify(result.body)}\n`)
+      return 0
+    }
+    const body = result.body as unknown as MarketAgentsAnswer
+    const m = body.market
+    const now = ctx.deps.now()
+    const out = (line: string) => ctx.deps.stdout.write(`${terminalLines(line)}\n`)
+    const dash = "-"
+    out(
+      safeText(
+        `${m.coin}${m.dex ? ` (builder dex ${m.dex}, deployer ${m.deployer ?? "unknown"}, oracle set by the ${m.oracleSource})` : ""}: mark ${marketUsd(m.markPx, dash, false)}, 24h ${changeCell(m.change24hPct, dash)}, funding/h ${fundingCell(m.fundingRate, dash)}, open interest ${marketUsd(m.openInterestUsd, dash, true)}, 24h volume ${marketUsd(m.dayNotionalVolumeUsd, dash, true)}; as of ${formatTime(body.readAt, { now })}`,
+      ),
+    )
+    const a = body.agents
+    if (!a) {
+      out("Candle agents: unavailable right now (the board has no complete build).")
+      return 0
+    }
+    out(`Candle agents in ${safeText(m.coin)}: ${a.long} long, ${a.short} short, net size ${a.netSize}`)
+    if (a.positions.length === 0) out("No public Candle agent holds an open position in this market.")
+    else
+      out(
+        renderTable(
+          ["Agent", "Position", "Size", "Entry", "Mark", "P&L (ROE)", "As of"],
+          a.positions.map((p) =>
+            [
+              agentName(p.agent),
+              p.label,
+              p.size,
+              p.entryPx,
+              p.markPx ?? dash,
+              `${formatUsd(Number(p.unrealizedPnlUsd), { signed: true })} (${roe(p.returnOnEquity)})`,
+              formatTime(p.asOfMs, { now, missing: "unknown" }),
+            ].map(safeText),
+          ),
+        ),
+      )
+    if (a.rounds.length) {
+      out("")
+      out("Recent closed rounds")
+      out(
+        renderTable(
+          ["Agent", "Side", "P&L", "Closed", "Round"],
+          a.rounds.map((r) =>
+            [
+              agentName(r.agent),
+              r.side,
+              formatUsd(r.pnlUsd, { signed: true }),
+              formatTime(r.closedMs, { now }),
+              r.roundId ?? dash,
+            ].map(safeText),
+          ),
+        ),
+      )
+    }
+    out("Measured record, not a forecast. Past results do not predict future results.")
+    return 0
+  } catch (error) {
+    return tradingFailure(ctx, error)
+  }
+}
+
 type Command = "markets" | "market" | "book" | "candles"
 const flags = {
   markets: ["--sort", "--limit", "--dex"],
@@ -135,7 +261,10 @@ const flags = {
   candles: ["--interval", "--count", "--end"],
 }
 async function read(ctx: CommandContext, argv: string[], command: Command): Promise<number> {
-  const parsed = parseArgs(argv, { valueFlags: flags[command], booleanFlags: command === "markets" ? ["--all"] : [] })
+  const parsed = parseArgs(argv, {
+    valueFlags: flags[command],
+    booleanFlags: command === "markets" ? ["--all"] : command === "market" ? ["--agents"] : [],
+  })
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json)
     return 2
@@ -148,6 +277,7 @@ async function read(ctx: CommandContext, argv: string[], command: Command): Prom
     )
     return 2
   }
+  if (command === "market" && parsed.booleans.has("--agents")) return marketAgents(ctx, parsed.positionals[0] ?? "")
   const values = parsed.values
   const number = (flag: string) => (values[flag] === undefined ? undefined : Number(values[flag]))
   try {

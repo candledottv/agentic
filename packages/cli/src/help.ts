@@ -464,9 +464,9 @@ export const HELP: Record<string, Topic> = {
           "List live perp markets directly from Hyperliquid (main exchange by default; --dex for a builder dex); any Candle agent key required",
       },
       {
-        invocation: "market <coin>",
+        invocation: "market <coin> [--agents]",
         description:
-          "Market detail, margin tiers, impact prices and precision rules; a builder-dex market is dex:COIN (xyz:TSLA) and prints its dex, oracle, deployer, margin mode and fee",
+          "--agents: the public read (no key): the market's figures and the published Candle agents long and short in it, with their open positions and recent closed rounds. Without it: market detail, margin tiers, impact prices and precision rules; a builder-dex market is dex:COIN (xyz:TSLA) and prints its dex, oracle, deployer, margin mode and fee",
       },
       {
         invocation: "book <coin> [--depth <1-20>] [--sig-figs <2-5>]",
