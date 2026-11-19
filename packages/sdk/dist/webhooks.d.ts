@@ -11,6 +11,39 @@
  * covered here.
  */
 /**
+ * BE-3758: the perps position webhook events (`candle.perps.position_event/1`), delivered and
+ * signed exactly like every other Candle webhook. They come from the perps ingest, so they can
+ * arrive up to about two hours after the fill (`source: "ingest"`); real-time critical-risk and
+ * liquidation alerts remain `perps.risk_critical` from the risk monitor. `dex` is the builder
+ * dex's name for a builder-deployed coin (`dex:COIN`), null for the default dex.
+ */
+export declare const PERPS_POSITION_EVENT_NAMES: readonly ["perps.position_opened", "perps.position_closed", "perps.liquidated"];
+export type PerpsPositionEventName = (typeof PERPS_POSITION_EVENT_NAMES)[number];
+export interface PerpsPositionEventPayload {
+    schema: "candle.perps.position_event/1";
+    event: PerpsPositionEventName;
+    network: string;
+    address: string;
+    coin: string;
+    dex: string | null;
+    side: "long" | "short";
+    dir: string;
+    size: string;
+    price: string;
+    startPosition: string;
+    closedPnl: string;
+    fee: string;
+    fillId: string;
+    hash: string;
+    fillTime: string;
+    liquidation?: {
+        markPx: string | null;
+        method: string | null;
+    };
+    source: "ingest";
+}
+export declare function isPerpsPositionEventPayload(payload: unknown): payload is PerpsPositionEventPayload;
+/**
  * Returns true only when `header` carries a well-formed `t=...,v1=...` signature whose
  * timestamp is within `toleranceSec` (default 300) of `nowSec` and whose `v1` digest matches
  * HMAC-SHA256(secret, `${t}.${body}`). Never throws on malformed input; every failure mode

@@ -266,6 +266,7 @@ export const TOOL_NAMES = [
   "candle_perps_cancel",
   "candle_perps_orders",
   "candle_perps_positions",
+  "candle_perps_activity",
   // BE-1583: history read directly from Hyperliquid (perps.ts, perps-history.ts).
   "candle_perps_fills",
   "candle_perps_funding",
@@ -3300,6 +3301,20 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: perpsShapes.candle_perps_positions,
     },
     perpsTool("candle_perps_positions"),
+  )
+
+  register(
+    "candle_perps_activity",
+    {
+      title: "Perps wallet activity",
+      description:
+        "BE-3758: one of the account's EVM TEE wallets and its Hyperliquid activity: resting open orders across " +
+        "the default perp dex and every builder-deployed dex (each row's dex names it; a builder coin keeps its " +
+        "dex:COIN form) and the bound key's withdrawals still in flight. Either list is null when its read failed, " +
+        "never an empty list. Needs account:read. Reads only; moves nothing.",
+      inputSchema: perpsShapes.candle_perps_activity,
+    },
+    perpsTool("candle_perps_activity"),
   )
 
   // BE-1582 (spec A-12): read-only risk and visibility. Nothing signs, so no signer PEM is needed.

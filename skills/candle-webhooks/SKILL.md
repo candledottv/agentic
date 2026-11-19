@@ -29,7 +29,8 @@ delivery verification requires.
    `trade.executed`, `order.triggered`, `transfer.executed`, `withdrawal_address.added`,
    `withdrawal_address.revoked`, `tracked_wallet.traded`, `tracked_wallet.launched`,
    `linked_wallet.trusted`, `linked_wallet.untrusted`, `key.access_widened` and
-   `key.access_narrowed`. An endpoint receives only the events it lists. The response
+   `key.access_narrowed`, `perps.position_opened`, `perps.position_closed` and
+   `perps.liquidated`. An endpoint receives only the events it lists. The response
    includes a signing secret (`whsec_...`) shown exactly once; store it where your agent's own code
    can reach it, since it is never shown again.
 2. Verify every delivery before acting on it, using only that secret. Each delivery carries a

@@ -54,6 +54,7 @@ import { launchStatus } from "./commands/launch-status"
 import { lpAdd, lpClaim, lpPools, lpPositions, lpRemove, lpStatus } from "./commands/lp"
 import { mcp, mcpActsAsIdentity } from "./commands/mcp"
 import {
+  perpsActivity,
   perpsCancel,
   perpsClose,
   perpsDeposit,
@@ -359,6 +360,7 @@ const COMMANDS: Record<string, CommandRoute> = {
       close: perpsClose,
       cancel: perpsCancel,
       orders: perpsOrders,
+      activity: perpsActivity,
       fills: perpsFills,
       funding: perpsFunding,
       positions: perpsPositions,

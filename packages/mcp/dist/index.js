@@ -101,7 +101,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.36";
+var SERVER_VERSION = "0.10.37";
 
 // src/client.ts
 var DEFAULT_API_URL = "https://api.alpha.candle.tv";
@@ -3593,6 +3593,7 @@ var PERPS_TOOL_NAMES = [
   "candle_perps_cancel",
   "candle_perps_orders",
   "candle_perps_positions",
+  "candle_perps_activity",
   "candle_perps_fills",
   "candle_perps_funding",
   "candle_perps_leverage",
@@ -3648,6 +3649,9 @@ var perpsShapes = {
   },
   candle_perps_orders: { wallet: wallet2, limit: z2.number().int().min(1).max(200).optional() },
   candle_perps_positions: { wallet: wallet2 },
+  candle_perps_activity: {
+    wallet: wallet2.describe("The EVM TEE wallet by id, address or label. Its resting orders across the default and every builder perp dex, and withdrawals in flight.")
+  },
   candle_perps_fills: history(PERPS_HISTORY_MAX_LIMIT.fills),
   candle_perps_funding: history(PERPS_HISTORY_MAX_LIMIT.funding),
   candle_perps_leverage: {
@@ -3702,6 +3706,7 @@ var PATHS = {
   candle_perps_cancel: "/api/v1/agent/perps/cancel",
   candle_perps_orders: "/api/v1/agent/perps/orders",
   candle_perps_positions: "/api/v1/agent/perps/positions",
+  candle_perps_activity: "/api/v1/agent/perps/overview/activity",
   candle_perps_fills: "",
   candle_perps_funding: "",
   candle_perps_leverage: "/api/v1/agent/perps/leverage",
@@ -3793,6 +3798,11 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       const result = await call(cfg, fetch2, "GET", `${PATHS[tool]}?${query}`);
       if (tool === "candle_perps_positions")
         return { text: JSON.stringify({ ...result, ...await positionsAdditions(cfg, fetch2, env, row2) }) };
+      return { text: JSON.stringify(result) };
+    }
+    if (tool === "candle_perps_activity") {
+      const { row: row2 } = await walletFor(cfg, fetch2, name);
+      const result = await call(cfg, fetch2, "GET", `/api/v1/agent/perps/overview/activity?walletId=${encodeURIComponent(row2.id)}`);
       return { text: JSON.stringify(result) };
     }
     if (tool === "candle_perps_fills" || tool === "candle_perps_funding") {
@@ -8253,6 +8263,7 @@ var TOOL_NAMES = [
   "candle_perps_cancel",
   "candle_perps_orders",
   "candle_perps_positions",
+  "candle_perps_activity",
   "candle_perps_fills",
   "candle_perps_funding",
   "candle_perps_leverage",
@@ -9783,6 +9794,11 @@ function registerToolSubset(server, options) {
     description: "Positions, account value and withdrawable balance on Hyperliquid for the key's EVM TEE or embedded wallet, read " + "live by its address. Also `rows` (per position: side, size, entry, mark, unrealized P&L, ROE, leverage, " + "liquidation price, liquidation distance, funding since open with Hyperliquid's sign where positive is paid, " + "margin, value, level), `accountLine` and `risk` (the candle_perps_risk report without positions), read by " + "this server from Hyperliquid directly. Reads only; moves nothing.",
     inputSchema: perpsShapes.candle_perps_positions
   }, perpsTool("candle_perps_positions"));
+  register("candle_perps_activity", {
+    title: "Perps wallet activity",
+    description: "BE-3758: one of the account's EVM TEE wallets and its Hyperliquid activity: resting open orders across " + "the default perp dex and every builder-deployed dex (each row's dex names it; a builder coin keeps its " + "dex:COIN form) and the bound key's withdrawals still in flight. Either list is null when its read failed, " + "never an empty list. Needs account:read. Reads only; moves nothing.",
+    inputSchema: perpsShapes.candle_perps_activity
+  }, perpsTool("candle_perps_activity"));
   const riskRead = " Read by this server from Hyperliquid's public API; Candle is asked only for the wallet and the key's " + "thresholds. Reads only; moves nothing. Phase 1 has no server-side monitor: nothing warns you unless you " + "poll candle_perps_risk.";
   register("candle_perps_account", {
     title: "Perps account line",

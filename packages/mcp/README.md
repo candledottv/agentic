@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-one hundred tools over stdio, plus four Hyperliquid market reads (one hundred and four in all; the published 0.10.36 ships `candle_recover_operation`, `candle_get_swap_receipt`, `candle_perps_transfer` and the three hacc signal record tools along with the rest), so an MCP-capable agent can launch tokens (optionally seeded with a dev
+one hundred and one tools over stdio, plus four Hyperliquid market reads (one hundred and five in all; the published 0.10.36 ships `candle_recover_operation`, `candle_get_swap_receipt`, `candle_perps_transfer` and the three hacc signal record tools along with the rest; `candle_perps_activity` is source only until the next release), so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity,
 check an agent profile, backtest a strategy in hacc's strategy lab, and read hacc's scorecard and signal records without hand-rolling HTTP calls. The five
@@ -39,7 +39,7 @@ environment.
 To mint a key for another agent without keeping it as the CLI profile's working key, run `candle keys create --access write --label agent-one --no-store` after device login. The key is printed once; put it in the intended agent's secret store. `--json` reports `stored: false` and exits 0. The profile's existing working key, prefix and scopes stay unchanged, even when it has no working key. Add `--embedded-wallet allow` at a terminal if this key needs the account's embedded wallet. This is a CLI storage option; it adds no MCP tool and does not change tool counts.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all one hundred and four: the one hundred tools in the table below plus the four Hyperliquid
+Unset means all one hundred and five: the one hundred and one tools in the table below plus the four Hyperliquid
 market reads. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
@@ -266,6 +266,7 @@ before installed-package support can be claimed.
 | `candle_perps_transfer` | Move USDC between the same wallet's main perps and builder dex balances (`toDex`, `fromDex`); fixed client id and checked action | `POST /api/v1/agent/perps/transfer`, relay-sign, client venue submission and `/submitted` | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
 | `candle_perps_orders` | Open Hyperliquid orders and every action Candle built | `GET /api/v1/agent/perps/orders` | `CANDLE_AGENT_API_KEY` |
 | `candle_perps_positions` | Perps positions and account value, read live, with the per-position table, account line and risk | `GET /api/v1/agent/perps/positions`, then Hyperliquid `/info` directly | `CANDLE_AGENT_API_KEY` |
+| `candle_perps_activity` | One EVM TEE wallet's open orders across the default and every builder-deployed perp dex, and its bound key's withdrawals in flight (BE-3758) | `GET /api/v1/agent/perps/overview/activity?walletId=` |
 | `candle_perps_account` | The Hyperliquid account line and recent realized P&L, fees and funding | Hyperliquid `/info` directly; wallet and thresholds from Candle | `CANDLE_AGENT_API_KEY` |
 | `candle_perps_risk` | The liquidation risk level (ok, warn, critical) and what drives it; poll it to watch | Hyperliquid `/info` directly; wallet and thresholds from Candle | `CANDLE_AGENT_API_KEY` |
 | `candle_perps_thresholds` | The key's stored and effective risk thresholds | `GET /api/v1/agent/keys/self/limits` | `CANDLE_AGENT_API_KEY` |
@@ -350,7 +351,7 @@ it: a same-id resend replays the stored first answer.
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-one hundred tools:
+one hundred and one tools:
 
 - `candle_token_events`, called with `kind`, is the one narrowing of a SUCCESS body, never an
   error one: the relayed `events` are filtered to that kind and the body gains `filteredByKind`.

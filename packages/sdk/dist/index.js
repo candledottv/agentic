@@ -7045,6 +7045,10 @@ class CandleClient {
     this.requireKey("perpsConfig()");
     return this.requestJson("GET", "/api/v1/agent/perps/config");
   }
+  async perpsOverviewActivity(walletId) {
+    this.requireKey("perpsOverviewActivity()");
+    return this.requestJson("GET", `/api/v1/agent/perps/overview/activity?walletId=${encodeURIComponent(walletId)}`);
+  }
   async perpsSetup(params) {
     this.requireKey("perpsSetup()");
     const builder = this.perpsBuilder();
@@ -8018,7 +8022,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.25";
+var SDK_VERSION = "0.6.26";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

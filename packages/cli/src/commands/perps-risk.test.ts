@@ -76,6 +76,8 @@ interface Options {
   deviceToken?: boolean
   /** Answer /keys/self/limits with HTTP 500 from this call on (1-based). */
   limitsFailFrom?: number
+  /** The owner's GET /keys/:prefix/perps-policy answer (BE-3758); a Response replaces it. */
+  policy?: Record<string, unknown> | Response
 }
 
 interface Call {
@@ -155,6 +157,10 @@ async function fixture(opts: Options = {}, extra: Partial<Deps> = {}) {
             },
       )
     if (url.pathname === "/api/v1/agent/perps/positions") return Response.json(SERVER_POSITIONS)
+    if (url.pathname.endsWith("/perps-policy")) {
+      if (opts.policy instanceof Response) return opts.policy
+      return Response.json({ success: true, keyPrefix: url.pathname.split("/").at(-2), ...(opts.policy ?? {}) })
+    }
     if (url.pathname.endsWith("/perps-risk"))
       return (
         opts.putAnswer ??
@@ -558,6 +564,59 @@ describe("candle perps thresholds (A-4, AC13, E7)", () => {
     expect(put?.headers.authorization).toBe("Bearer cndl_dvc_owner")
     expect(put?.headers["x-api-key"]).toBeUndefined()
     expect(put?.body).toEqual({ perpsRisk: null })
+  })
+
+  test("--key <prefix> reads the owner's perps-policy route with the device token, never the API key (BE-3758)", async () => {
+    const f = await fixture({
+      deviceToken: true,
+      policy: {
+        perpsRisk: { warnDistanceBps: 2000 },
+        perpsRiskEffective: { ...HYPERLIQUID_RISK_DEFAULTS, warnDistanceBps: 2000 },
+        perpsLimits: { maxLeverage: 5, maxPositionUsdMicros: 250_000_000 },
+      },
+    })
+    expect(await run(["perps", "thresholds", "--key", "AbCd1234", "--json"], f.deps)).toBe(0)
+    const get = f.calls.find((c) => c.path.endsWith("/perps-policy"))
+    expect(get?.path).toBe("/api/v1/agent/keys/AbCd1234/perps-policy")
+    expect(get?.method).toBe("GET")
+    expect(get?.headers.authorization).toBe("Bearer cndl_dvc_owner")
+    expect(get?.headers["x-api-key"]).toBeUndefined()
+    expect(f.calls.some((c) => c.path === "/api/v1/agent/keys/self/limits")).toBe(false)
+    expect(signingCalls(f.calls)).toEqual([])
+    expect(JSON.parse(f.stdout.text)).toEqual({
+      keyPrefix: "AbCd1234",
+      stored: { warnDistanceBps: 2000 },
+      effective: { ...HYPERLIQUID_RISK_DEFAULTS, warnDistanceBps: 2000 },
+      source: "key",
+      defaults: HYPERLIQUID_RISK_DEFAULTS,
+      perpsLimits: { maxLeverage: 5, maxPositionUsdMicros: 250_000_000 },
+    })
+
+    const g = await fixture({ deviceToken: true, policy: { perpsRisk: null, perpsLimits: { maxLeverage: 5 } } })
+    expect(await run(["perps", "thresholds", "--key", "AbCd1234"], g.deps)).toBe(0)
+    const text = humanText(g.stdout.text)
+    expect(text).toContain(humanText("Key AbCd1234."))
+    expect(text).toContain(humanText("No thresholds stored on this key; the defaults apply."))
+    expect(text).toContain("5x")
+  })
+
+  test("--key without a device token, or on an older API, fails with exit 1 and writes nothing", async () => {
+    const f = await fixture()
+    expect(await run(["perps", "thresholds", "--key", "AbCd1234", "--json"], f.deps)).toBe(1)
+    expect(f.calls.some((c) => c.path.endsWith("/perps-policy"))).toBe(false)
+    const g = await fixture({ deviceToken: true, policy: new Response("not found", { status: 404 }) })
+    expect(await run(["perps", "thresholds", "--key", "AbCd1234", "--json"], g.deps)).toBe(1)
+    expect(JSON.parse(g.stdout.text)).toMatchObject({ ok: false, code: "PERPS_POLICY_UNSUPPORTED" })
+    const h = await fixture({
+      deviceToken: true,
+      policy: Response.json(
+        { success: false, error: { code: "VALIDATION_FAILED", message: "Key not found" } },
+        { status: 404 },
+      ),
+    })
+    expect(await run(["perps", "thresholds", "--key", "AbCd1234", "--json"], h.deps)).toBe(1)
+    expect(JSON.parse(h.stdout.text)).toMatchObject({ ok: false, code: "VALIDATION_FAILED" })
+    expect([...f.calls, ...g.calls, ...h.calls].some((c) => c.method !== "GET")).toBe(false)
   })
 
   test("bad values and no threshold are usage errors before any request", async () => {

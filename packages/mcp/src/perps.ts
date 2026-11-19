@@ -74,6 +74,7 @@ export const PERPS_TOOL_NAMES = [
   "candle_perps_cancel",
   "candle_perps_orders",
   "candle_perps_positions",
+  "candle_perps_activity",
   "candle_perps_fills",
   "candle_perps_funding",
   "candle_perps_leverage",
@@ -166,6 +167,11 @@ export const perpsShapes = {
   },
   candle_perps_orders: { wallet, limit: z.number().int().min(1).max(200).optional() },
   candle_perps_positions: { wallet },
+  candle_perps_activity: {
+    wallet: wallet.describe(
+      "The EVM TEE wallet by id, address or label. Its resting orders across the default and every builder perp dex, and withdrawals in flight.",
+    ),
+  },
   candle_perps_fills: history(PERPS_HISTORY_MAX_LIMIT.fills),
   candle_perps_funding: history(PERPS_HISTORY_MAX_LIMIT.funding),
   candle_perps_leverage: {
@@ -244,6 +250,7 @@ const PATHS: Record<Exclude<PerpsToolName, PerpsRiskToolName>, string> = {
   candle_perps_cancel: "/api/v1/agent/perps/cancel",
   candle_perps_orders: "/api/v1/agent/perps/orders",
   candle_perps_positions: "/api/v1/agent/perps/positions",
+  candle_perps_activity: "/api/v1/agent/perps/overview/activity",
   candle_perps_fills: "",
   candle_perps_funding: "",
   candle_perps_leverage: "/api/v1/agent/perps/leverage",
@@ -374,6 +381,18 @@ export async function executePerps(
       // from a direct read of Hyperliquid by this server.
       if (tool === "candle_perps_positions")
         return { text: JSON.stringify({ ...result, ...(await positionsAdditions(cfg, fetch, env, row)) }) }
+      return { text: JSON.stringify(result) }
+    }
+    if (tool === "candle_perps_activity") {
+      // BE-3758: the owner-side activity read (open orders across every perp dex, withdrawals in
+      // flight) for one of the account's EVM TEE wallets. Read-only; needs account:read.
+      const { row } = await walletFor(cfg, fetch, name)
+      const result = await call(
+        cfg,
+        fetch,
+        "GET",
+        `/api/v1/agent/perps/overview/activity?walletId=${encodeURIComponent(row.id)}`,
+      )
       return { text: JSON.stringify(result) }
     }
     if (tool === "candle_perps_fills" || tool === "candle_perps_funding") {

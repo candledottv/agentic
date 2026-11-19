@@ -176,6 +176,7 @@ anyone signs up for anything.
 | `candle_perps_positions` | yes | positions and account value, read live, with each position's liquidation distance and the risk level (the risk fields are in 0.10.19 and later) |
 | `candle_perps_account` | yes | the account line and recent realized P&L, fees and funding, read from Hyperliquid directly |
 | `candle_perps_risk` | yes | the liquidation risk level (ok, warn, critical) and what drives it; `unknown` is an error, never ok; poll it to watch |
+| `candle_perps_activity` | yes, `account:read` | one wallet's open orders across the default and every builder-deployed dex, and its bound key's withdrawals in flight |
 | `candle_perps_thresholds` | yes | the key's risk thresholds, stored and effective |
 | `candle_perps_set_thresholds` | yes | tighten the key's own risk thresholds; loosening is the owner's |
 | `candle_perps_fills` | yes | one page of the wallet's fills, read directly from Hyperliquid; no signer needed |

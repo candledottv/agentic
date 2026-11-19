@@ -2961,6 +2961,33 @@ export interface PerpsConfig {
     allowedActionTypes: string[];
     limits: Record<string, unknown>;
 }
+/** BE-3758: `GET /agent/perps/overview/activity?walletId=` (`candle.perps.overview_activity/1`). */
+export interface PerpsOverviewActivity {
+    success: true;
+    schema: "candle.perps.overview_activity/1";
+    walletId: string;
+    network: string;
+    /** Resting orders on the default dex (`dex: null`) and every builder dex; null when the read failed. */
+    openOrders: {
+        coin: string;
+        dex: string | null;
+        side: "buy" | "sell";
+        price: string;
+        size: string;
+        originalSize: string;
+        reduceOnly: boolean;
+        type: string | null;
+        trigger: string | null;
+        placedAt: number;
+    }[] | null;
+    withdrawalsInFlight: {
+        id: string;
+        status: "quoted" | "authorized" | "submitted";
+        to: string;
+        amountUsdcMicros: number;
+        createdAt: number;
+    }[] | null;
+}
 /**
  * One frame of the private perps stream (Hyperliquid phase 3, P3-7): `{type, seq, at, ...}` with
  * `seq` per connection. `snapshot` carries the account line, positions, open orders, the risk
@@ -4712,6 +4739,12 @@ export declare class CandleClient {
     /** The server's perps settings: network, Candle's builder, this key's fee, and its limits. */
     perpsConfig(): Promise<PerpsConfig>;
     /**
+     * BE-3758: one EVM TEE wallet's resting venue orders (the default perp dex and every
+     * builder-deployed dex, each row tagged with its `dex`) and the bound key's withdrawals still
+     * in flight. Needs `account:read`. Either list is null when its read failed, never empty-listed.
+     */
+    perpsOverviewActivity(walletId: string): Promise<PerpsOverviewActivity>;
+    /**
      * One-time setup (R1): approves Candle's builder fee at 0.1% unless Hyperliquid already shows
      * it, and reports the account's mode and balance. Idempotent.
      */
@@ -5037,7 +5070,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.25";
+export declare const SDK_VERSION = "0.6.26";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

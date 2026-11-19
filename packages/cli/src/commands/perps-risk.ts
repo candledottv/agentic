@@ -630,7 +630,7 @@ export async function perpsWatch(args: string[], ctx: CommandContext): Promise<n
 // ── thresholds (spec A-4) ───────────────────────────────────────────────────────────────────
 
 const THRESHOLDS_USAGE =
-  "Usage: candle perps thresholds [--json] | candle perps thresholds set [--warn-distance <pct>] [--critical-distance <pct>] [--warn-margin-ratio <r>] [--critical-margin-ratio <r>] [--clear-band <pct>] [--key <prefix|label|self>] | candle perps thresholds clear [--key <prefix|label|self>]"
+  "Usage: candle perps thresholds [--key <prefix|label|self>] [--json] | candle perps thresholds set [--warn-distance <pct>] [--critical-distance <pct>] [--warn-margin-ratio <r>] [--critical-margin-ratio <r>] [--clear-band <pct>] [--key <prefix|label|self>] | candle perps thresholds clear [--key <prefix|label|self>]"
 
 const SET_FLAGS: Record<string, { field: (typeof PERPS_RISK_FIELDS)[number]; kind: "pct" | "ratio" }> = {
   "--warn-distance": { field: "warnDistanceBps", kind: "pct" },
@@ -654,9 +654,11 @@ export function thresholdBps(value: string, kind: "pct" | "ratio"): number | nul
 export async function perpsThresholds(args: string[], ctx: CommandContext): Promise<number> {
   const [verb, ...rest] = args
   if (verb === "set" || verb === "clear") return thresholdsWrite(verb, rest, ctx)
-  const parsed = parseArgs(args, { valueFlags: [] })
+  const parsed = parseArgs(args, { valueFlags: ["--key"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length !== 0) return usage(ctx, THRESHOLDS_USAGE)
+  const target = parsed.values["--key"]
+  if (target !== undefined && target !== "self") return thresholdsShowOwner(target, ctx)
   try {
     const key = await tradingKey(ctx)
     const result = await apiRequest("/api/v1/agent/keys/self/limits", {
@@ -689,6 +691,85 @@ export async function perpsThresholds(args: string[], ctx: CommandContext): Prom
   } catch (error) {
     return tradingFailure(ctx, error)
   }
+}
+
+/**
+ * `candle perps thresholds --key <prefix|label>` (BE-3758): the owner's read of one key's stored perps
+ * policy, `GET /keys/:prefix/perps-policy` with the device token (a Privy session or a device token;
+ * never an agent key, which reads its own on `keys/self/limits`). Thresholds as stored and as applied,
+ * and the key's stored perps limits (max leverage, max position).
+ */
+async function thresholdsShowOwner(target: string, ctx: CommandContext): Promise<number> {
+  const deviceToken = await resolveDeviceToken(ctx.deps, ctx.profile)
+  if (!deviceToken) {
+    writeLocalFailure(ctx.deps, NO_DEVICE_TOKEN, ctx.json)
+    return 1
+  }
+  const resolved = await resolveTargetKey(ctx, deviceToken, target, { codePrefix: "PERPS_THRESHOLDS" })
+  if (!resolved.ok) return resolved.code
+  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(resolved.keyPrefix)}/perps-policy`, {
+    apiUrl: ctx.apiUrl,
+    credentials: { deviceToken },
+    auth: "device",
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env,
+  })
+  if (!result.ok) {
+    if (result.status === 404 && result.code === undefined) {
+      writeLocalFailure(
+        ctx.deps,
+        {
+          code: "PERPS_POLICY_UNSUPPORTED",
+          message: "This Candle API cannot read another key's perps policy yet; nothing changed.",
+          suggestion: "Run candle perps thresholds with that key's own API key instead.",
+        },
+        ctx.json,
+      )
+      return 1
+    }
+    writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: "device" }, ctx.json)
+    return 1
+  }
+  const answer = result.body as {
+    keyPrefix?: string
+    perpsRisk?: Partial<Record<(typeof PERPS_RISK_FIELDS)[number], number>> | null
+    perpsRiskEffective?: Partial<Record<(typeof PERPS_RISK_FIELDS)[number], number>>
+    perpsLimits?: { maxLeverage?: number; maxPositionUsdMicros?: number } | null
+  }
+  const keyPrefix = answer.keyPrefix ?? resolved.keyPrefix
+  const stored = answer.perpsRisk ?? null
+  const effective = { ...HYPERLIQUID_RISK_DEFAULTS, ...(answer.perpsRiskEffective ?? {}) }
+  const source = stored && Object.keys(stored).length > 0 ? "key" : "defaults"
+  const limits = answer.perpsLimits ?? null
+  if (ctx.json) {
+    ctx.deps.stdout.write(
+      `${JSON.stringify({ keyPrefix, stored, effective, source, defaults: HYPERLIQUID_RISK_DEFAULTS, perpsLimits: limits })}\n`,
+    )
+    return 0
+  }
+  writeSuccess(ctx.deps, "stdout", `Key ${safeText(keyPrefix)}.`)
+  writeThresholds(ctx, { ...effective, source })
+  if (stored && Object.keys(stored).length > 0)
+    writeFields(
+      ctx.deps,
+      "stdout",
+      Object.entries(stored).map(([field, value]) => [field, String(value)]),
+      "Stored on this key",
+    )
+  else notice(ctx.deps, "stdout", "note", "No thresholds stored on this key; the defaults apply.")
+  const limitRows: [string, string][] = []
+  if (limits?.maxLeverage !== undefined) limitRows.push(["Max leverage", `${limits.maxLeverage}x`])
+  if (limits?.maxPositionUsdMicros !== undefined)
+    limitRows.push(["Max position", formatUsd(limits.maxPositionUsdMicros / 1_000_000)])
+  if (limitRows.length > 0) writeFields(ctx.deps, "stdout", limitRows, "Perps limits")
+  else
+    notice(
+      ctx.deps,
+      "stdout",
+      "note",
+      "No perps limits stored on this key; leverage and position size are unbounded by Candle.",
+    )
+  return 0
 }
 
 async function thresholdsWrite(verb: "set" | "clear", args: string[], ctx: CommandContext): Promise<number> {

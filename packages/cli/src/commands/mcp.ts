@@ -125,6 +125,8 @@ export const MCP_TOOL_NAMES = [
   "candle_perps_cancel",
   "candle_perps_orders",
   "candle_perps_positions",
+  // BE-3758: one TEE wallet's open orders (every perp dex) and withdrawals in flight; account:read.
+  "candle_perps_activity",
   "candle_perps_fills",
   "candle_perps_funding",
   "candle_perps_leverage",

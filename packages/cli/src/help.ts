@@ -532,6 +532,11 @@ export const HELP: Record<string, Topic> = {
         description: "Open orders on Hyperliquid, and every action Candle built",
       },
       {
+        invocation: "activity [--wallet <tee>]",
+        description:
+          "BE-3758: this wallet's resting Hyperliquid orders across the default perp dex and every builder-deployed dex (each row names its dex), plus withdrawals still in flight; needs account:read; reads only",
+      },
+      {
         invocation: "transfer --to-dex <dex> <amount> | --from-dex <dex> <amount>|--all | transfer status <id>",
         description:
           "Move free USDC between this wallet's own Hyperliquid main perps and builder dex balances (perps:write); destination is fixed to itself, no other address or subaccount accepted. A non-USDC dex is refused; held position margin stays in place. Perps to spot is not in this release. Needs an API with the transfer endpoint and a wallet whose transfer policy has been migrated",
@@ -578,9 +583,9 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation:
-          "thresholds | thresholds set [--warn-distance <pct>] ... [--key <prefix|label|self>] | thresholds clear",
+          "thresholds [--key <prefix|label|self>] | thresholds set [--warn-distance <pct>] ... [--key <prefix|label|self>] | thresholds clear",
         description:
-          "Show this key's risk thresholds; set or clear them. As self (the default) a key may only tighten; a prefix or label uses the device token and may loosen",
+          "Show a key's risk thresholds (and, with a prefix or label, its stored perps limits); set or clear them. As self (the default) a key may only tighten; a prefix or label uses the device token and may loosen",
       },
     ],
     flags: [
@@ -670,7 +675,8 @@ export const HELP: Record<string, Topic> = {
       { invocation: "--clear-band <pct>", description: "thresholds set: watch's clear band in points (default 2)" },
       {
         invocation: "--key <prefix|label|self>",
-        description: "thresholds set and clear: the key (default self, which may only tighten)",
+        description:
+          "thresholds, set and clear: the key (default self, which may only tighten); a prefix or label reads or writes with the device token",
       },
     ],
     examples: [
@@ -681,6 +687,7 @@ export const HELP: Record<string, Topic> = {
       "candle perps close BTC",
       "candle perps open BTC long 0.01 --client-id 0x0123456789abcdef0123456789abcdef",
       "candle perps fills --limit 50",
+      "candle perps activity",
       "candle perps funding --start-time 1790000000000",
       "candle perps leverage BTC 5 --isolated",
       "candle perps close BTC --pct 25",

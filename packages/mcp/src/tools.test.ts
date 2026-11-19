@@ -65,6 +65,7 @@ test("all registered tools are listed", () => {
     "candle_list_agent_posts",
     "candle_list_agents",
     "candle_perps_account",
+    "candle_perps_activity",
     "candle_perps_book",
     "candle_perps_cancel",
     "candle_perps_candles",

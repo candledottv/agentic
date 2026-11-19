@@ -861,6 +861,66 @@ export async function perpsPositions(args: string[], ctx: CommandContext): Promi
   }
 }
 
+/**
+ * BE-3758: `candle perps activity` — the owner-side read behind the console's perps panel: the
+ * wallet's resting orders across the default perp dex AND every builder-deployed dex (each row
+ * names its dex; a builder coin keeps its dex:COIN form), plus the bound key's withdrawals still
+ * in flight. Read-only, needs `account:read`; either list is null (not empty) when its read failed.
+ */
+export async function perpsActivity(args: string[], ctx: CommandContext): Promise<number> {
+  const parsed = parseArgs(args, { valueFlags: ["--wallet"] })
+  if ("error" in parsed) return usage(ctx, parsed.error)
+  if (parsed.positionals.length !== 0) return usage(ctx, "Usage: candle perps activity [--wallet <tee|embedded>]")
+  try {
+    const key = await tradingKey(ctx)
+    const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"])
+    const result = await perpsRequest(
+      ctx,
+      key,
+      `/api/v1/agent/perps/overview/activity?walletId=${encodeURIComponent(row.id)}`,
+    )
+    if (ctx.json) return printTradingResult(ctx, result)
+    writeFields(ctx.deps, "stdout", [
+      ["Wallet", safeText(result.walletId)],
+      ["Network", safeText(result.network)],
+    ])
+    const orders = Array.isArray(result.openOrders) ? (result.openOrders as Record<string, unknown>[]) : null
+    writeFields(ctx.deps, "stdout", [
+      ["Open orders", orders === null ? "not read" : orders.length === 0 ? "none" : orders.length],
+    ])
+    for (const o of orders ?? []) {
+      writeFields(ctx.deps, "stdout", [
+        ["Coin", safeText(o.coin)],
+        ["Dex", o.dex ? safeText(o.dex) : "default"],
+        ["Side", o.side === "buy" ? "buy" : "sell"],
+        ["Size", safeText(o.size)],
+        ["Price", safeText(o.price)],
+        ["Reduce only", o.reduceOnly ? "yes" : "no"],
+      ])
+    }
+    const withdrawals = Array.isArray(result.withdrawalsInFlight)
+      ? (result.withdrawalsInFlight as Record<string, unknown>[])
+      : null
+    writeFields(ctx.deps, "stdout", [
+      [
+        "Withdrawals in flight",
+        withdrawals === null ? "not read" : withdrawals.length === 0 ? "none" : withdrawals.length,
+      ],
+    ])
+    for (const w of withdrawals ?? []) {
+      writeFields(ctx.deps, "stdout", [
+        ["Withdrawal", safeText(w.id)],
+        ["Status", safeText(w.status)],
+        ["Amount", `${formatUsdcMicros(w.amountUsdcMicros)} USDC`],
+        ["To", safeText(w.to)],
+      ])
+    }
+    return 0
+  } catch (error) {
+    return tradingFailure(ctx, error)
+  }
+}
+
 export async function perpsOrders(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, { valueFlags: ["--wallet", "--limit"] })
   if ("error" in parsed) return usage(ctx, parsed.error)

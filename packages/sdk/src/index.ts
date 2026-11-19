@@ -134,6 +134,7 @@ export type {
   PerpsOpenParams,
   PerpsOrderRecord,
   PerpsOrders,
+  PerpsOverviewActivity,
   PerpsPositions,
   PerpsReduceOnlyResult,
   PerpsReplay,

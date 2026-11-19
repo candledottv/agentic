@@ -206,7 +206,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.31";
+var CLI_VERSION = "0.13.32";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
@@ -9358,6 +9358,11 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         return { text: JSON.stringify({ ...result2, ...await positionsAdditions(cfg, fetch2, env, row2) }) };
       return { text: JSON.stringify(result2) };
     }
+    if (tool === "candle_perps_activity") {
+      const { row: row2 } = await walletFor(cfg, fetch2, name);
+      const result2 = await call(cfg, fetch2, "GET", `/api/v1/agent/perps/overview/activity?walletId=${encodeURIComponent(row2.id)}`);
+      return { text: JSON.stringify(result2) };
+    }
     if (tool === "candle_perps_fills" || tool === "candle_perps_funding") {
       const { row: row2 } = await walletFor(cfg, fetch2, name);
       try {
@@ -9859,6 +9864,7 @@ var init_perps = __esm(() => {
     "candle_perps_cancel",
     "candle_perps_orders",
     "candle_perps_positions",
+    "candle_perps_activity",
     "candle_perps_fills",
     "candle_perps_funding",
     "candle_perps_leverage",
@@ -9906,6 +9912,9 @@ var init_perps = __esm(() => {
     },
     candle_perps_orders: { wallet: wallet2, limit: exports_external.number().int().min(1).max(200).optional() },
     candle_perps_positions: { wallet: wallet2 },
+    candle_perps_activity: {
+      wallet: wallet2.describe("The EVM TEE wallet by id, address or label. Its resting orders across the default and every builder perp dex, and withdrawals in flight.")
+    },
     candle_perps_fills: history(PERPS_HISTORY_MAX_LIMIT.fills),
     candle_perps_funding: history(PERPS_HISTORY_MAX_LIMIT.funding),
     candle_perps_leverage: {
@@ -9960,6 +9969,7 @@ var init_perps = __esm(() => {
     candle_perps_cancel: "/api/v1/agent/perps/cancel",
     candle_perps_orders: "/api/v1/agent/perps/orders",
     candle_perps_positions: "/api/v1/agent/perps/positions",
+    candle_perps_activity: "/api/v1/agent/perps/overview/activity",
     candle_perps_fills: "",
     candle_perps_funding: "",
     candle_perps_leverage: "/api/v1/agent/perps/leverage",
@@ -10403,7 +10413,7 @@ var init_chain_registry = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.36";
+var SERVER_VERSION = "0.10.37";
 
 // ../mcp/src/client.ts
 function isLoopbackHost2(hostname) {
@@ -15204,6 +15214,11 @@ function registerToolSubset(server, options) {
     description: "Positions, account value and withdrawable balance on Hyperliquid for the key's EVM TEE or embedded wallet, read " + "live by its address. Also `rows` (per position: side, size, entry, mark, unrealized P&L, ROE, leverage, " + "liquidation price, liquidation distance, funding since open with Hyperliquid's sign where positive is paid, " + "margin, value, level), `accountLine` and `risk` (the candle_perps_risk report without positions), read by " + "this server from Hyperliquid directly. Reads only; moves nothing.",
     inputSchema: perpsShapes.candle_perps_positions
   }, perpsTool("candle_perps_positions"));
+  register("candle_perps_activity", {
+    title: "Perps wallet activity",
+    description: "BE-3758: one of the account's EVM TEE wallets and its Hyperliquid activity: resting open orders across " + "the default perp dex and every builder-deployed dex (each row's dex names it; a builder coin keeps its " + "dex:COIN form) and the bound key's withdrawals still in flight. Either list is null when its read failed, " + "never an empty list. Needs account:read. Reads only; moves nothing.",
+    inputSchema: perpsShapes.candle_perps_activity
+  }, perpsTool("candle_perps_activity"));
   const riskRead = " Read by this server from Hyperliquid's public API; Candle is asked only for the wallet and the key's " + "thresholds. Reads only; moves nothing. Phase 1 has no server-side monitor: nothing warns you unless you " + "poll candle_perps_risk.";
   register("candle_perps_account", {
     title: "Perps account line",
@@ -15491,6 +15506,7 @@ var init_tools = __esm(() => {
     "candle_perps_cancel",
     "candle_perps_orders",
     "candle_perps_positions",
+    "candle_perps_activity",
     "candle_perps_fills",
     "candle_perps_funding",
     "candle_perps_leverage",
@@ -80506,6 +80522,10 @@ var HELP = {
         description: "Open orders on Hyperliquid, and every action Candle built"
       },
       {
+        invocation: "activity [--wallet <tee>]",
+        description: "BE-3758: this wallet's resting Hyperliquid orders across the default perp dex and every builder-deployed dex (each row names its dex), plus withdrawals still in flight; needs account:read; reads only"
+      },
+      {
         invocation: "transfer --to-dex <dex> <amount> | --from-dex <dex> <amount>|--all | transfer status <id>",
         description: "Move free USDC between this wallet's own Hyperliquid main perps and builder dex balances (perps:write); destination is fixed to itself, no other address or subaccount accepted. A non-USDC dex is refused; held position margin stays in place. Perps to spot is not in this release. Needs an API with the transfer endpoint and a wallet whose transfer policy has been migrated"
       },
@@ -80543,8 +80563,8 @@ var HELP = {
         description: "Poll from this machine and print one JSON line per level change, heartbeat or error; runs until stopped and exits with the last level's code"
       },
       {
-        invocation: "thresholds | thresholds set [--warn-distance <pct>] ... [--key <prefix|label|self>] | thresholds clear",
-        description: "Show this key's risk thresholds; set or clear them. As self (the default) a key may only tighten; a prefix or label uses the device token and may loosen"
+        invocation: "thresholds [--key <prefix|label|self>] | thresholds set [--warn-distance <pct>] ... [--key <prefix|label|self>] | thresholds clear",
+        description: "Show a key's risk thresholds (and, with a prefix or label, its stored perps limits); set or clear them. As self (the default) a key may only tighten; a prefix or label uses the device token and may loosen"
       }
     ],
     flags: [
@@ -80629,7 +80649,7 @@ var HELP = {
       { invocation: "--clear-band <pct>", description: "thresholds set: watch's clear band in points (default 2)" },
       {
         invocation: "--key <prefix|label|self>",
-        description: "thresholds set and clear: the key (default self, which may only tighten)"
+        description: "thresholds, set and clear: the key (default self, which may only tighten); a prefix or label reads or writes with the device token"
       }
     ],
     examples: [
@@ -80640,6 +80660,7 @@ var HELP = {
       "candle perps close BTC",
       "candle perps open BTC long 0.01 --client-id 0x0123456789abcdef0123456789abcdef",
       "candle perps fills --limit 50",
+      "candle perps activity",
       "candle perps funding --start-time 1790000000000",
       "candle perps leverage BTC 5 --isolated",
       "candle perps close BTC --pct 25",
@@ -82237,6 +82258,7 @@ var TOOL_CLASSES = {
   candle_perps_candles: READ,
   candle_perps_orders: READ,
   candle_perps_positions: READ,
+  candle_perps_activity: READ,
   candle_perps_fills: READ,
   candle_perps_funding: READ,
   candle_perps_account: READ,
@@ -99067,6 +99089,7 @@ var MCP_TOOL_NAMES = [
   "candle_perps_cancel",
   "candle_perps_orders",
   "candle_perps_positions",
+  "candle_perps_activity",
   "candle_perps_fills",
   "candle_perps_funding",
   "candle_perps_leverage",
@@ -102748,7 +102771,7 @@ async function perpsWatch(args, ctx) {
     unsubscribe();
   }
 }
-var THRESHOLDS_USAGE = "Usage: candle perps thresholds [--json] | candle perps thresholds set [--warn-distance <pct>] [--critical-distance <pct>] [--warn-margin-ratio <r>] [--critical-margin-ratio <r>] [--clear-band <pct>] [--key <prefix|label|self>] | candle perps thresholds clear [--key <prefix|label|self>]";
+var THRESHOLDS_USAGE = "Usage: candle perps thresholds [--key <prefix|label|self>] [--json] | candle perps thresholds set [--warn-distance <pct>] [--critical-distance <pct>] [--warn-margin-ratio <r>] [--critical-margin-ratio <r>] [--clear-band <pct>] [--key <prefix|label|self>] | candle perps thresholds clear [--key <prefix|label|self>]";
 var SET_FLAGS = {
   "--warn-distance": { field: "warnDistanceBps", kind: "pct" },
   "--critical-distance": { field: "criticalDistanceBps", kind: "pct" },
@@ -102769,11 +102792,14 @@ async function perpsThresholds(args, ctx) {
   const [verb, ...rest] = args;
   if (verb === "set" || verb === "clear")
     return thresholdsWrite(verb, rest, ctx);
-  const parsed = parseArgs(args, { valueFlags: [] });
+  const parsed = parseArgs(args, { valueFlags: ["--key"] });
   if ("error" in parsed)
     return usage7(ctx, parsed.error);
   if (parsed.positionals.length !== 0)
     return usage7(ctx, THRESHOLDS_USAGE);
+  const target = parsed.values["--key"];
+  if (target !== undefined && target !== "self")
+    return thresholdsShowOwner(target, ctx);
   try {
     const key = await tradingKey(ctx);
     const result2 = await apiRequest("/api/v1/agent/keys/self/limits", {
@@ -102803,6 +102829,62 @@ async function perpsThresholds(args, ctx) {
   } catch (error) {
     return tradingFailure(ctx, error);
   }
+}
+async function thresholdsShowOwner(target, ctx) {
+  const deviceToken = await resolveDeviceToken(ctx.deps, ctx.profile);
+  if (!deviceToken) {
+    writeLocalFailure(ctx.deps, NO_DEVICE_TOKEN, ctx.json);
+    return 1;
+  }
+  const resolved = await resolveTargetKey(ctx, deviceToken, target, { codePrefix: "PERPS_THRESHOLDS" });
+  if (!resolved.ok)
+    return resolved.code;
+  const result2 = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(resolved.keyPrefix)}/perps-policy`, {
+    apiUrl: ctx.apiUrl,
+    credentials: { deviceToken },
+    auth: "device",
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  if (!result2.ok) {
+    if (result2.status === 404 && result2.code === undefined) {
+      writeLocalFailure(ctx.deps, {
+        code: "PERPS_POLICY_UNSUPPORTED",
+        message: "This Candle API cannot read another key's perps policy yet; nothing changed.",
+        suggestion: "Run candle perps thresholds with that key's own API key instead."
+      }, ctx.json);
+      return 1;
+    }
+    writeFailure(ctx.deps, result2, { apiUrl: ctx.apiUrl, authType: "device" }, ctx.json);
+    return 1;
+  }
+  const answer2 = result2.body;
+  const keyPrefix = answer2.keyPrefix ?? resolved.keyPrefix;
+  const stored = answer2.perpsRisk ?? null;
+  const effective = { ...HYPERLIQUID_RISK_DEFAULTS2, ...answer2.perpsRiskEffective ?? {} };
+  const source2 = stored && Object.keys(stored).length > 0 ? "key" : "defaults";
+  const limits = answer2.perpsLimits ?? null;
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ keyPrefix, stored, effective, source: source2, defaults: HYPERLIQUID_RISK_DEFAULTS2, perpsLimits: limits })}
+`);
+    return 0;
+  }
+  writeSuccess(ctx.deps, "stdout", `Key ${safeText(keyPrefix)}.`);
+  writeThresholds(ctx, { ...effective, source: source2 });
+  if (stored && Object.keys(stored).length > 0)
+    writeFields(ctx.deps, "stdout", Object.entries(stored).map(([field, value]) => [field, String(value)]), "Stored on this key");
+  else
+    notice(ctx.deps, "stdout", "note", "No thresholds stored on this key; the defaults apply.");
+  const limitRows = [];
+  if (limits?.maxLeverage !== undefined)
+    limitRows.push(["Max leverage", `${limits.maxLeverage}x`]);
+  if (limits?.maxPositionUsdMicros !== undefined)
+    limitRows.push(["Max position", formatUsd(limits.maxPositionUsdMicros / 1e6)]);
+  if (limitRows.length > 0)
+    writeFields(ctx.deps, "stdout", limitRows, "Perps limits");
+  else
+    notice(ctx.deps, "stdout", "note", "No perps limits stored on this key; leverage and position size are unbounded by Candle.");
+  return 0;
 }
 async function thresholdsWrite(verb, args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--key", ...verb === "set" ? Object.keys(SET_FLAGS) : []] });
@@ -103494,6 +103576,56 @@ async function perpsPositions(args, ctx) {
         ["Amount", `${formatUsdcMicros(w.amountUsdcMicros)} USDC`],
         ["To", safeText(w.to)],
         ["Check", `candle perps withdraw status ${safeText(w.id)}`]
+      ]);
+    }
+    return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+async function perpsActivity(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--wallet"] });
+  if ("error" in parsed)
+    return usage8(ctx, parsed.error);
+  if (parsed.positionals.length !== 0)
+    return usage8(ctx, "Usage: candle perps activity [--wallet <tee|embedded>]");
+  try {
+    const key = await tradingKey(ctx);
+    const { row: row2 } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
+    const result2 = await perpsRequest(ctx, key, `/api/v1/agent/perps/overview/activity?walletId=${encodeURIComponent(row2.id)}`);
+    if (ctx.json)
+      return printTradingResult(ctx, result2);
+    writeFields(ctx.deps, "stdout", [
+      ["Wallet", safeText(result2.walletId)],
+      ["Network", safeText(result2.network)]
+    ]);
+    const orders = Array.isArray(result2.openOrders) ? result2.openOrders : null;
+    writeFields(ctx.deps, "stdout", [
+      ["Open orders", orders === null ? "not read" : orders.length === 0 ? "none" : orders.length]
+    ]);
+    for (const o of orders ?? []) {
+      writeFields(ctx.deps, "stdout", [
+        ["Coin", safeText(o.coin)],
+        ["Dex", o.dex ? safeText(o.dex) : "default"],
+        ["Side", o.side === "buy" ? "buy" : "sell"],
+        ["Size", safeText(o.size)],
+        ["Price", safeText(o.price)],
+        ["Reduce only", o.reduceOnly ? "yes" : "no"]
+      ]);
+    }
+    const withdrawals = Array.isArray(result2.withdrawalsInFlight) ? result2.withdrawalsInFlight : null;
+    writeFields(ctx.deps, "stdout", [
+      [
+        "Withdrawals in flight",
+        withdrawals === null ? "not read" : withdrawals.length === 0 ? "none" : withdrawals.length
+      ]
+    ]);
+    for (const w of withdrawals ?? []) {
+      writeFields(ctx.deps, "stdout", [
+        ["Withdrawal", safeText(w.id)],
+        ["Status", safeText(w.status)],
+        ["Amount", `${formatUsdcMicros(w.amountUsdcMicros)} USDC`],
+        ["To", safeText(w.to)]
       ]);
     }
     return 0;
@@ -122935,6 +123067,7 @@ var COMMANDS = {
       close: perpsClose,
       cancel: perpsCancel,
       orders: perpsOrders,
+      activity: perpsActivity,
       fills: perpsFills,
       funding: perpsFunding,
       positions: perpsPositions,
