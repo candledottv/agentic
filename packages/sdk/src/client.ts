@@ -44,6 +44,7 @@ import { type OwnTransferBuild, transferAmountMicros, verifyOwnTransferBuild } f
 import { keccak_256 } from "@noble/hashes/sha3"
 import { base58 } from "@scure/base"
 import { buildPrivyAuthorizationSignature } from "./authorization-signature"
+import { withClientSurface } from "./client-surface"
 import {
   CandleApiError,
   candleApiErrorFromResponse,
@@ -4539,8 +4540,9 @@ export class CandleClient {
     assertTransportSecurity(opts.apiUrl, opts.allowInsecureHttp === true)
     this.apiUrl = opts.apiUrl.replace(/\/+$/, "")
     if (opts.apiKey !== undefined) this.apiKey = opts.apiKey
-    // Every request this client makes goes through fetchImpl, so the guard covers each keyed one.
-    this.fetchImpl = keyedRedirectGuard(opts.fetch ?? fetch)
+    // Every request this client makes goes through fetchImpl, so the guard covers each keyed one,
+    // and each request to the API names this client (BE-3919, client-surface.ts).
+    this.fetchImpl = keyedRedirectGuard(withClientSurface(opts.fetch ?? fetch, this.apiUrl, `sdk/${SDK_VERSION}`))
     // Validated rather than trusted: the retry loop is `attempt <= maxRetries`, so a negative
     // value runs zero attempts and falls through to `throw lastError` before any error exists,
     // surfacing as a confusing TypeError instead of the caller's actual mistake.

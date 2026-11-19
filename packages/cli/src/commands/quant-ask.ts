@@ -17,6 +17,7 @@
  */
 
 import { parseArgs } from "../args"
+import { withCliClientSurface } from "../client"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { createQuantKeyClient, newClientTurnId, type QuantKeyClient, type QuantRefusal } from "../quant"
 import { escapeTerminalText as terminalText } from "../terminal-text"
@@ -258,7 +259,7 @@ export async function quantAsk(args: string[], ctx: CommandContext): Promise<num
   }) as typeof fetch
   let client: QuantKeyClient
   try {
-    client = createQuantKeyClient({ apiUrl: ctx.apiUrl, apiKey, fetch: fetchFn })
+    client = createQuantKeyClient({ apiUrl: ctx.apiUrl, apiKey, fetch: withCliClientSurface(fetchFn) })
   } catch (err) {
     writeLocalFailure(
       ctx.deps,

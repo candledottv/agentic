@@ -18,7 +18,44 @@
  * way (print an error and exit non-zero) without a try/catch at every call site.
  */
 
+import { CLI_VERSION } from "./version"
+
 export const DEFAULT_API_URL = "https://api.alpha.candle.tv"
+
+/**
+ * BE-3919: every request the CLI makes to the Candle API names its client, so the API can tell CLI
+ * traffic from the SDK, MCP, web and raw callers when it measures trade latency by surface. A label,
+ * not a credential: the API records it and decides nothing on it.
+ */
+export const CLIENT_SURFACE_HEADER = "x-candle-client"
+export const CLI_CLIENT_SURFACE = `cli/${CLI_VERSION}`
+
+/**
+ * A fetch that adds the CLI's client label to every request, for the clients built outside
+ * `apiRequest` that only call the Candle API (the quant key client). `quant.ts` is a byte-identical
+ * copy of the SDK's, so the label is added here, around the fetch it is handed. The headers keep the
+ * shape they came in; a label already set is kept.
+ */
+export function withCliClientSurface(doFetch: typeof fetch): typeof fetch {
+  return ((input: string | URL | Request, init?: RequestInit) => {
+    const headers = init?.headers
+    let labelled: HeadersInit
+    if (headers instanceof Headers) {
+      labelled = new Headers(headers)
+      if (!labelled.has(CLIENT_SURFACE_HEADER)) labelled.set(CLIENT_SURFACE_HEADER, CLI_CLIENT_SURFACE)
+    } else if (Array.isArray(headers)) {
+      labelled = headers.some(([name]) => name.toLowerCase() === CLIENT_SURFACE_HEADER)
+        ? headers
+        : [...headers, [CLIENT_SURFACE_HEADER, CLI_CLIENT_SURFACE]]
+    } else {
+      const record = (headers ?? {}) as Record<string, string>
+      labelled = Object.keys(record).some((name) => name.toLowerCase() === CLIENT_SURFACE_HEADER)
+        ? record
+        : { ...record, [CLIENT_SURFACE_HEADER]: CLI_CLIENT_SURFACE }
+    }
+    return doFetch(input, { ...init, headers: labelled })
+  }) as typeof fetch
+}
 
 export type ApiResult =
   | { ok: true; status: number; body: unknown; headers?: Record<string, string> }
@@ -319,6 +356,7 @@ function buildHeaders(opts: ApiRequestOptions): Record<string, string> {
   const headers: Record<string, string> = {
     "content-type": opts.raw?.contentType ?? "application/json",
     accept: "application/json",
+    [CLIENT_SURFACE_HEADER]: CLI_CLIENT_SURFACE,
   }
   if (opts.auth === "device" && opts.credentials.deviceToken) {
     headers.authorization = `Bearer ${opts.credentials.deviceToken}`

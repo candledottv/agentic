@@ -7,7 +7,15 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { apiRequest, browserUrl, DEFAULT_API_URL, insecureApiUrlFault, resolveApiUrl } from "./client"
+import {
+  apiRequest,
+  browserUrl,
+  DEFAULT_API_URL,
+  insecureApiUrlFault,
+  resolveApiUrl,
+  withCliClientSurface,
+} from "./client"
+import { CLI_VERSION } from "./version"
 
 type CapturedRequest = { url: string; init: RequestInit }
 
@@ -237,6 +245,42 @@ describe("apiRequest: auth header selection", () => {
     const headers = lastRequest?.init.headers as Record<string, string>
     expect(headers.authorization).toBeUndefined()
     expect(headers["x-api-key"]).toBeUndefined()
+  })
+})
+
+describe("apiRequest: client surface header (BE-3919)", () => {
+  test("every request names the CLI and its version, with or without a credential", async () => {
+    stubFetch(() => jsonResponse(200, { success: true }))
+    for (const auth of ["none", "key", "device"] as const) {
+      await apiRequest("/api/v1/agent/tier", {
+        auth,
+        credentials: { apiKey: "ck_live_xyz", deviceToken: "dtok_abc123" },
+        apiUrl: "https://api.candle.tv",
+      })
+      const headers = lastRequest?.init.headers as Record<string, string>
+      expect(headers["x-candle-client"]).toBe(`cli/${CLI_VERSION}`)
+    }
+  })
+})
+
+describe("withCliClientSurface (BE-3919)", () => {
+  test("labels the quant client's requests in the headers shape they came in, keeping a label already set", async () => {
+    const seen: unknown[] = []
+    const labelled = withCliClientSurface((async (_input: unknown, init?: RequestInit) => {
+      seen.push(init?.headers)
+      return new Response("{}")
+    }) as typeof fetch)
+    await labelled("https://api.candle.tv/api/v1/agent/quant/turns", { headers: { "x-api-key": "k" } })
+    await labelled("https://api.candle.tv/api/v1/agent/quant/turns", { headers: [["accept", "*/*"]] })
+    await labelled("https://api.candle.tv/api/v1/agent/quant/turns", { headers: { "X-Candle-Client": "cli/other" } })
+    expect(seen).toEqual([
+      { "x-api-key": "k", "x-candle-client": `cli/${CLI_VERSION}` },
+      [
+        ["accept", "*/*"],
+        ["x-candle-client", `cli/${CLI_VERSION}`],
+      ],
+      { "X-Candle-Client": "cli/other" },
+    ])
   })
 })
 

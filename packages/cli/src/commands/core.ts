@@ -41,7 +41,7 @@ import { closeSync, writeSync } from "node:fs"
 import { join } from "node:path"
 import { scopesForPreset } from "../agent-key-access"
 import { parseArgs } from "../args"
-import { apiRequest, type OwnerConfirmHooks } from "../client"
+import { apiRequest, type OwnerConfirmHooks, withCliClientSurface } from "../client"
 import { AgentProfiles } from "../core/agent-profiles"
 import { type Card, CardBook } from "../core/cards"
 import { coreLocalTools } from "../core/core-local-tools"
@@ -464,7 +464,7 @@ export async function coreServe(args: string[], ctx: CommandContext): Promise<nu
       client: () =>
         readKey === undefined
           ? undefined
-          : createQuantKeyClient({ apiUrl: ctx.apiUrl, apiKey: readKey, fetch: deps.fetch }),
+          : createQuantKeyClient({ apiUrl: ctx.apiUrl, apiKey: readKey, fetch: withCliClientSurface(deps.fetch) }),
       redact: (text) => redactor.text(text),
       events: server.events,
       now: deps.now,

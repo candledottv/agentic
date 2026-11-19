@@ -134,6 +134,50 @@ async function buildPrivyAuthorizationSignature(params) {
   return arrayBufferToBase64(toArrayBuffer(derSignature));
 }
 
+// src/client-surface.ts
+var CLIENT_SURFACE_HEADER = "x-candle-client";
+function withHeader(headers, name, value) {
+  if (headers === undefined || headers === null)
+    return { [name]: value };
+  if (headers instanceof Headers) {
+    const copy = new Headers(headers);
+    if (!copy.has(name))
+      copy.set(name, value);
+    return copy;
+  }
+  if (Array.isArray(headers)) {
+    if (headers.some(([key]) => key.toLowerCase() === name))
+      return headers;
+    return [...headers, [name, value]];
+  }
+  const record = headers;
+  if (Object.keys(record).some((key) => key.toLowerCase() === name))
+    return record;
+  return { ...record, [name]: value };
+}
+function withClientSurface(doFetch, apiUrl, value) {
+  let apiOrigin = null;
+  try {
+    apiOrigin = new URL(apiUrl).origin;
+  } catch {
+    apiOrigin = null;
+  }
+  const labelled = (input, init) => {
+    if (apiOrigin === null || input instanceof Request)
+      return doFetch(input, init);
+    let origin;
+    try {
+      origin = new URL(input.toString()).origin;
+    } catch {
+      return doFetch(input, init);
+    }
+    if (origin !== apiOrigin)
+      return doFetch(input, init);
+    return doFetch(input, { ...init, headers: withHeader(init?.headers, CLIENT_SURFACE_HEADER, value) });
+  };
+  return labelled;
+}
+
 // src/errors.ts
 var BRIDGE_ERROR_CODES = ["BRIDGE_DESTINATION_MISSING", "RELAY_STEP_REFUSED", "BRIDGE_IN_FLIGHT"];
 var OWNER_CONFIRM_ERROR_CODES = [
@@ -5951,7 +5995,7 @@ class CandleClient {
     this.apiUrl = opts.apiUrl.replace(/\/+$/, "");
     if (opts.apiKey !== undefined)
       this.apiKey = opts.apiKey;
-    this.fetchImpl = keyedRedirectGuard(opts.fetch ?? fetch);
+    this.fetchImpl = keyedRedirectGuard(withClientSurface(opts.fetch ?? fetch, this.apiUrl, `sdk/${SDK_VERSION}`));
     if (opts.maxRetries !== undefined && (!Number.isInteger(opts.maxRetries) || opts.maxRetries < 0)) {
       throw new Error(`CandleClient: maxRetries must be a non-negative integer, got ${opts.maxRetries}`);
     }

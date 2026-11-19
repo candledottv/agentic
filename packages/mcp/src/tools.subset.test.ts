@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test"
+import { MCP_CLIENT_SURFACE, withClientSurface } from "./client"
 import { registerToolSubset, type ToolName } from "./tools"
+import { SERVER_VERSION } from "./version"
 
 type Handler = (args: Record<string, unknown>) => Promise<{ content: { text: string }[]; isError?: boolean }>
 function recorder() {
@@ -125,4 +127,34 @@ test("SEC-009: a same-origin redirect is followed with the key", async () => {
     { url: "https://api.candle.example/api/v1/activity/report", key: "secret-key" },
     { url: "https://api.candle.example/api/v1/activity/report2", key: "secret-key" },
   ])
+})
+
+test("BE-3919: every tool request to the API names the MCP server and its version, and only those", async () => {
+  const { server, tools } = recorder()
+  const calls: Array<{ url: string; client: string | null }> = []
+  registerToolSubset(server, {
+    tools: ["candle_report_activity"],
+    getConfig: () => ({ apiUrl: "https://api.test", apiKey: "key" }),
+    fetch: async (url, init) => {
+      calls.push({ url, client: new Headers(init?.headers).get("x-candle-client") })
+      return Response.json({ success: true })
+    },
+  })
+  const tool = tools.get("candle_report_activity") as { handler: Handler }
+  await tool.handler({ chain: "solana", signature: "one" })
+  expect(calls).toEqual([{ url: "https://api.test/api/v1/activity/report", client: MCP_CLIENT_SURFACE }])
+  expect(MCP_CLIENT_SURFACE).toBe(`mcp/${SERVER_VERSION}`)
+
+  const seen: (string | null)[] = []
+  const labelled = withClientSurface(
+    async (_url: string, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers).get("x-candle-client"))
+      return Response.json({})
+    },
+    () => "https://api.test",
+  )
+  await labelled("https://api.hyperliquid.xyz/info", { method: "POST" })
+  await labelled("https://api.test/api/v1/markets/feed", { headers: [["accept", "*/*"]] })
+  await labelled("https://api.test/api/v1/markets/feed", { headers: { "X-Candle-Client": "mcp-hosted/1" } })
+  expect(seen).toEqual([null, MCP_CLIENT_SURFACE, "mcp-hosted/1"])
 })

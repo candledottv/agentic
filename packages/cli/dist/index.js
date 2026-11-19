@@ -205,7 +205,27 @@ var init_api_key_file = __esm(() => {
   };
 });
 
+// src/version.ts
+var CLI_VERSION = "0.13.31";
+
 // src/client.ts
+function withCliClientSurface(doFetch) {
+  return (input, init) => {
+    const headers = init?.headers;
+    let labelled;
+    if (headers instanceof Headers) {
+      labelled = new Headers(headers);
+      if (!labelled.has(CLIENT_SURFACE_HEADER))
+        labelled.set(CLIENT_SURFACE_HEADER, CLI_CLIENT_SURFACE);
+    } else if (Array.isArray(headers)) {
+      labelled = headers.some(([name]) => name.toLowerCase() === CLIENT_SURFACE_HEADER) ? headers : [...headers, [CLIENT_SURFACE_HEADER, CLI_CLIENT_SURFACE]];
+    } else {
+      const record = headers ?? {};
+      labelled = Object.keys(record).some((name) => name.toLowerCase() === CLIENT_SURFACE_HEADER) ? record : { ...record, [CLIENT_SURFACE_HEADER]: CLI_CLIENT_SURFACE };
+    }
+    return doFetch(input, { ...init, headers: labelled });
+  };
+}
 function setOwnerConfirmHooks(hooks) {
   const previous = installedOwnerConfirmHooks;
   installedOwnerConfirmHooks = hooks;
@@ -310,7 +330,8 @@ function resolveApiUrl(configuredApiUrl, env = process.env) {
 function buildHeaders(opts) {
   const headers = {
     "content-type": opts.raw?.contentType ?? "application/json",
-    accept: "application/json"
+    accept: "application/json",
+    [CLIENT_SURFACE_HEADER]: CLI_CLIENT_SURFACE
   };
   if (opts.auth === "device" && opts.credentials.deviceToken) {
     headers.authorization = `Bearer ${opts.credentials.deviceToken}`;
@@ -512,8 +533,9 @@ async function sendOnce(path, opts) {
     ...responseHeaders ? { headers: responseHeaders } : {}
   };
 }
-var DEFAULT_API_URL = "https://api.alpha.candle.tv", OWNER_CONFIRM_HEADER = "Candle-Owner-Confirm", OWNER_CONFIRM_DENIED = "OWNER_CONFIRM_DENIED", OWNER_CONFIRM_EXPIRED = "OWNER_CONFIRM_EXPIRED", OWNER_CONFIRM_CANCELLED = "OWNER_CONFIRM_CANCELLED", installedOwnerConfirmHooks, ALLOW_INSECURE_HTTP_ENV = "CANDLE_ALLOW_INSECURE_HTTP", REDIRECT_STATUSES, MAX_REDIRECTS = 5, CrossOriginRedirectError, PROTECTED_REQUEST_HEADERS, latestCliVersionSeen = null;
+var DEFAULT_API_URL = "https://api.alpha.candle.tv", CLIENT_SURFACE_HEADER = "x-candle-client", CLI_CLIENT_SURFACE, OWNER_CONFIRM_HEADER = "Candle-Owner-Confirm", OWNER_CONFIRM_DENIED = "OWNER_CONFIRM_DENIED", OWNER_CONFIRM_EXPIRED = "OWNER_CONFIRM_EXPIRED", OWNER_CONFIRM_CANCELLED = "OWNER_CONFIRM_CANCELLED", installedOwnerConfirmHooks, ALLOW_INSECURE_HTTP_ENV = "CANDLE_ALLOW_INSECURE_HTTP", REDIRECT_STATUSES, MAX_REDIRECTS = 5, CrossOriginRedirectError, PROTECTED_REQUEST_HEADERS, latestCliVersionSeen = null;
 var init_client = __esm(() => {
+  CLI_CLIENT_SURFACE = `cli/${CLI_VERSION}`;
   REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
   CrossOriginRedirectError = class CrossOriginRedirectError extends Error {
     from;
@@ -776,9 +798,6 @@ var init_terminal_theme = __esm(() => {
     }
   };
 });
-
-// src/version.ts
-var CLI_VERSION = "0.13.31";
 
 // src/presentation.ts
 function terminalStyle(deps, stream, machine = false) {
@@ -10383,6 +10402,9 @@ var init_chain_registry = __esm(() => {
   init_chains();
 });
 
+// ../mcp/src/version.ts
+var SERVER_VERSION = "0.10.36";
+
 // ../mcp/src/client.ts
 function isLoopbackHost2(hostname) {
   const host = hostname.toLowerCase();
@@ -10428,6 +10450,37 @@ function assertTransportSecurity(apiUrl, env) {
     return;
   throw new Error(`Refusing to send credentials in the clear to ${parsed.origin}. Set CANDLE_API_URL to an https:// ` + (isPrivateHost2(parsed.hostname) ? "URL, or set CANDLE_ALLOW_INSECURE_HTTP=1 if this really is a trusted local endpoint." : "URL. CANDLE_ALLOW_INSECURE_HTTP does not apply here: it covers private networks only, " + "and this is a public address."));
 }
+function withClientHeader(headers) {
+  if (headers === undefined || headers === null)
+    return { [CLIENT_SURFACE_HEADER2]: MCP_CLIENT_SURFACE };
+  if (headers instanceof Headers) {
+    const copy = new Headers(headers);
+    if (!copy.has(CLIENT_SURFACE_HEADER2))
+      copy.set(CLIENT_SURFACE_HEADER2, MCP_CLIENT_SURFACE);
+    return copy;
+  }
+  if (Array.isArray(headers)) {
+    if (headers.some(([key]) => key.toLowerCase() === CLIENT_SURFACE_HEADER2))
+      return headers;
+    return [...headers, [CLIENT_SURFACE_HEADER2, MCP_CLIENT_SURFACE]];
+  }
+  const record = headers;
+  if (Object.keys(record).some((key) => key.toLowerCase() === CLIENT_SURFACE_HEADER2))
+    return record;
+  return { ...record, [CLIENT_SURFACE_HEADER2]: MCP_CLIENT_SURFACE };
+}
+function withClientSurface(doFetch, apiUrl) {
+  return (url, init) => {
+    let labelled = false;
+    try {
+      const api = apiUrl();
+      labelled = api !== undefined && new URL(url).origin === new URL(api).origin;
+    } catch {
+      labelled = false;
+    }
+    return labelled ? doFetch(url, { ...init, headers: withClientHeader(init?.headers) }) : doFetch(url, init);
+  };
+}
 function keyedRedirectGuard(doFetch) {
   return async (url, init) => {
     if (!init?.headers || !new Headers(init.headers).has("x-api-key"))
@@ -10462,7 +10515,7 @@ function resolveConfig(env = process.env) {
   const apiKey = fileKey ?? (env.CANDLE_AGENT_API_KEY?.trim() || env.CANDLE_API_KEY?.trim());
   return apiKey ? { apiUrl, apiKey } : { apiUrl };
 }
-var DEFAULT_API_URL2 = "https://api.alpha.candle.tv", REDIRECT_STATUSES2, MAX_REDIRECTS2 = 5, CrossOriginRedirectError2;
+var DEFAULT_API_URL2 = "https://api.alpha.candle.tv", REDIRECT_STATUSES2, MAX_REDIRECTS2 = 5, CrossOriginRedirectError2, CLIENT_SURFACE_HEADER2 = "x-candle-client", MCP_CLIENT_SURFACE;
 var init_client2 = __esm(() => {
   init_api_key_file();
   REDIRECT_STATUSES2 = new Set([301, 302, 303, 307, 308]);
@@ -10476,6 +10529,7 @@ var init_client2 = __esm(() => {
       this.name = "CrossOriginRedirectError";
     }
   };
+  MCP_CLIENT_SURFACE = `mcp/${SERVER_VERSION}`;
 });
 
 // ../mcp/src/token-clusters.ts
@@ -10559,9 +10613,6 @@ var init_token_clusters = __esm(() => {
     "internal_unavailable"
   ];
 });
-
-// ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.36";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -14544,7 +14595,7 @@ function registerToolSubset(server, options) {
   const allowed = new Set(options.tools);
   const getConfig = options.getConfig;
   const env = options.env ?? {};
-  const doFetch = keyedRedirectGuard(options.fetch ?? ((url, init) => fetch(url, init)));
+  const doFetch = keyedRedirectGuard(withClientSurface(options.fetch ?? ((url, init) => fetch(url, init)), () => getConfig().apiUrl));
   const register = (name, definition, handler) => {
     if (!allowed.has(name))
       return;
@@ -15306,7 +15357,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   let eligible = false;
   if (cfg.apiKey && wanted.length > 0) {
     try {
-      const res = await keyedRedirectGuard(doFetch)(`${cfg.apiUrl}/api/v1/agent/keys/self/public-profile`, {
+      const res = await keyedRedirectGuard(withClientSurface(doFetch, () => cfg.apiUrl))(`${cfg.apiUrl}/api/v1/agent/keys/self/public-profile`, {
         method: "GET",
         headers: { "x-api-key": cfg.apiKey },
         signal: AbortSignal.timeout(15000)
@@ -88078,7 +88129,7 @@ ${USAGE6}`, json);
     const events = server.events;
     events.onSubscriptionsChanged(() => tape.setSubscribers(events.subscriberCount("signals"), events.subscriberCount("signals:mine")));
     quant = new QuantService({
-      client: () => readKey2 === undefined ? undefined : createQuantKeyClient({ apiUrl: ctx.apiUrl, apiKey: readKey2, fetch: deps.fetch }),
+      client: () => readKey2 === undefined ? undefined : createQuantKeyClient({ apiUrl: ctx.apiUrl, apiKey: readKey2, fetch: withCliClientSurface(deps.fetch) }),
       redact: (text3) => redactor.text(text3),
       events: server.events,
       now: deps.now,
@@ -109955,6 +110006,7 @@ candle profile use <name>`);
 
 // src/commands/quant-ask.ts
 init_args();
+init_client();
 init_deps();
 init_key_output();
 var USAGE17 = 'Usage: candle quant ask "<text>" [--timeout <s>] [--json]';
@@ -110152,7 +110204,7 @@ async function quantAsk(args, ctx) {
   };
   let client2;
   try {
-    client2 = createQuantKeyClient({ apiUrl: ctx.apiUrl, apiKey, fetch: fetchFn });
+    client2 = createQuantKeyClient({ apiUrl: ctx.apiUrl, apiKey, fetch: withCliClientSurface(fetchFn) });
   } catch (err) {
     writeScreenLocalFailure(ctx.deps, { code: "INSECURE_API_URL", message: err instanceof Error ? err.message : String(err) }, ctx.json);
     return 1;

@@ -54,7 +54,7 @@ import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
 import { z } from "zod"
 import { chainSchema } from "./chain-registry"
-import { keyedRedirectGuard, type RequestConfig, resolveConfig } from "./client"
+import { keyedRedirectGuard, type RequestConfig, resolveConfig, withClientSurface } from "./client"
 import { CLUSTER_READ_DESCRIPTION, readTokenClusters, tokenClustersShape } from "./cluster-read"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
 import {
@@ -1864,7 +1864,10 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
   const env = options.env ?? {}
   // Preserve stdio's late-bound global fetch (including a host's test seam).
   // Keyed requests never follow a redirect to another origin (keyedRedirectGuard).
-  const doFetch: FetchLike = keyedRedirectGuard(options.fetch ?? ((url, init) => fetch(url, init)))
+  // BE-3919: and every request to the API names this client (withClientSurface).
+  const doFetch: FetchLike = keyedRedirectGuard(
+    withClientSurface(options.fetch ?? ((url, init) => fetch(url, init)), () => getConfig().apiUrl),
+  )
   // Every registration goes through this guard, so the subset cannot drift past it.
   // Our schemas are Zod 3 raw shapes. Keeping this wrapper specific avoids expanding the
   // SDK's Zod 3/4 and output-schema overloads at every registration.
@@ -3656,11 +3659,14 @@ export async function registerEligibleProfileTool(
   let eligible = false
   if (cfg.apiKey && wanted.length > 0) {
     try {
-      const res = await keyedRedirectGuard(doFetch)(`${cfg.apiUrl}/api/v1/agent/keys/self/public-profile`, {
-        method: "GET",
-        headers: { "x-api-key": cfg.apiKey },
-        signal: AbortSignal.timeout(15000),
-      })
+      const res = await keyedRedirectGuard(withClientSurface(doFetch, () => cfg.apiUrl))(
+        `${cfg.apiUrl}/api/v1/agent/keys/self/public-profile`,
+        {
+          method: "GET",
+          headers: { "x-api-key": cfg.apiKey },
+          signal: AbortSignal.timeout(15000),
+        },
+      )
       const body = JSON.parse(await res.text()) as { canEdit?: boolean }
       eligible = res.ok && body.canEdit === true
     } catch {

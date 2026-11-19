@@ -100,6 +100,9 @@ function readApiKeyFile(path, io = apiKeyFileIo) {
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
+// src/version.ts
+var SERVER_VERSION = "0.10.36";
+
 // src/client.ts
 var DEFAULT_API_URL = "https://api.alpha.candle.tv";
 function isLoopbackHost(hostname) {
@@ -158,6 +161,39 @@ class CrossOriginRedirectError extends Error {
     this.to = to;
     this.name = "CrossOriginRedirectError";
   }
+}
+var CLIENT_SURFACE_HEADER = "x-candle-client";
+var MCP_CLIENT_SURFACE = `mcp/${SERVER_VERSION}`;
+function withClientHeader(headers) {
+  if (headers === undefined || headers === null)
+    return { [CLIENT_SURFACE_HEADER]: MCP_CLIENT_SURFACE };
+  if (headers instanceof Headers) {
+    const copy = new Headers(headers);
+    if (!copy.has(CLIENT_SURFACE_HEADER))
+      copy.set(CLIENT_SURFACE_HEADER, MCP_CLIENT_SURFACE);
+    return copy;
+  }
+  if (Array.isArray(headers)) {
+    if (headers.some(([key]) => key.toLowerCase() === CLIENT_SURFACE_HEADER))
+      return headers;
+    return [...headers, [CLIENT_SURFACE_HEADER, MCP_CLIENT_SURFACE]];
+  }
+  const record = headers;
+  if (Object.keys(record).some((key) => key.toLowerCase() === CLIENT_SURFACE_HEADER))
+    return record;
+  return { ...record, [CLIENT_SURFACE_HEADER]: MCP_CLIENT_SURFACE };
+}
+function withClientSurface(doFetch, apiUrl) {
+  return (url, init) => {
+    let labelled = false;
+    try {
+      const api = apiUrl();
+      labelled = api !== undefined && new URL(url).origin === new URL(api).origin;
+    } catch {
+      labelled = false;
+    }
+    return labelled ? doFetch(url, { ...init, headers: withClientHeader(init?.headers) }) : doFetch(url, init);
+  };
 }
 function keyedRedirectGuard(doFetch) {
   return async (url, init) => {
@@ -4730,9 +4766,6 @@ function readClusterResult(value, mint) {
   };
 }
 
-// src/version.ts
-var SERVER_VERSION = "0.10.36";
-
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
 var latestSeen = null;
@@ -9141,7 +9174,7 @@ function registerToolSubset(server, options) {
   const allowed = new Set(options.tools);
   const getConfig = options.getConfig;
   const env = options.env ?? {};
-  const doFetch = keyedRedirectGuard(options.fetch ?? ((url, init) => fetch(url, init)));
+  const doFetch = keyedRedirectGuard(withClientSurface(options.fetch ?? ((url, init) => fetch(url, init)), () => getConfig().apiUrl));
   const register = (name, definition, handler) => {
     if (!allowed.has(name))
       return;
@@ -9903,7 +9936,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   let eligible = false;
   if (cfg.apiKey && wanted.length > 0) {
     try {
-      const res = await keyedRedirectGuard(doFetch)(`${cfg.apiUrl}/api/v1/agent/keys/self/public-profile`, {
+      const res = await keyedRedirectGuard(withClientSurface(doFetch, () => cfg.apiUrl))(`${cfg.apiUrl}/api/v1/agent/keys/self/public-profile`, {
         method: "GET",
         headers: { "x-api-key": cfg.apiKey },
         signal: AbortSignal.timeout(15000)

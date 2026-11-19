@@ -14,6 +14,7 @@
  */
 
 import { assertApiKeySources, hasApiKeyFile, readApiKeyFile } from "./api-key-file"
+import { SERVER_VERSION } from "./version"
 export interface RequestConfig {
   apiUrl: string
   apiKey?: string
@@ -112,6 +113,50 @@ export class CrossOriginRedirectError extends Error {
 }
 
 type GuardableFetch<R> = (url: string, init?: RequestInit) => Promise<R>
+
+/**
+ * BE-3919: every request this server makes to the Candle API names its client, so the API can tell
+ * MCP traffic from the CLI, SDK, web and raw callers when it measures trade latency by surface. A
+ * label, not a credential: the API records it and decides nothing on it. The hosted connector
+ * replaces it with `mcp-hosted/<version>` on the requests it dispatches.
+ */
+export const CLIENT_SURFACE_HEADER = "x-candle-client"
+export const MCP_CLIENT_SURFACE = `mcp/${SERVER_VERSION}`
+
+/** `headers` with the client label added unless already set, in the shape it came in. */
+function withClientHeader(headers: RequestInit["headers"]): RequestInit["headers"] {
+  if (headers === undefined || headers === null) return { [CLIENT_SURFACE_HEADER]: MCP_CLIENT_SURFACE }
+  if (headers instanceof Headers) {
+    const copy = new Headers(headers)
+    if (!copy.has(CLIENT_SURFACE_HEADER)) copy.set(CLIENT_SURFACE_HEADER, MCP_CLIENT_SURFACE)
+    return copy
+  }
+  if (Array.isArray(headers)) {
+    if (headers.some(([key]) => key.toLowerCase() === CLIENT_SURFACE_HEADER)) return headers
+    return [...headers, [CLIENT_SURFACE_HEADER, MCP_CLIENT_SURFACE]]
+  }
+  const record = headers as Record<string, string>
+  if (Object.keys(record).some((key) => key.toLowerCase() === CLIENT_SURFACE_HEADER)) return record
+  return { ...record, [CLIENT_SURFACE_HEADER]: MCP_CLIENT_SURFACE }
+}
+
+/**
+ * Wraps a fetch so a request to the configured API's origin carries the client label. `apiUrl` is
+ * read per request (the config can change between calls); a request to any other origin, such as
+ * Hyperliquid, passes through untouched.
+ */
+export function withClientSurface<R>(doFetch: GuardableFetch<R>, apiUrl: () => string | undefined): GuardableFetch<R> {
+  return (url, init) => {
+    let labelled = false
+    try {
+      const api = apiUrl()
+      labelled = api !== undefined && new URL(url).origin === new URL(api).origin
+    } catch {
+      labelled = false
+    }
+    return labelled ? doFetch(url, { ...init, headers: withClientHeader(init?.headers) }) : doFetch(url, init)
+  }
+}
 
 /**
  * Wraps a fetch so a request that carries `x-api-key` never follows a redirect off its own origin.

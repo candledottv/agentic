@@ -12,7 +12,13 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import type { BuildAtomicLaunchRequest, LaunchAtomicRequest, LaunchRequest, SelfLaunchRequest } from "./client"
+import {
+  type BuildAtomicLaunchRequest,
+  type LaunchAtomicRequest,
+  type LaunchRequest,
+  SDK_VERSION,
+  type SelfLaunchRequest,
+} from "./client"
 import { CandleApiError, JsonRpcError, TradeLandedFeeLegError } from "./errors"
 // T19: the new names come from the package root, as an integrator imports them.
 import {
@@ -953,7 +959,7 @@ describe("getTradeJob()", () => {
     expect(server.calls.length).toBe(1)
     expect(server.calls[0]?.url).toBe(`${API}/api/v1/trade/agent/jobs/trade%2Fwith%20space`)
     expect(server.calls[0]?.method).toBe("GET")
-    expect(server.calls[0]?.headers).toEqual({ "x-api-key": "k" })
+    expect(server.calls[0]?.headers).toEqual({ "x-api-key": "k", "x-candle-client": `sdk/${SDK_VERSION}` })
     expect(server.calls[0]?.body).toBeUndefined()
   })
 

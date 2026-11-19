@@ -24,6 +24,7 @@ import {
   type ListWalletsResult,
   type PortfolioResult,
   type PresetsPayload,
+  SDK_VERSION,
   type SelfBalancesResult,
   type SelfLaunchRequest,
   type SpendLimitsResult,
@@ -33,6 +34,7 @@ import {
   type SwapSettlement,
   type WalletKind,
 } from "./client"
+import { withClientSurface, withHeader } from "./client-surface"
 
 import {
   CandleApiError,
@@ -55,15 +57,24 @@ interface RecordedRequest {
   body?: unknown
 }
 
-/** Queue of responses (or Errors to throw as network failures), with an optional fallback factory. */
+/**
+ * Queue of responses (or Errors to throw as network failures), with an optional fallback factory.
+ * BE-3919: the `x-candle-client` label every API request carries is recorded in `clientLabels`, one
+ * entry per call, and left out of `calls[i].headers`, so the request-shape tests stay about each
+ * route's own headers. The "client surface header" tests assert the label itself.
+ */
 function fakeFetch(responses: (Response | Error)[], fallback?: () => Response) {
   const calls: RecordedRequest[] = []
+  const clientLabels: (string | undefined)[] = []
   const queue = [...responses]
   const impl = (async (input: unknown, init?: RequestInit) => {
+    const headers = { ...((init?.headers ?? {}) as Record<string, string>) }
+    clientLabels.push(headers["x-candle-client"])
+    delete headers["x-candle-client"]
     calls.push({
       url: String(input),
       method: init?.method ?? "GET",
-      headers: { ...((init?.headers ?? {}) as Record<string, string>) },
+      headers,
       ...(init?.body !== undefined && init?.body !== null ? { body: init.body } : {}),
     })
     const next = queue.shift() ?? fallback?.()
@@ -71,7 +82,7 @@ function fakeFetch(responses: (Response | Error)[], fallback?: () => Response) {
     if (next instanceof Error) throw next
     return next
   }) as unknown as typeof fetch
-  return { calls, impl }
+  return { calls, clientLabels, impl }
 }
 
 function json(status: number, body: unknown): Response {
@@ -109,10 +120,50 @@ function makeClient(
   responses: (Response | Error)[],
   fallback?: () => Response,
 ) {
-  const { calls, impl } = fakeFetch(responses, fallback)
+  const { calls, clientLabels, impl } = fakeFetch(responses, fallback)
   const client = new CandleClient({ apiUrl: "https://api.test", fetch: impl, ...opts })
-  return { client, calls }
+  return { client, calls, clientLabels }
 }
+
+describe("BE-3919 client surface header", () => {
+  test("every request to the API names the SDK and its version", async () => {
+    const { client, calls, clientLabels } = makeClient(KEYED, [
+      json(200, { success: true, data: [] }),
+      json(200, { success: true, dryRun: true }),
+    ])
+    await client.getPresets().catch(() => {})
+    await client.dryRunLaunch(LAUNCH_REQ)
+    expect(calls).toHaveLength(2)
+    expect(clientLabels).toEqual([`sdk/${SDK_VERSION}`, `sdk/${SDK_VERSION}`])
+  })
+
+  test("a request to another origin carries no label", async () => {
+    const seen: (string | null)[] = []
+    const impl = (async (_input: unknown, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers).get("x-candle-client"))
+      return json(200, {})
+    }) as unknown as typeof fetch
+    const labelled = withClientSurface(impl, "https://api.test", "sdk/1.2.3")
+    await labelled("https://api.test/api/v1/markets/feed")
+    await labelled("https://api.hyperliquid.xyz/info", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    })
+    await labelled(new URL("https://api.test/api/v1/status"), { headers: new Headers({ accept: "application/json" }) })
+    expect(seen).toEqual(["sdk/1.2.3", null, "sdk/1.2.3"])
+  })
+
+  test("a label the caller already set is kept, in the headers shape it came in", () => {
+    expect(withHeader({ "X-Candle-Client": "sdk/custom" }, "x-candle-client", "sdk/1")).toEqual({
+      "X-Candle-Client": "sdk/custom",
+    })
+    expect(withHeader([["accept", "*/*"]], "x-candle-client", "sdk/1")).toEqual([
+      ["accept", "*/*"],
+      ["x-candle-client", "sdk/1"],
+    ])
+    expect(withHeader(undefined, "x-candle-client", "sdk/1")).toEqual({ "x-candle-client": "sdk/1" })
+  })
+})
 
 const KEYED = { apiKey: "cndl_test_key" }
 const JSON_HEADERS = { "content-type": "application/json", "x-api-key": "cndl_test_key" }

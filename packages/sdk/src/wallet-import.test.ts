@@ -13,7 +13,7 @@ import { describe, expect, test } from "bun:test"
 import { Chacha20Poly1305 } from "@hpke/chacha20poly1305"
 import { CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from "@hpke/core"
 import { base58 } from "@scure/base"
-import { CandleClient } from "./client"
+import { CandleClient, SDK_VERSION } from "./client"
 import { encryptWalletKeyForImport, generateSignerKeypair, parseSolanaSecret } from "./wallet-import"
 
 /** Same HPKE parameters as wallet-import.ts, built independently so the test proves interop, not tautology. */
@@ -295,7 +295,11 @@ describe("CandleClient.importWallet", () => {
     return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
   }
 
-  const JSON_HEADERS = { "content-type": "application/json", "x-api-key": "cndl_test_key" }
+  const JSON_HEADERS = {
+    "content-type": "application/json",
+    "x-api-key": "cndl_test_key",
+    "x-candle-client": `sdk/${SDK_VERSION}`,
+  }
 
   test("calls init then submit, encrypting locally in between, with correct request bodies", async () => {
     const suite = testSuite()
