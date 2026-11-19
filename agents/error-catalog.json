@@ -88,7 +88,7 @@
     },
     "request_validation": {
       "retryable": false,
-      "action": "The request is malformed. Fix the named field. For TRANSACTION_TOO_LARGE the error carries the exact name-byte budget; for CURVE_OUT_OF_RANGE with reason price_ceiling, maxThresholdRaw is the largest threshold that fits. For FEE_WALLET_UNSUPPORTED, choose an on-curve wallet or an enabled, verified Squads v4 vault; honor explicit error.retryable when verification is temporarily unavailable. For POOL_FEE_WITH_CREATOR_FEE_UNSUPPORTED, drop poolFee (the launch keeps the standard pool fee) or drop creatorFeeBps.",
+      "action": "The request is malformed. Fix the named field. For TRANSACTION_TOO_LARGE the error carries the exact name-byte budget; for CURVE_OUT_OF_RANGE with reason price_ceiling, maxThresholdRaw is the largest threshold that fits. For FEE_WALLET_UNSUPPORTED, choose an on-curve wallet or an enabled, verified Squads v4 vault; honor explicit error.retryable when verification is temporarily unavailable. For POOL_FEE_WITH_CREATOR_FEE_UNSUPPORTED, drop poolFee (the launch keeps the standard pool fee) or drop creatorFeeBps. SIGNATURE_MISMATCH: the submitted transaction's signature does not sign its own bytes with the linked wallet's key, so nothing was broadcast; sign the build's exact bytes with the linked wallet and submit those.",
       "codes": [
         "VALIDATION_FAILED",
         "FEE_WALLET_UNSUPPORTED",
@@ -117,7 +117,8 @@
         "ACCOUNTS_NAME_INVALID",
         "SIGNER_PUBLIC_KEY_INVALID",
         "USERNAME_INVALID",
-        "SCOPE_NOT_ALLOWED"
+        "SCOPE_NOT_ALLOWED",
+        "SIGNATURE_MISMATCH"
       ]
     },
     "market": {
