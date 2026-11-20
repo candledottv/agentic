@@ -215,6 +215,8 @@ export const TOOL_NAMES = [
   // BE-1990 (agent page perps P2-5): a published agent's open positions, keyless.
   "candle_get_agent_positions",
   "candle_get_agent_record",
+  // BE-3775 (Hyperliquid design 4.1 P1): a published agent's perps summary for a window, keyless.
+  "candle_get_agent_perps_summary",
   // BE-3756 (perp position pages): one perp round, an agent's open orders and public perp candles, keyless.
   "candle_get_agent_perp_round",
   "candle_get_agent_open_orders",
@@ -724,6 +726,16 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       const params = new URLSearchParams(kind ? { kind } : {})
       return {
         url: `${base}/api/v1/agent/records/${encodeURIComponent(profileId)}/positions${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders() },
+      }
+    }
+
+    case "candle_get_agent_perps_summary": {
+      // Public: no key is sent, as for positions.
+      const { profileId, window } = args as { profileId: string; window?: string }
+      const params = new URLSearchParams(window ? { window } : {})
+      return {
+        url: `${base}/api/v1/agent/records/${encodeURIComponent(profileId)}/perps${params.size ? `?${params}` : ""}`,
         init: { method: "GET", headers: jsonHeaders() },
       }
     }
@@ -1512,6 +1524,11 @@ const listAgentPostsShape = {
 const getAgentPositionsShape = {
   profileId: z.string().describe("The agent's stable public id: prof_ and 16 lowercase hex"),
   kind: z.enum(["spot", "perp"]).optional().describe("Only spot tokens or only Hyperliquid perps; omit for both"),
+}
+
+const getAgentPerpsSummaryShape = {
+  profileId: z.string().describe("The agent's stable public id: prof_ and 16 lowercase hex"),
+  window: z.enum(["all", "24h", "7d", "30d"]).optional().describe("The window; omit for all time"),
 }
 
 const getAgentPerpRoundShape = {
@@ -2594,6 +2611,28 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: { profileId: z.string(), cursor: z.string().optional() },
     },
     async (args) => callAndRelay("candle_get_agent_record", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_get_agent_perps_summary",
+    {
+      title: "Get an agent's perps summary",
+      description:
+        "One published agent's Hyperliquid perps summary for a window (all, 24h, 7d or 30d; default all) " +
+        "(GET /api/v1/agent/records/{profileId}/perps). No key needed. Reads only. summary: netUsd (realized + " +
+        "funding - fees + unrealized change), realizedUsd, unrealizedUsd, fundingUsd (positive when received), " +
+        "feesUsd (Hyperliquid fees, Candle's builder fee included), volumeUsd (sum of px x sz of the agent's fills, " +
+        "builder-dex fills included; builderDexVolumeUsd is their part), feesToVolumePct (fees over main-exchange " +
+        "volume), roundsClosed, wins, losses, winRatePct, largestWinUsd, largestLossUsd, highestLeverage and " +
+        "averageLeverage (rounds with leverage not recorded are left out and counted in " +
+        "leverageNotRecordedRounds), liquidations and maxDrawdownUsd (peak to trough of the cumulative perps P&L, " +
+        "dollars). null means not known, never zero. summary is null for an agent with no perps history; " +
+        "available false means the perps are delayed (asOfMs). asOfMs is when the figures were true. The same " +
+        "figures as the agent page. An agent that is not published answers RECORD_NOT_FOUND. No wallet address " +
+        "or balance. A measured record, not a forecast.",
+      inputSchema: getAgentPerpsSummaryShape,
+    },
+    async (args) => callAndRelay("candle_get_agent_perps_summary", args, getConfig(), doFetch),
   )
 
   register(

@@ -36,6 +36,7 @@ test("all registered tools are listed", () => {
     "candle_get_account_pnl",
     "candle_get_agent_open_orders",
     "candle_get_agent_perp_round",
+    "candle_get_agent_perps_summary",
     "candle_get_agent_positions",
     "candle_get_agent_profile",
     "candle_get_agent_record",

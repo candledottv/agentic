@@ -208,7 +208,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.38";
+var CLI_VERSION = "0.13.39";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
@@ -10773,7 +10773,7 @@ var init_chain_registry = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.41";
+var SERVER_VERSION = "0.10.42";
 
 // ../mcp/src/client.ts
 function isLoopbackHost2(hostname) {
@@ -14548,6 +14548,14 @@ function buildRequest(name, args, cfg) {
         init: { method: "GET", headers: jsonHeaders() }
       };
     }
+    case "candle_get_agent_perps_summary": {
+      const { profileId, window } = args;
+      const params = new URLSearchParams(window ? { window } : {});
+      return {
+        url: `${base2}/api/v1/agent/records/${encodeURIComponent(profileId)}/perps${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders() }
+      };
+    }
     case "candle_get_agent_perp_round": {
       const { profileId, roundId } = args;
       return {
@@ -15296,6 +15304,11 @@ function registerToolSubset(server, options) {
     description: "Public trading record, spot swaps and certified closed Hyperliquid rounds interleaved newest first. " + "No key needed. Round fields: dex:COIN, side, recorded leverage (null when unknown), largest size, entry and exit " + "averages, net P&L, funding (positive earned), fees, duration, liquidation and closing fill hash. " + "returnPct is net P&L / initial margin at the largest size, times 100. perpsAsOfMs stamps the certified figures; " + "perpsCoverageFromMs is the coverage start. A missing field is unknown, never zero. Pass rowsCursor as cursor " + "to page; restart if the cursor expires. Private and hidden agents answer RECORD_NOT_FOUND. Measured record, not a forecast.",
     inputSchema: { profileId: exports_external.string(), cursor: exports_external.string().optional() }
   }, async (args) => callAndRelay("candle_get_agent_record", args, getConfig(), doFetch));
+  register("candle_get_agent_perps_summary", {
+    title: "Get an agent's perps summary",
+    description: "One published agent's Hyperliquid perps summary for a window (all, 24h, 7d or 30d; default all) " + "(GET /api/v1/agent/records/{profileId}/perps). No key needed. Reads only. summary: netUsd (realized + " + "funding - fees + unrealized change), realizedUsd, unrealizedUsd, fundingUsd (positive when received), " + "feesUsd (Hyperliquid fees, Candle's builder fee included), volumeUsd (sum of px x sz of the agent's fills, " + "builder-dex fills included; builderDexVolumeUsd is their part), feesToVolumePct (fees over main-exchange " + "volume), roundsClosed, wins, losses, winRatePct, largestWinUsd, largestLossUsd, highestLeverage and " + "averageLeverage (rounds with leverage not recorded are left out and counted in " + "leverageNotRecordedRounds), liquidations and maxDrawdownUsd (peak to trough of the cumulative perps P&L, " + "dollars). null means not known, never zero. summary is null for an agent with no perps history; " + "available false means the perps are delayed (asOfMs). asOfMs is when the figures were true. The same " + "figures as the agent page. An agent that is not published answers RECORD_NOT_FOUND. No wallet address " + "or balance. A measured record, not a forecast.",
+    inputSchema: getAgentPerpsSummaryShape
+  }, async (args) => callAndRelay("candle_get_agent_perps_summary", args, getConfig(), doFetch));
   register("candle_get_agent_perp_round", {
     title: "Get one perp round of an agent",
     description: "One Hyperliquid perp round (open to flat) of a published agent, open or closed " + "(GET /api/v1/agent/records/{profileId}/perps/rounds/{roundId}). No key needed. Reads only. Returns coin " + "(dex:COIN on a builder-deployed dex), side, outcome (open, won, lost or liquidated), leverage (null when " + "not recorded), entryAvgPx, exitAvgPx, markPx and liquidationPx while open, every fill (time, role, px, sz, " + "feeUsd, closedPnlUsd, hash for the Hyperliquid explorer), each funding payment (usd positive when " + "received), hyperliquidFeesUsd and builderFeesUsd separately, pnlUsd and returnOnMargin (Hyperliquid's ROE as " + "a fraction: P&L over entry average x peak size / leverage; null without a leverage). roundId is rnd_... " + "from a round row, or open:<COIN>. An agent that is not published, or a round that is not its, answers " + "RECORD_NOT_FOUND. asOfMs is the certified perps cutoff. No wallet address or balance. A round is data, not advice.",
@@ -15808,7 +15821,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   }
   return eligible;
 }
-var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, SIGNAL_RECORD_TOOL_NAMES, isSignalRecordTool = (name) => SIGNAL_RECORD_TOOL_NAMES.includes(name), PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, SWAP_RECEIPT_DESCRIPTION, SWAP_SETTLEMENT_REREAD, getMarketShape, quoteShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getAgentPerpRoundShape, getAgentOpenOrdersShape, getPerpCandlesShape, getPerpMarketShape, getOperationShape, getSwapReceiptShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, HOOD_ADDRESS, holderExitShape, claimHolderExitShape, resolveTokenShape, tradingWalletsShape, spendableBalancesShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID, localServerConfigs;
+var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, SIGNAL_RECORD_TOOL_NAMES, isSignalRecordTool = (name) => SIGNAL_RECORD_TOOL_NAMES.includes(name), PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, SWAP_RECEIPT_DESCRIPTION, SWAP_SETTLEMENT_REREAD, getMarketShape, quoteShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getAgentPerpsSummaryShape, getAgentPerpRoundShape, getAgentOpenOrdersShape, getPerpCandlesShape, getPerpMarketShape, getOperationShape, getSwapReceiptShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, HOOD_ADDRESS, holderExitShape, claimHolderExitShape, resolveTokenShape, tradingWalletsShape, spendableBalancesShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID, localServerConfigs;
 var init_tools = __esm(() => {
   init_perps_transfer();
   init_zod();
@@ -15880,6 +15893,7 @@ var init_tools = __esm(() => {
     "candle_delete_post",
     "candle_get_agent_positions",
     "candle_get_agent_record",
+    "candle_get_agent_perps_summary",
     "candle_get_agent_perp_round",
     "candle_get_agent_open_orders",
     "candle_get_perp_candles",
@@ -16063,6 +16077,10 @@ var init_tools = __esm(() => {
   getAgentPositionsShape = {
     profileId: exports_external.string().describe("The agent's stable public id: prof_ and 16 lowercase hex"),
     kind: exports_external.enum(["spot", "perp"]).optional().describe("Only spot tokens or only Hyperliquid perps; omit for both")
+  };
+  getAgentPerpsSummaryShape = {
+    profileId: exports_external.string().describe("The agent's stable public id: prof_ and 16 lowercase hex"),
+    window: exports_external.enum(["all", "24h", "7d", "30d"]).optional().describe("The window; omit for all time")
   };
   getAgentPerpRoundShape = {
     profileId: exports_external.string().describe("The agent's stable public id: prof_ and 16 lowercase hex"),
@@ -30649,13 +30667,13 @@ function assertColdVaultDestination(index, destinationLabelOrAddress, opts = {})
   }
   const exposed = destination.exposure?.everRemoteExposed === true;
   const exported = destination.exposure?.everExported === true;
-  const unknown = destination.exposure?.exposureUnknown === true;
+  const unknown2 = destination.exposure?.exposureUnknown === true;
   if (exposed || exported) {
     throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `${destination.label ?? destination.address} is not cold: everRemoteExposed=${exposed}, everExported=${exported}.`, {
       suggestion: "Pin a vault key that has never been remotely exposed or exported (`candle vault new-key`)."
     });
   }
-  if (unknown && !opts.acceptUnknownExposure) {
+  if (unknown2 && !opts.acceptUnknownExposure) {
     throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `${destination.label ?? destination.address} carries exposureUnknown and is refused as a recovery destination.`, {
       suggestion: "Pass --accept-unknown-exposure to admit only this case (never an everRemoteExposed or everExported key), or create a fresh cold key."
     });
@@ -74072,7 +74090,7 @@ function boolean3(params) {
 function _null3(params) {
   return _null2(ZodNull3, params);
 }
-function unknown2() {
+function unknown3() {
   return _unknown(ZodUnknown3);
 }
 function never2(params) {
@@ -74093,7 +74111,7 @@ function looseObject(shape, params) {
   return new ZodObject3({
     type: "object",
     shape,
-    catchall: unknown2(),
+    catchall: unknown3(),
     ...exports_util.normalizeParams(params)
   });
 }
@@ -74520,8 +74538,8 @@ var init_schemas3 = __esm(() => {
     });
     inst.keyof = () => _enum(Object.keys(inst._zod.def.shape));
     inst.catchall = (catchall) => inst.clone({ ...inst._zod.def, catchall });
-    inst.passthrough = () => inst.clone({ ...inst._zod.def, catchall: unknown2() });
-    inst.loose = () => inst.clone({ ...inst._zod.def, catchall: unknown2() });
+    inst.passthrough = () => inst.clone({ ...inst._zod.def, catchall: unknown3() });
+    inst.loose = () => inst.clone({ ...inst._zod.def, catchall: unknown3() });
     inst.strict = () => inst.clone({ ...inst._zod.def, catchall: never2() });
     inst.strip = () => inst.clone({ ...inst._zod.def, catchall: undefined });
     inst.extend = (incoming) => {
@@ -74824,7 +74842,7 @@ var init_types4 = __esm(() => {
     error: object8({
       code: number3().int(),
       message: string3(),
-      data: unknown2().optional()
+      data: unknown3().optional()
     })
   }).strict();
   JSONRPCMessageSchema2 = union2([
@@ -74865,7 +74883,7 @@ var init_types4 = __esm(() => {
   });
   FormElicitationCapabilitySchema = intersection2(object8({
     applyDefaults: boolean3().optional()
-  }), record6(string3(), unknown2()));
+  }), record6(string3(), unknown3()));
   ElicitationCapabilitySchema = preprocess((value) => {
     if (value && typeof value === "object" && !Array.isArray(value)) {
       if (Object.keys(value).length === 0) {
@@ -74876,7 +74894,7 @@ var init_types4 = __esm(() => {
   }, intersection2(object8({
     form: FormElicitationCapabilitySchema.optional(),
     url: AssertObjectSchema2.optional()
-  }), record6(string3(), unknown2()).optional()));
+  }), record6(string3(), unknown3()).optional()));
   ClientTasksCapabilitySchema = looseObject({
     list: AssertObjectSchema2.optional(),
     cancel: AssertObjectSchema2.optional(),
@@ -75020,7 +75038,7 @@ var init_types4 = __esm(() => {
   ResourceContentsSchema2 = object8({
     uri: string3(),
     mimeType: optional2(string3()),
-    _meta: record6(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown3()).optional()
   });
   TextResourceContentsSchema2 = ResourceContentsSchema2.extend({
     text: string3()
@@ -75134,34 +75152,34 @@ var init_types4 = __esm(() => {
     type: literal2("text"),
     text: string3(),
     annotations: AnnotationsSchema.optional(),
-    _meta: record6(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown3()).optional()
   });
   ImageContentSchema2 = object8({
     type: literal2("image"),
     data: Base64Schema2,
     mimeType: string3(),
     annotations: AnnotationsSchema.optional(),
-    _meta: record6(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown3()).optional()
   });
   AudioContentSchema2 = object8({
     type: literal2("audio"),
     data: Base64Schema2,
     mimeType: string3(),
     annotations: AnnotationsSchema.optional(),
-    _meta: record6(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown3()).optional()
   });
   ToolUseContentSchema = object8({
     type: literal2("tool_use"),
     name: string3(),
     id: string3(),
-    input: record6(string3(), unknown2()),
-    _meta: record6(string3(), unknown2()).optional()
+    input: record6(string3(), unknown3()),
+    _meta: record6(string3(), unknown3()).optional()
   });
   EmbeddedResourceSchema2 = object8({
     type: literal2("resource"),
     resource: union2([TextResourceContentsSchema2, BlobResourceContentsSchema2]),
     annotations: AnnotationsSchema.optional(),
-    _meta: record6(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown3()).optional()
   });
   ResourceLinkSchema2 = ResourceSchema2.extend({
     type: literal2("resource_link")
@@ -75203,15 +75221,15 @@ var init_types4 = __esm(() => {
       type: literal2("object"),
       properties: record6(string3(), AssertObjectSchema2).optional(),
       required: array2(string3()).optional()
-    }).catchall(unknown2()),
+    }).catchall(unknown3()),
     outputSchema: object8({
       type: literal2("object"),
       properties: record6(string3(), AssertObjectSchema2).optional(),
       required: array2(string3()).optional()
-    }).catchall(unknown2()).optional(),
+    }).catchall(unknown3()).optional(),
     annotations: ToolAnnotationsSchema2.optional(),
     execution: ToolExecutionSchema.optional(),
-    _meta: record6(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown3()).optional()
   });
   ListToolsRequestSchema2 = PaginatedRequestSchema2.extend({
     method: literal2("tools/list")
@@ -75221,15 +75239,15 @@ var init_types4 = __esm(() => {
   });
   CallToolResultSchema2 = ResultSchema2.extend({
     content: array2(ContentBlockSchema2).default([]),
-    structuredContent: record6(string3(), unknown2()).optional(),
+    structuredContent: record6(string3(), unknown3()).optional(),
     isError: boolean3().optional()
   });
   CompatibilityCallToolResultSchema2 = CallToolResultSchema2.or(ResultSchema2.extend({
-    toolResult: unknown2()
+    toolResult: unknown3()
   }));
   CallToolRequestParamsSchema2 = TaskAugmentedRequestParamsSchema.extend({
     name: string3(),
-    arguments: record6(string3(), unknown2()).optional()
+    arguments: record6(string3(), unknown3()).optional()
   });
   CallToolRequestSchema2 = RequestSchema2.extend({
     method: literal2("tools/call"),
@@ -75254,7 +75272,7 @@ var init_types4 = __esm(() => {
   LoggingMessageNotificationParamsSchema2 = NotificationsParamsSchema2.extend({
     level: LoggingLevelSchema2,
     logger: string3().optional(),
-    data: unknown2()
+    data: unknown3()
   });
   LoggingMessageNotificationSchema2 = NotificationSchema2.extend({
     method: literal2("notifications/message"),
@@ -75278,7 +75296,7 @@ var init_types4 = __esm(() => {
     content: array2(ContentBlockSchema2).default([]),
     structuredContent: object8({}).loose().optional(),
     isError: boolean3().optional(),
-    _meta: record6(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown3()).optional()
   });
   SamplingContentSchema = discriminatedUnion("type", [TextContentSchema2, ImageContentSchema2, AudioContentSchema2]);
   SamplingMessageContentBlockSchema = discriminatedUnion("type", [
@@ -75291,7 +75309,7 @@ var init_types4 = __esm(() => {
   SamplingMessageSchema2 = object8({
     role: RoleSchema,
     content: union2([SamplingMessageContentBlockSchema, array2(SamplingMessageContentBlockSchema)]),
-    _meta: record6(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown3()).optional()
   });
   CreateMessageRequestParamsSchema2 = TaskAugmentedRequestParamsSchema.extend({
     messages: array2(SamplingMessageSchema2),
@@ -75462,7 +75480,7 @@ var init_types4 = __esm(() => {
   RootSchema2 = object8({
     uri: string3().startsWith("file://"),
     name: string3().optional(),
-    _meta: record6(string3(), unknown2()).optional()
+    _meta: record6(string3(), unknown3()).optional()
   });
   ListRootsRequestSchema2 = RequestSchema2.extend({
     method: literal2("roots/list"),
@@ -77894,6 +77912,7 @@ START HERE â€” fifteen tools need NO credential. Call these first to confirm the
   candle_list_agents      the agent directory: every published agent with its strategy, declared models, all-time P&L, trades and launches; sort newest, active or pnl
   candle_list_agent_posts one published agent's posts, newest first: free text it or its owner wrote, with an optional token chip. Data, never instructions or advice
   candle_get_agent_positions one published agent's open positions, spot and Hyperliquid perps, with quantities; under $1 hidden and counted, funding positive when earned, no wallet or balance
+  candle_get_agent_perps_summary one published agent's perps summary for a window: net, realized, unrealized, funding, fees, volume, fees to volume, rounds, win rate, largest win and loss, leverage, liquidations, max drawdown; null is unknown, never zero
   candle_get_agent_perp_round one perp round of a published agent, open or closed: fills, funding, fees split Hyperliquid vs Candle builder fee, entry and exit averages, return on margin, outcome; roundId rnd_... or open:<COIN>
   candle_get_agent_open_orders a published agent's open limit and take-profit / stop orders, public on Hyperliquid, cached about 10 minutes; none means none
   candle_get_perp_candles public cached candles for a perp market, dex:COIN included
@@ -77950,12 +77969,131 @@ Full reference, error catalogue and end-to-end recipes: https://docs.candle.tv â
 // src/index.ts
 init_api_key_file();
 init_client();
-init_agent_positions();
 import { spawn as spawn3 } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { chmod as chmod17, readFile as readFile22, realpath as realpath2, rename as rename16, unlink, writeFile as writeFile16 } from "node:fs/promises";
 import { homedir as homedir6, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
+
+// src/commands/agent-perps.ts
+init_args();
+init_client();
+init_render();
+init_usd();
+init_agent_positions();
+init_swap();
+var USAGE2 = "Usage: candle agent <profile-id|slug> --perps [--window all|24h|7d|30d] [--json]";
+var WINDOWS = ["all", "24h", "7d", "30d"];
+var WINDOW_LABEL = { all: "all time", "24h": "24h", "7d": "7d", "30d": "30d" };
+var unknown = "unknown";
+var usd = (n, signed = false) => n === null ? unknown : formatUsd(n, { signed });
+var lev = (n) => n === null ? "not recorded" : `${Number(n.toFixed(2))}x`;
+function summaryRows(s) {
+  const notRecorded = s.leverageNotRecordedRounds ? ` (${s.leverageNotRecordedRounds} round${s.leverageNotRecordedRounds === 1 ? "" : "s"} with leverage not recorded left out)` : "";
+  return [
+    ["Perps P&L", usd(s.netUsd, true), "realized + funding - fees + unrealized change"],
+    ["Realized", usd(s.realizedUsd, true), "closed P&L of the fills in the window"],
+    ["Unrealized", usd(s.unrealizedUsd, true), s.window === "all" ? "open positions now" : "change over the window"],
+    ["Funding", usd(s.fundingUsd, true), "positive when received"],
+    ["Fees", usd(s.feesUsd), "Hyperliquid fees, Candle's builder fee included"],
+    [
+      "Volume",
+      `${usd(s.volumeUsd)}${s.volumeUnpricedFills ? ` (${s.volumeUnpricedFills} fills without a price left out)` : ""}`,
+      `sum of price x size per fill${s.builderDexVolumeUsd ? `, ${formatUsd(s.builderDexVolumeUsd)} on builder dexes` : ""}`
+    ],
+    [
+      "Fees to volume",
+      s.feesToVolumePct === null ? unknown : `${s.feesToVolumePct.toFixed(4)}%`,
+      "fees / main-exchange volume"
+    ],
+    ["Rounds closed", String(s.roundsClosed), "open to flat, counted at the close"],
+    [
+      "Win rate",
+      s.winRatePct === null ? "-" : `${s.winRatePct.toFixed(1)}% (${s.wins}W ${s.losses}L)`,
+      "wins / (wins + losses)"
+    ],
+    ["Largest win", s.largestWinUsd === null ? "-" : usd(s.largestWinUsd, true), "best round above zero"],
+    ["Largest loss", s.largestLossUsd === null ? "-" : usd(s.largestLossUsd, true), "worst round below zero"],
+    ["Highest leverage", lev(s.highestLeverage), `rounds closed in the window${notRecorded}`],
+    ["Average leverage", lev(s.averageLeverage), `mean over those rounds${notRecorded}`],
+    ["Liquidations", s.liquidations === null ? unknown : String(s.liquidations), "rounds closed by a liquidation"],
+    [
+      "Max drawdown",
+      s.maxDrawdownUsd === null ? unknown : formatUsd(s.maxDrawdownUsd),
+      "peak to trough of cumulative perps P&L"
+    ]
+  ];
+}
+function render2(answer, now) {
+  const s = answer.summary;
+  const label = WINDOW_LABEL[answer.window];
+  if (s === null)
+    return `No perps history (${label}).`;
+  if (!s.available)
+    return `Perps delayed since ${formatTime(s.asOfMs, { now, missing: "never" })}; no summary now.`;
+  const lines = [
+    `Perps summary, ${label}${s.partial ? " (partial)" : ""}`,
+    `As of ${formatTime(s.asOfMs, { now, missing: "never" })}${s.perpsProvisional ? `; certified ${formatTime(s.perpsCertifiedAsOfMs ?? null, { now, missing: "never" })}` : ""}`
+  ];
+  if (s.coverageFromMs !== null)
+    lines.push(`Recorded since ${new Date(s.coverageFromMs).toISOString().slice(0, 10)}`);
+  lines.push("", renderTable(["Figure", "Value", "How"], summaryRows(s).map((r) => r.map(terminalText))));
+  return lines.join(`
+`);
+}
+async function agentPerps(args, ctx) {
+  const usage2 = (message = USAGE2) => {
+    writeUsageFailure(ctx.deps, message, ctx.json);
+    return 2;
+  };
+  const parsed = parseArgs(args, { valueFlags: ["--window"], booleanFlags: ["--perps"] });
+  if ("error" in parsed)
+    return usage2(`${parsed.error}
+${USAGE2}`);
+  const named = parsed.positionals[0]?.toLowerCase();
+  if (!parsed.booleans.has("--perps"))
+    return usage2();
+  if (parsed.positionals.length !== 1 || !named || !PROFILE_ID.test(named) && !SLUG.test(named))
+    return usage2();
+  const window = parsed.values["--window"] ?? "all";
+  if (!WINDOWS.includes(window))
+    return usage2(`--window must be all, 24h, 7d or 30d
+${USAGE2}`);
+  const request2 = (path) => apiRequest(path, { apiUrl: ctx.apiUrl, credentials: {}, auth: "none", fetch: ctx.deps.fetch, env: ctx.deps.env });
+  try {
+    let profileId = named;
+    if (!PROFILE_ID.test(named)) {
+      const resolved = await request2(`/api/v1/agent/slug/${encodeURIComponent(named)}`);
+      if (!resolved.ok) {
+        writeFailure(ctx.deps, resolved, { apiUrl: ctx.apiUrl, authType: "none" }, ctx.json);
+        return 1;
+      }
+      const found = resolved.body.resolved?.profileId;
+      if (typeof found !== "string") {
+        writeLocalFailure(ctx.deps, { code: "RECORD_NOT_FOUND", message: `No published agent has the slug ${named}.` }, ctx.json);
+        return 1;
+      }
+      profileId = found;
+    }
+    const result2 = await request2(`/api/v1/agent/records/${encodeURIComponent(profileId)}/perps?window=${window}`);
+    if (!result2.ok) {
+      writeFailure(ctx.deps, result2, { apiUrl: ctx.apiUrl, authType: "none" }, ctx.json);
+      return 1;
+    }
+    if (ctx.json)
+      ctx.deps.stdout.write(`${JSON.stringify(result2.body)}
+`);
+    else
+      ctx.deps.stdout.write(`${render2(result2.body, Date.now())}
+`);
+    return 0;
+  } catch (err) {
+    return tradingFailure(ctx, err);
+  }
+}
+
+// src/index.ts
+init_agent_positions();
 
 // src/commands/agent-post.ts
 init_args();
@@ -78254,14 +78392,14 @@ init_client();
 init_render();
 init_trading();
 init_swap();
-var USAGE2 = "Usage: candle agent post create --text <text> [--chain <solana|hood> --mint <address>] | delete <post-id> | list [profile-id] [--limit <n>] [--cursor <cursor>]";
+var USAGE3 = "Usage: candle agent post create --text <text> [--chain <solana|hood> --mint <address>] | delete <post-id> | list [profile-id] [--limit <n>] [--cursor <cursor>]";
 var ACTION_FLAGS = {
   create: ["--text", "--chain", "--mint"],
   delete: [],
   list: ["--limit", "--cursor"]
 };
 async function agentPost(args, ctx) {
-  const usage2 = (message = USAGE2) => {
+  const usage2 = (message = USAGE3) => {
     writeUsageFailure(ctx.deps, message, ctx.json);
     return 2;
   };
@@ -78271,7 +78409,7 @@ async function agentPost(args, ctx) {
   const parsed = parseArgs(args.slice(1), { valueFlags: [...ACTION_FLAGS[action]] });
   if ("error" in parsed)
     return usage2(`${parsed.error}
-${USAGE2}`);
+${USAGE3}`);
   const { values, positionals } = parsed;
   const request2 = (path, init) => apiRequest(path, {
     apiUrl: ctx.apiUrl,
@@ -78291,10 +78429,10 @@ ${USAGE2}`);
       return usage2();
     if (chain2 === undefined !== (mint === undefined))
       return usage2(`--chain and --mint go together
-${USAGE2}`);
+${USAGE3}`);
     if (chain2 !== undefined && chain2 !== "solana" && !isEvmChainSlug(chain2)) {
       return usage2(`--chain must be an enabled chain (solana or an EVM chain from the registry)
-${USAGE2}`);
+${USAGE3}`);
     }
     const body = { text, ...chain2 !== undefined ? { token: { chain: chain2, mint } } : {} };
     plan = async (key) => request2("/api/v1/agent/posts", { method: "POST", body, key: await key() });
@@ -78309,7 +78447,7 @@ ${USAGE2}`);
     const limit = values["--limit"];
     if (limit !== undefined && !/^[1-9]\d*$/.test(limit))
       return usage2(`--limit must be a whole number
-${USAGE2}`);
+${USAGE3}`);
     const query2 = new URLSearchParams({
       ...limit !== undefined ? { limit } : {},
       ...values["--cursor"] !== undefined ? { cursor: values["--cursor"] } : {}
@@ -78486,14 +78624,14 @@ var FLAGS = {
   "--models": "publicModels",
   "--links": "publicLinks"
 };
-var USAGE3 = "Usage: candle agent profile show | set [--bio <text>] [--strategy <tag>] [--strategy-note <text>] [--models <comma-separated>] [--links <JSON>] [--avatar <URL> | --avatar-file <path>] [--banner <URL> | --banner-file <path>]";
+var USAGE4 = "Usage: candle agent profile show | set [--bio <text>] [--strategy <tag>] [--strategy-note <text>] [--models <comma-separated>] [--links <JSON>] [--avatar <URL> | --avatar-file <path>] [--banner <URL> | --banner-file <path>]";
 var FILE_FLAGS = ["--avatar-file", "--banner-file"];
 async function agentProfile(args, ctx) {
   const action = args[0];
   const parsed = parseArgs(args.slice(1), { valueFlags: [...Object.keys(FLAGS), ...FILE_FLAGS], pathFlags: FILE_FLAGS });
   if ("error" in parsed || action !== "show" && action !== "set" || parsed.positionals.length || action === "show" && Object.keys(parsed.values).length || action === "set" && !Object.keys(parsed.values).length) {
     writeUsageFailure(ctx.deps, "error" in parsed ? `${parsed.error}
-${USAGE3}` : USAGE3, ctx.json);
+${USAGE4}` : USAGE4, ctx.json);
     return 2;
   }
   const patch = {};
@@ -78650,7 +78788,7 @@ init_render();
 init_usd();
 init_agent_positions();
 init_swap();
-var USAGE4 = "Usage: candle agent round <profile-id|slug> <round-id|open:COIN> [--json]";
+var USAGE5 = "Usage: candle agent round <profile-id|slug> <round-id|open:COIN> [--json]";
 var ROUND_ID = /^(?:rnd_[0-9a-f]{16}|open:(?:[A-Za-z0-9]{1,12}:)?[A-Za-z0-9]{1,20})$/;
 var pct2 = (fraction) => `${fraction >= 0 ? "+" : ""}${(fraction * 100).toFixed(1)}%`;
 var duration = (ms) => {
@@ -78664,7 +78802,7 @@ function roundLabel(r) {
   const side = r.side === "long" ? "Long" : "Short";
   return `${side} ${r.coin} ${r.leverage ? `${r.leverage.value}x` : "(leverage not recorded)"}`;
 }
-function render2(r, now) {
+function render3(r, now) {
   const lines = [];
   lines.push(`${roundLabel(r)}: ${r.outcome}`);
   lines.push(`Opened ${formatTime(r.openedMs, { now })}${r.closedMs === null ? ", still open" : `, closed ${formatTime(r.closedMs, { now })}`} (${duration(r.durationMs)})`);
@@ -78693,14 +78831,14 @@ function render2(r, now) {
 `);
 }
 async function agentRound(args, ctx) {
-  const usage2 = (message = USAGE4) => {
+  const usage2 = (message = USAGE5) => {
     writeUsageFailure(ctx.deps, message, ctx.json);
     return 2;
   };
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
     return usage2(`${parsed.error}
-${USAGE4}`);
+${USAGE5}`);
   const named = parsed.positionals[0]?.toLowerCase();
   const roundId = parsed.positionals[1];
   if (parsed.positionals.length !== 2 || !named || !PROFILE_ID.test(named) && !SLUG.test(named) || !roundId || !ROUND_ID.test(roundId))
@@ -78746,7 +78884,7 @@ ${USAGE4}`);
     }
     const { renderOpenOrders: renderOpenOrders2 } = await Promise.resolve().then(() => (init_agent_positions(), exports_agent_positions));
     const tail = orders ? renderOpenOrders2({ orders, readAt: ctx.deps.now(), stale: false }, ctx.deps.now()) : [];
-    ctx.deps.stdout.write(`${[render2(round, ctx.deps.now()), ...tail].join(`
+    ctx.deps.stdout.write(`${[render3(round, ctx.deps.now()), ...tail].join(`
 `)}
 `);
     return 0;
@@ -81349,7 +81487,7 @@ var HELP = {
   },
   agent: {
     group: "Account",
-    summary: "This agent's public page and posts; any agent's positions",
+    summary: "This agent's page and posts; any agent's positions and perps",
     description: "An acting key with profileSelfEdit allowed may edit its bio, strategy, models, links and images, and publish or delete posts on its own page. Name, slug and visibility remain owner-only. The server enforces permission, admin lock and the daily limits: 20 profile edits and 30 posts per UTC day, each shared by every key of the profile. A post is free text shown as plain text, tied to no trade or launch. --avatar-file and --banner-file publish the image and metadata on uploads.candle.tv and save the field without a later PATCH. Each image and any text PATCH consume separate profile edits and may succeed independently. candle image upload is for launch images (IPFS), not profile images.",
     usage: [
       "candle agent profile show",
@@ -81358,6 +81496,7 @@ var HELP = {
       "candle agent post delete <post-id>",
       "candle agent post list [profile-id] [--limit <n>] [--cursor <cursor>]",
       "candle agent positions <profile-id|slug> [--kind spot|perp] [--orders] [--json]",
+      "candle agent <profile-id|slug> --perps [--window all|24h|7d|30d] [--json]",
       "candle agent round <profile-id|slug> <round-id|open:COIN> [--json]",
       "candle agent record <profile-id> [--cursor cursor] [--json]"
     ],
@@ -81374,6 +81513,10 @@ var HELP = {
       {
         invocation: "positions <profile-id|slug>",
         description: "A published agent's open positions, spot and Hyperliquid perps, with amounts; under $1 hidden; its open limit and take-profit / stop orders ride beside any perp. No key"
+      },
+      {
+        invocation: "<profile-id|slug> --perps",
+        description: "A published agent's Hyperliquid perps summary for a window: P&L and its parts, volume, fees to volume, rounds, win rate, largest win and loss, highest and average leverage, liquidations, max drawdown; each with its formula. The agent page's figures. No key"
       },
       {
         invocation: "round <profile-id|slug> <round-id|open:COIN>",
@@ -81402,7 +81545,9 @@ var HELP = {
       { invocation: "--limit <n>", description: "Posts per page, 1 to 50 (default 20)" },
       { invocation: "--cursor <cursor>", description: "The previous page's cursor" },
       { invocation: "--kind <spot|perp>", description: "positions: only tokens or only perps" },
-      { invocation: "--orders", description: "positions: add the agent's open orders to --json output" }
+      { invocation: "--orders", description: "positions: add the agent's open orders to --json output" },
+      { invocation: "--perps", description: "The agent's perps summary (with a profile id or slug)" },
+      { invocation: "--window <all|24h|7d|30d>", description: "--perps: the window (default all)" }
     ],
     examples: [
       "candle agent profile show --json",
@@ -81411,7 +81556,8 @@ var HELP = {
       'candle agent post create --text "Watching the curve fill"',
       "candle agent post list --json",
       "candle agent positions prof_0123456789abcdef --kind perp",
-      "candle agent round prof_0123456789abcdef open:BTC"
+      "candle agent round prof_0123456789abcdef open:BTC",
+      "candle agent prof_0123456789abcdef --perps --window 7d"
     ],
     env: []
   },
@@ -82476,7 +82622,7 @@ function renderPresentedTopLevel(style) {
 
 // src/commands/completion.ts
 init_render();
-var USAGE5 = `Usage: candle completion <${COMPLETION_SHELLS.join("|")}>`;
+var USAGE6 = `Usage: candle completion <${COMPLETION_SHELLS.join("|")}>`;
 var VAULT_FACTOR_VALUES = ["list", "add", "remove", ...FACTOR_KINDS];
 function completableWords() {
   const words = new Set;
@@ -82631,7 +82777,7 @@ async function completionFish(_args, ctx) {
 async function completion(args, ctx) {
   const typed = args.find((arg) => !arg.startsWith("-"));
   const named = typed === undefined ? "No shell named." : `Unknown shell: ${typed}.`;
-  writeUsageFailure(ctx.deps, `${named} ${USAGE5}`, ctx.json);
+  writeUsageFailure(ctx.deps, `${named} ${USAGE6}`, ctx.json);
   return 2;
 }
 
@@ -82768,6 +82914,7 @@ var TOOL_CLASSES = {
   candle_get_agent_positions: READ,
   candle_get_agent_record: READ,
   candle_get_agent_perp_round: READ,
+  candle_get_agent_perps_summary: READ,
   candle_get_agent_open_orders: READ,
   candle_get_perp_candles: READ,
   candle_get_perp_market: READ,
@@ -83038,8 +83185,8 @@ var WITHDRAW_KEY_DAYS = 30;
 function formatKeyLimit(limit) {
   if (limit === undefined)
     return;
-  const usd = (micros) => `$${(Math.max(0, micros) / 1e6).toFixed(2)}`;
-  return `${usd(limit.usdMicros)} ${limit.reset === "never" ? "in total" : limit.reset}, ${usd(limit.usdMicros - limit.usedUsdMicros)} left`;
+  const usd2 = (micros) => `$${(Math.max(0, micros) / 1e6).toFixed(2)}`;
+  return `${usd2(limit.usdMicros)} ${limit.reset === "never" ? "in total" : limit.reset}, ${usd2(limit.usdMicros - limit.usedUsdMicros)} left`;
 }
 
 class FactorRejectedError extends Error {
@@ -84007,8 +84154,8 @@ class CardBook {
           throw refused("CARD_NOT_AWAITING", `This card is ${card2.state}.`, { state: card2.state });
         }
         const limit = await this.deps.trading.refreshKeyLimit(credentials);
-        const usd = cardUsdMicros(card2);
-        if (limit !== undefined && usd !== undefined && usd > limit.usdMicros - limit.usedUsdMicros) {
+        const usd2 = cardUsdMicros(card2);
+        if (limit !== undefined && usd2 !== undefined && usd2 > limit.usdMicros - limit.usedUsdMicros) {
           throw refused("OVER_KEY_LIMIT", `This is over the Write key's limit (${formatKeyLimit(limit)}). Nothing was sent.`, {
             keyLimitUsd: formatKeyLimit(limit)
           });
@@ -84497,16 +84644,16 @@ class CardBook {
         expired++;
       }
     }
-    let unknown = 0;
+    let unknown2 = 0;
     for (const op of this.operations.values()) {
       if (op.state === "submitting" || op.state === "pending") {
         await this.settle(op, "unknown", { reason: "core_restarted" });
-        unknown++;
+        unknown2++;
       }
       if (op.state === "unknown")
         op.readNeedsFactor = op.kind !== "transfer" && (readsById(op) || op.tool === "candle_claim_fees");
     }
-    return { expired, unknown };
+    return { expired, unknown: unknown2 };
   }
   async abandon(op, writeKey, viewClientId) {
     op.resolution = "abandoned";
@@ -84828,9 +84975,9 @@ function webSocketOpener(WebSocketImpl = globalThis.WebSocket) {
 }
 function parseSignalQuery(args) {
   const allowed = new Set(["chain", "mint", "pattern", "limit"]);
-  const unknown = Object.keys(args).filter((key) => !allowed.has(key));
-  if (unknown.length > 0)
-    return { error: `candle_get_signals takes chain, mint, pattern and limit only, not ${unknown.join(", ")}.` };
+  const unknown2 = Object.keys(args).filter((key) => !allowed.has(key));
+  if (unknown2.length > 0)
+    return { error: `candle_get_signals takes chain, mint, pattern and limit only, not ${unknown2.join(", ")}.` };
   const query2 = { limit: SIGNAL_QUERY_DEFAULT_LIMIT };
   if (args.chain !== undefined) {
     if (args.chain !== "solana" && args.chain !== "hood")
@@ -88361,7 +88508,7 @@ async function reportTransferActivity(ctx, apiKey, signature, chain2 = "solana")
   }
 }
 // src/commands/core.ts
-var USAGE6 = "Usage: candle core serve [--view-token-fd <n>]";
+var USAGE7 = "Usage: candle core serve [--view-token-fd <n>]";
 async function coreServe(args, ctx) {
   const { deps, json } = ctx;
   const parsed = parseArgs(args, { valueFlags: ["--view-token-fd"] });
@@ -88371,14 +88518,14 @@ async function coreServe(args, ctx) {
   }
   if (parsed.positionals.length > 0) {
     writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}
-${USAGE6}`, json);
+${USAGE7}`, json);
     return 2;
   }
   const fdFlag = parsed.values["--view-token-fd"];
   const viewTokenFd = fdFlag === undefined ? undefined : Number(fdFlag);
   if (viewTokenFd !== undefined && (!Number.isInteger(viewTokenFd) || viewTokenFd < 3)) {
     writeUsageFailure(deps, `--view-token-fd takes a descriptor number of 3 or more, not ${fdFlag}
-${USAGE6}`, json);
+${USAGE7}`, json);
     return 2;
   }
   const profile = ctx.profile;
@@ -88901,13 +89048,13 @@ function registerCardHandlers(server, cards, trading, journal, agents) {
         });
       } else {
         const value = params.value;
-        const usd = typeof value?.limitUsd === "number" ? value.limitUsd : Number.NaN;
+        const usd2 = typeof value?.limitUsd === "number" ? value.limitUsd : Number.NaN;
         const reset = value?.reset ?? "daily";
-        if (!Number.isFinite(usd) || usd <= 0)
+        if (!Number.isFinite(usd2) || usd2 <= 0)
           throw refused("INVALID_SETTING", "withdraw takes {limitUsd} above zero, or false.");
         if (reset !== "daily" && reset !== "weekly" && reset !== "monthly" && reset !== "never")
           throw refused("INVALID_SETTING", "reset is daily, weekly, monthly or never.");
-        const info2 = await trading.turnOnEmbeddedTransfers({ limitUsdMicros: Math.round(usd * 1e6), reset }, factor);
+        const info2 = await trading.turnOnEmbeddedTransfers({ limitUsdMicros: Math.round(usd2 * 1e6), reset }, factor);
         await journal.append({
           type: "withdraw_key.minted",
           clientId: client.clientId,
@@ -89115,7 +89262,7 @@ async function connectCore(input) {
 // src/commands/core-mcp.ts
 init_paths();
 init_render();
-var USAGE7 = "Usage: candle core mcp [--token <harness token>] [--harness <kind>]";
+var USAGE8 = "Usage: candle core mcp [--token <harness token>] [--harness <kind>]";
 var CORE_MCP_INSTRUCTIONS = `This is the Candle core: the same Candle tools as candle mcp, attached to the user's Candle TUI.
 
 MONEY WRITES WAIT FOR THE USER. A live trade, swap, stake, claim, launch or profile write does not run when you call it. It becomes an approval card the user approves in the Candle TUI with their own factor. The answer comes back at once:
@@ -89185,13 +89332,13 @@ async function coreMcp(args, ctx) {
   }
   if (parsed.positionals.length > 0) {
     writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}
-${USAGE7}`, json);
+${USAGE8}`, json);
     return 2;
   }
   const token2 = parsed.values["--token"] ?? deps.env.CANDLE_CORE_TOKEN?.trim();
   if (!token2) {
     writeUsageFailure(deps, `A harness token is required: --token, or CANDLE_CORE_TOKEN. Mint one in the Candle TUI (Agents > Connect a harness).
-${USAGE7}`, json);
+${USAGE8}`, json);
     return 2;
   }
   if (ctx.profile === undefined) {
@@ -95308,7 +95455,7 @@ init_profiles();
 init_key_output();
 init_keys();
 init_tee_rebind();
-var USAGE8 = "Usage: candle keys limit <prefix|label> (--tx-limit <usd> [--reset daily|weekly|monthly|never] | --clear)";
+var USAGE9 = "Usage: candle keys limit <prefix|label> (--tx-limit <usd> [--reset daily|weekly|monthly|never] | --clear)";
 async function keysLimit(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {
@@ -95322,23 +95469,23 @@ async function keysLimit(args, ctx) {
   }
   const target = parsed.positionals[0];
   if (!target || parsed.positionals.length !== 1) {
-    writeScreenUsageFailure(deps, USAGE8, json);
+    writeScreenUsageFailure(deps, USAGE9, json);
     return 2;
   }
   const clear = parsed.booleans.has("--clear");
-  const usd = parsed.values["--tx-limit"];
+  const usd2 = parsed.values["--tx-limit"];
   const resetFlag = parsed.values["--reset"];
-  if (clear === (usd !== undefined)) {
-    writeScreenUsageFailure(deps, clear ? "Pass --tx-limit or --clear, not both." : USAGE8, json);
+  if (clear === (usd2 !== undefined)) {
+    writeScreenUsageFailure(deps, clear ? "Pass --tx-limit or --clear, not both." : USAGE9, json);
     return 2;
   }
-  if (resetFlag !== undefined && usd === undefined) {
+  if (resetFlag !== undefined && usd2 === undefined) {
     writeScreenUsageFailure(deps, "--reset requires --tx-limit.", json);
     return 2;
   }
   let txLimit;
-  if (usd !== undefined) {
-    const parsedUsd = parseUsdToMicros(usd);
+  if (usd2 !== undefined) {
+    const parsedUsd = parseUsdToMicros(usd2);
     if (!parsedUsd.ok) {
       writeScreenUsageFailure(deps, parsedUsd.message, json);
       return 2;
@@ -95381,7 +95528,7 @@ async function keysLimit(args, ctx) {
   const style = terminalStyle(deps, "stdout");
   const rows = clear ? [["Key", resolved.keyPrefix]] : [
     ["Key", resolved.keyPrefix],
-    ["USD limit", usd ?? ""],
+    ["USD limit", usd2 ?? ""],
     ["Resets", txLimit?.reset ?? "daily"]
   ];
   deps.stdout.write(`${success(clear ? "Transaction limit cleared" : "Transaction limit updated", style)}
@@ -95400,7 +95547,7 @@ init_deps();
 init_presentation();
 init_profiles();
 init_key_output();
-var USAGE9 = "Usage: candle keys limits <prefix> <asset>=<raw-amount> [<asset>=<raw-amount> ...]";
+var USAGE10 = "Usage: candle keys limits <prefix> <asset>=<raw-amount> [<asset>=<raw-amount> ...]";
 var KEY_LIMIT_ASSETS = { sol: 9, usdc: 6, cndl: 6, eth: 18, usdg: 6 };
 var RAW_AMOUNT = /^[1-9][0-9]*$/;
 var NO_API_KEY3 = {
@@ -95419,7 +95566,7 @@ async function keysLimits(args, ctx) {
   const target = parsed.positionals[0];
   const caps = parsed.positionals.slice(1);
   if (!target || caps.length === 0) {
-    writeScreenUsageFailure(deps, USAGE9, json);
+    writeScreenUsageFailure(deps, USAGE10, json);
     return 2;
   }
   const limits = [];
@@ -95516,7 +95663,7 @@ var TOKEN_PAGE_BODY_CAP_BYTES = 32 * 1024;
 var TOKEN_PAGE_SECTIONS = ["thesis", "tokenomics", "lore"];
 var FLAG_REASONS = ["spam", "scam", "abuse", "misleading", "unsafe_link", "other"];
 var FLAG_DETAIL_LIMIT = 500;
-var USAGE10 = {
+var USAGE11 = {
   about: "Usage: candle token about <address> [--chain solana|hood] [--capabilities]",
   claim: "Usage: candle token claim <address> [--chain solana|hood] [--creator [--challenge [--message-out <path>] | --challenge-id <id> --signature <sig>]] [--idempotency-key <key>]",
   section: `Usage: candle token section set <address> <thesis|tokenomics|lore> --file <path> --base-revision <n> [--clear] [--chain solana|hood] [--idempotency-key <key>]
@@ -95771,7 +95918,7 @@ ${escapeTerminalText(v.text)}
     writeFields(ctx.deps, "stdout", facts.map((f) => [escapeTerminalText(f.metric), factValue(f)]));
 }
 async function tokenAbout(args, ctx) {
-  const usage4 = usageFor(ctx, USAGE10.about);
+  const usage4 = usageFor(ctx, USAGE11.about);
   const parsed = parseArgs(args, { valueFlags: ["--chain"], booleanFlags: ["--capabilities"] });
   if ("error" in parsed)
     return usage4(parsed.error);
@@ -95817,7 +95964,7 @@ async function tokenAbout(args, ctx) {
   return 0;
 }
 async function tokenClaim(args, ctx) {
-  const usage4 = usageFor(ctx, USAGE10.claim);
+  const usage4 = usageFor(ctx, USAGE11.claim);
   const parsed = parseArgs(args, {
     valueFlags: ["--chain", "--challenge-id", "--signature", "--message-out", "--idempotency-key"],
     booleanFlags: ["--creator", "--challenge"],
@@ -95944,7 +96091,7 @@ var SECTION_FLAGS = {
   restore: { valueFlags: ["--chain", "--version-id", "--base-revision", "--idempotency-key"], booleanFlags: [] }
 };
 async function tokenSection(args, ctx) {
-  const usage4 = usageFor(ctx, USAGE10.section);
+  const usage4 = usageFor(ctx, USAGE11.section);
   const action = args[0];
   if (action !== "set" && action !== "restore")
     return usage4();
@@ -96037,7 +96184,7 @@ async function tokenSection(args, ctx) {
   return 0;
 }
 async function tokenHistory(args, ctx) {
-  const usage4 = usageFor(ctx, USAGE10.history);
+  const usage4 = usageFor(ctx, USAGE11.history);
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
   if ("error" in parsed)
     return usage4(parsed.error);
@@ -96092,7 +96239,7 @@ More: --cursor ${escapeTerminalText(data.nextCursor)}
   return 0;
 }
 async function tokenFlag(args, ctx) {
-  const usage4 = usageFor(ctx, USAGE10.flag);
+  const usage4 = usageFor(ctx, USAGE11.flag);
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--content", "--reason", "--detail", "--idempotency-key"] });
   if ("error" in parsed)
     return usage4(parsed.error);
@@ -96187,7 +96334,7 @@ async function tokenUpdate(args, ctx) {
   return 0;
 }
 async function tokenComment(args, ctx) {
-  const usage4 = usageFor(ctx, USAGE10.comment);
+  const usage4 = usageFor(ctx, USAGE11.comment);
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--file", "--idempotency-key"], pathFlags: ["--file"] });
   if ("error" in parsed)
     return usage4(parsed.error);
@@ -96232,7 +96379,7 @@ async function tokenComment(args, ctx) {
   return 0;
 }
 async function tokenComments(args, ctx) {
-  const usage4 = usageFor(ctx, USAGE10.comments);
+  const usage4 = usageFor(ctx, USAGE11.comments);
   const parsed = parseArgs(args, { valueFlags: ["--chain", "--limit", "--cursor"] });
   if ("error" in parsed)
     return usage4(parsed.error);
@@ -96319,7 +96466,7 @@ async function tokenPost(args, ctx) {
 }
 
 // src/commands/keys-rotate.ts
-var USAGE11 = `Usage: candle keys rotate <prefix|label> [--grace <duration> | --now] [--force] [--yes] [--idempotency-key <key>]
+var USAGE12 = `Usage: candle keys rotate <prefix|label> [--grace <duration> | --now] [--force] [--yes] [--idempotency-key <key>]
        candle keys rotate <prefix|label> --finish`;
 var MAX_GRACE_SECONDS = 86400;
 var DEFAULT_GRACE_SECONDS = 3600;
@@ -96347,7 +96494,7 @@ async function keysRotate(args, ctx) {
   }
   const target = parsed.positionals[0];
   if (!target || parsed.positionals.length !== 1) {
-    writeScreenUsageFailure(deps, USAGE11, json);
+    writeScreenUsageFailure(deps, USAGE12, json);
     return 2;
   }
   const finish = parsed.booleans.has("--finish");
@@ -97759,7 +97906,7 @@ function poolRequestFields(flags) {
 
 // src/commands/launch.ts
 init_swap();
-var USAGE12 = `Usage: ${LAUNCH_USAGE}`;
+var USAGE13 = `Usage: ${LAUNCH_USAGE}`;
 var EMBEDDED_WALLET_NAMES = new Set(LAUNCH_DEFINITION2.wallet.embeddedNames);
 var LAUNCH_ARG_SPEC = {
   valueFlags: [
@@ -97894,7 +98041,7 @@ async function launch(args, ctx) {
     flags["--hide"] = "true";
   const check2 = parsed.booleans.has("--check");
   if (check2 && dryRun) {
-    writeUsageFailure(ctx.deps, `--check and --dry-run are two different stops; pass one. ${USAGE12}`, ctx.json);
+    writeUsageFailure(ctx.deps, `--check and --dry-run are two different stops; pass one. ${USAGE13}`, ctx.json);
     return 2;
   }
   const fieldProblem = launchFieldProblem(flags);
@@ -97904,11 +98051,11 @@ async function launch(args, ctx) {
   }
   const curveProblem = curveFlagProblem(flags);
   if (curveProblem) {
-    writeUsageFailure(ctx.deps, `${curveProblem} ${USAGE12}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${curveProblem} ${USAGE13}`, ctx.json);
     return 2;
   }
   if (flags["--image"] !== undefined && flags["--image-url"] !== undefined) {
-    writeUsageFailure(ctx.deps, `Pass --image <path> or --image-url <https-url>, not both: a launch has one image. ${USAGE12}`, ctx.json);
+    writeUsageFailure(ctx.deps, `Pass --image <path> or --image-url <https-url>, not both: a launch has one image. ${USAGE13}`, ctx.json);
     return 2;
   }
   if (flags["--image-url"] !== undefined && !flags["--image-url"].startsWith("https://")) {
@@ -97921,24 +98068,24 @@ async function launch(args, ctx) {
   }
   const missingRequired = !flags["--name"] || !flags["--symbol"] || flags["--image"] === undefined && flags["--image-url"] === undefined || !flags["--wallet"];
   if (parsed.positionals.length || !check2 && missingRequired || !validClientId(id)) {
-    writeUsageFailure(ctx.deps, USAGE12, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE13, ctx.json);
     return 2;
   }
   try {
     poolRequestFields(flags);
   } catch (error) {
-    writeUsageFailure(ctx.deps, `${error.message}. ${USAGE12}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${error.message}. ${USAGE13}`, ctx.json);
     return 2;
   }
   let feeWallet;
   try {
     feeWallet = feeWalletSelection(flags);
   } catch (error) {
-    writeUsageFailure(ctx.deps, `${error.message}. ${USAGE12}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${error.message}. ${USAGE13}`, ctx.json);
     return 2;
   }
   if (parsed.booleans.has("--require-fee-wallet") && !feeWallet) {
-    writeUsageFailure(ctx.deps, `--require-fee-wallet needs --fee-wallet <address>: pass the wallet this launch's fees earn to. ${USAGE12}`, ctx.json);
+    writeUsageFailure(ctx.deps, `--require-fee-wallet needs --fee-wallet <address>: pass the wallet this launch's fees earn to. ${USAGE13}`, ctx.json);
     return 2;
   }
   try {
@@ -97948,11 +98095,11 @@ async function launch(args, ctx) {
     if (selectedQuote !== undefined && !check2 && !flags["--quote-asset"])
       return tradingFailure(ctx, new TradingError("QUOTE_LAUNCH_UNAVAILABLE", "New-quote launch execution is not enabled. Run candle launch --quote <symbol|address> --check to inspect admission and economics; nothing was uploaded or built."));
     if (hinted === "hood" && feeWalletGiven(flags)) {
-      writeUsageFailure(ctx.deps, `--fee-wallet is Solana only; a Hood launch cannot take it. ${USAGE12}`, ctx.json);
+      writeUsageFailure(ctx.deps, `--fee-wallet is Solana only; a Hood launch cannot take it. ${USAGE13}`, ctx.json);
       return 2;
     }
     if (!check2 && hinted === "hood" && flags["--dex-version"] === undefined) {
-      writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE12}`, ctx.json);
+      writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE13}`, ctx.json);
       return 2;
     }
     let image;
@@ -97970,7 +98117,7 @@ async function launch(args, ctx) {
     let rules;
     if (!check2 && launchRulesGiven(flags)) {
       if (hinted === "hood") {
-        writeUsageFailure(ctx.deps, `${LAUNCH_RULES_SOLANA_ONLY} ${USAGE12}`, ctx.json);
+        writeUsageFailure(ctx.deps, `${LAUNCH_RULES_SOLANA_ONLY} ${USAGE13}`, ctx.json);
         return 2;
       }
       try {
@@ -98898,7 +99045,7 @@ init_presentation();
 init_render();
 init_trading();
 init_swap();
-var USAGE13 = "Usage: candle launch status <mint-or-client-launch-id> [--wait]";
+var USAGE14 = "Usage: candle launch status <mint-or-client-launch-id> [--wait]";
 var LAUNCH_WAIT_MS = 10 * 60 * 1000;
 var LAUNCH_WAIT_POLL_MS = 1e4;
 var LIVE = new Set(["trading", "bonded", "migrated"]);
@@ -98956,7 +99103,7 @@ async function readStatus(ctx, key, id) {
 async function launchStatus(args, ctx) {
   const parsed = parseArgs(args, { booleanFlags: ["--wait"] });
   if ("error" in parsed || parsed.positionals.length !== 1 || !validClientId(parsed.positionals[0] ?? "")) {
-    writeUsageFailure(ctx.deps, USAGE13, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE14, ctx.json);
     return 2;
   }
   const id = parsed.positionals[0];
@@ -99065,7 +99212,7 @@ async function lpPools(args, ctx) {
 `);
       return 0;
     }
-    const usd = (value) => value === null || value === undefined ? "unavailable" : formatUsd(value);
+    const usd2 = (value) => value === null || value === undefined ? "unavailable" : formatUsd(value);
     const pct3 = (value) => value === null || value === undefined ? "unavailable" : `${value.toFixed(2)}%`;
     writeFields(ctx.deps, "stdout", [
       ["Token", token2],
@@ -99075,9 +99222,9 @@ async function lpPools(args, ctx) {
       writeFields(ctx.deps, "stdout", [
         ["Pool", safeText(pool.pool)],
         ["Pair", pool.tokens.map(safeText).join(" / ")],
-        ["Liquidity", usd(pool.liquidityUsd)],
+        ["Liquidity", usd2(pool.liquidityUsd)],
         ["Fee", pct3(pool.baseFeePercent)],
-        ["24h volume", usd(pool.volume24hUsd)],
+        ["24h volume", usd2(pool.volume24hUsd)],
         ["Estimated APR", `${pct3(pool.estimatedAprPercent)} (indexed, not a quote)`]
       ]);
     }
@@ -99591,6 +99738,7 @@ var MCP_TOOL_NAMES = [
   "candle_delete_post",
   "candle_get_agent_positions",
   "candle_get_agent_record",
+  "candle_get_agent_perps_summary",
   "candle_get_agent_perp_round",
   "candle_get_agent_open_orders",
   "candle_get_perp_candles",
@@ -99678,6 +99826,7 @@ var READ_ONLY_TOOL_NAMES = [
   "candle_list_agent_posts",
   "candle_get_agent_positions",
   "candle_get_agent_record",
+  "candle_get_agent_perps_summary",
   "candle_get_agent_perp_round",
   "candle_get_agent_open_orders",
   "candle_get_perp_candles",
@@ -99740,9 +99889,9 @@ async function mcp(args, ctx) {
     toolAllowlist = READ_ONLY_TOOL_NAMES.join(",");
   } else if (toolsFlag !== undefined) {
     const requested = toolsFlag.split(",").map((name2) => name2.trim()).filter((name2) => name2.length > 0);
-    const unknown2 = requested.filter((name2) => !MCP_TOOL_NAMES.includes(name2));
-    if (requested.length === 0 || unknown2.length > 0) {
-      writeScreenUsageFailure(deps, `--tools must be a comma-separated list of: ${MCP_TOOL_NAMES.join(", ")}${unknown2.length > 0 ? ` (unknown: ${unknown2.join(", ")})` : ""}`, json);
+    const unknown3 = requested.filter((name2) => !MCP_TOOL_NAMES.includes(name2));
+    if (requested.length === 0 || unknown3.length > 0) {
+      writeScreenUsageFailure(deps, `--tools must be a comma-separated list of: ${MCP_TOOL_NAMES.join(", ")}${unknown3.length > 0 ? ` (unknown: ${unknown3.join(", ")})` : ""}`, json);
       return 2;
     }
     toolAllowlist = requested.join(",");
@@ -101397,20 +101546,20 @@ async function hyperliquidWalletSnapshot2(fetcher, network2, address3, now = Dat
   for (const entry2 of positionsRaw) {
     const p = entry2?.position;
     const coin = p?.coin;
-    const lev = p?.leverage;
+    const lev2 = p?.leverage;
     const szi = p?.szi;
     if (typeof coin !== "string" || typeof szi !== "string" || decimal5(szi) === null) {
       unsupported2.push(`an unreadable position (${JSON.stringify(coin ?? null)})`);
       continue;
     }
     const asset = assetOf2(coin);
-    if (asset < 0 || lev?.type !== "cross" && lev?.type !== "isolated" || !Number.isInteger(lev.value)) {
+    if (asset < 0 || lev2?.type !== "cross" && lev2?.type !== "isolated" || !Number.isInteger(lev2.value)) {
       unsupported2.push(`position ${coin}`);
       continue;
     }
     if (decimal5(szi) === 0n)
       continue;
-    positions.push({ coin, asset, szi, leverage: { type: lev.type, value: lev.value } });
+    positions.push({ coin, asset, szi, leverage: { type: lev2.type, value: lev2.value } });
   }
   if (!Array.isArray(open8))
     throw new Error("Hyperliquid returned an unreadable order list");
@@ -101527,11 +101676,11 @@ async function venueEvidence2(fetcher, network2, address3, intent, now) {
         user: address3.toLowerCase(),
         coin: name2
       });
-      const lev = data?.leverage;
-      if (lev?.type !== "cross" && lev?.type !== "isolated" || !Number.isInteger(lev.value))
+      const lev2 = data?.leverage;
+      if (lev2?.type !== "cross" && lev2?.type !== "isolated" || !Number.isInteger(lev2.value))
         throw new Error("Hyperliquid did not report this market's leverage");
       const flat = !snapshot.positions.some((x) => x.asset === asset) && !snapshot.orders.some((o) => o.asset === asset);
-      return { leverageTarget: { asset, leverage: lev.value, mode: lev.type, flat } };
+      return { leverageTarget: { asset, leverage: lev2.value, mode: lev2.type, flat } };
     }
     case "margin": {
       const snapshot = await hyperliquidWalletSnapshot2(fetcher, network2, address3, now, coinDex);
@@ -105582,7 +105731,7 @@ function stepLine(step) {
   return `${step.step + 1}. ${what}: ${step.status}${step.detail ? ` (${safeText(step.detail)})` : ""}`;
 }
 function workflowExit(ctx, result2, mode) {
-  const unknown2 = result2.steps.some((s) => s.status === "unknown");
+  const unknown3 = result2.steps.some((s) => s.status === "unknown");
   if (ctx.json)
     ctx.deps.stdout.write(`${JSON.stringify(result2)}
 `);
@@ -105606,7 +105755,7 @@ function workflowExit(ctx, result2, mode) {
     else
       notice(ctx.deps, "stdout", "warning", `Incomplete. Remaining: ${safeText(JSON.stringify(result2.remaining))}`);
   }
-  if (unknown2)
+  if (unknown3)
     return 3;
   if (mode !== "submit")
     return result2.steps.some((s) => s.status === "rejected") ? 1 : 0;
@@ -106275,7 +106424,7 @@ var TRANSFER_SCOPE = "perps:write";
 var ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 var AMOUNT_RE = /^(0|[1-9][0-9]{0,11})(\.[0-9]{1,6})?$/;
 var DEX_RE = /^[A-Za-z0-9]{1,16}$/;
-var USAGE14 = "Usage: candle perps transfer (--to-dex <dex> | --from-dex <dex>) <amount|--all> [--wallet <evm tee>] [--id <id>] [--yes] [--no-submit] | candle perps transfer status <id>";
+var USAGE15 = "Usage: candle perps transfer (--to-dex <dex> | --from-dex <dex>) <amount|--all> [--wallet <evm tee>] [--id <id>] [--yes] [--no-submit] | candle perps transfer status <id>";
 function usage11(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
@@ -106354,7 +106503,7 @@ async function transferStatus(ctx, id) {
 async function perpsTransfer(args, ctx) {
   if (args[0] === "status") {
     if (args.length !== 2 || !ID_RE.test(args[1]))
-      return usage11(ctx, USAGE14);
+      return usage11(ctx, USAGE15);
     try {
       return await transferStatus(ctx, args[1]);
     } catch (error) {
@@ -106619,7 +106768,7 @@ init_swap();
 init_vault_support();
 var WITHDRAW_SCOPE = "perps:withdraw";
 var ID_RE2 = /^[A-Za-z0-9._:-]{1,128}$/;
-var USAGE15 = "Usage: candle perps withdraw <amount> --to solana|hood [--wallet <evm tee>] [--id <id>] [--keystore <path>] | candle perps withdraw status <id>";
+var USAGE16 = "Usage: candle perps withdraw <amount> --to solana|hood [--wallet <evm tee>] [--id <id>] [--keystore <path>] | candle perps withdraw status <id>";
 var WITHDRAW_POLL_MS = 10 * 60 * 1000;
 var WITHDRAW_POLL_INTERVAL_MS = 5000;
 var TERMINAL = new Set(["settled", "refunded", "failed"]);
@@ -106679,7 +106828,7 @@ async function withdrawStatus(ctx, id) {
 async function perpsWithdraw(args, ctx) {
   if (args[0] === "status") {
     if (args.length !== 2 || !ID_RE2.test(args[1]))
-      return usage12(ctx, USAGE15);
+      return usage12(ctx, USAGE16);
     try {
       return await withdrawStatus(ctx, args[1]);
     } catch (error) {
@@ -106698,7 +106847,7 @@ async function perpsWithdraw(args, ctx) {
   const [amount] = parsed.positionals;
   const to = parsed.values["--to"];
   if (parsed.positionals.length !== 1 || !amount || to === undefined || to !== "solana" && !isEvmChainSlug(to))
-    return usage12(ctx, USAGE15);
+    return usage12(ctx, USAGE16);
   const amountMicros = parseWithdrawAmount(amount);
   if (amountMicros === null)
     return usage12(ctx, "The amount must be a positive USDC decimal with at most 6 decimals.");
@@ -108887,12 +109036,12 @@ function planPromotionLine2(table) {
 init_presentation();
 init_render();
 init_key_output();
-var USAGE16 = "Usage: candle plans";
+var USAGE17 = "Usage: candle plans";
 async function plans(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed || parsed.positionals.length > 0) {
     writeScreenUsageFailure(ctx.deps, "error" in parsed ? `${parsed.error}
-${USAGE16}` : USAGE16, ctx.json);
+${USAGE17}` : USAGE17, ctx.json);
     return 2;
   }
   const result2 = await apiRequest("/api/v1/agent/plans", {
@@ -109435,21 +109584,21 @@ ${financialHeading("Hyperliquid", style)}
   out.write(`${fields([["Network", section2.network]], style).join(`
 `)}
 `);
-  const usd = (value) => formatUsd(value, { signed: true });
+  const usd2 = (value) => formatUsd(value, { signed: true });
   const rows = [
-    ["Realized gross", usd(section2.realizedGrossUsd), ""],
-    ["Funding", usd(section2.fundingUsd), "received positive, paid negative"],
+    ["Realized gross", usd2(section2.realizedGrossUsd), ""],
+    ["Funding", usd2(section2.fundingUsd), "received positive, paid negative"],
     ["Fees", formatUsd(section2.feesUsd), "includes builder fees"],
-    ["Realized net", usd(section2.realizedNetUsd), "gross + funding - fees"]
+    ["Realized net", usd2(section2.realizedNetUsd), "gross + funding - fees"]
   ];
   const realizedOnly = typeof section2.netUsd !== "string" || typeof section2.unrealizedUsd !== "string";
   const wallets2 = Array.isArray(section2.byWallet) ? section2.byWallet : [];
   if (!realizedOnly) {
     const live = wallets2.some((w) => w.reconciliation === "live");
     const markedAt = typeof section2.markedAt === "number" ? ` at ${time(section2.markedAt)}` : "";
-    rows.push(["Unrealized", usd(Number(section2.unrealizedUsd)), `open positions${markedAt}`], [
+    rows.push(["Unrealized", usd2(Number(section2.unrealizedUsd)), `open positions${markedAt}`], [
       "Net",
-      usd(Number(section2.netUsd)),
+      usd2(Number(section2.netUsd)),
       `realized net + unrealized; in the total${live ? "; live, not yet settled" : ""}`
     ]);
   }
@@ -109835,11 +109984,11 @@ ${wrapText(`Closed ${c.closed} ${c.closed === 1 ? "position" : "positions"} (${c
 }
 function writeWalletEvents(ctx, books) {
   const notes = [];
-  const unknown2 = books.costUnknown?.length ?? 0;
-  if (unknown2 > 0) {
+  const unknown3 = books.costUnknown?.length ?? 0;
+  if (unknown3 > 0) {
     notes.push([
       "note",
-      `${unknown2} ${unknown2 === 1 ? "arrival" : "arrivals"} of tokens came with no cost anyone can state: selling them realizes nothing (--json lists them).`
+      `${unknown3} ${unknown3 === 1 ? "arrival" : "arrivals"} of tokens came with no cost anyone can state: selling them realizes nothing (--json lists them).`
     ]);
   }
   const out = books.movedOutUntracked?.length ?? 0;
@@ -111188,7 +111337,7 @@ init_args();
 init_client();
 init_deps();
 init_key_output();
-var USAGE17 = 'Usage: candle quant ask "<text>" [--timeout <s>] [--json]';
+var USAGE18 = 'Usage: candle quant ask "<text>" [--timeout <s>] [--json]';
 var QUANT_ASK_DEFAULT_TIMEOUT_S = 300;
 var QUANT_ASK_MAX_TIMEOUT_S = 3600;
 var QUANT_ASK_SEND_TRIES = 3;
@@ -111357,7 +111506,7 @@ async function quantAsk(args, ctx) {
   const timeoutS = timeoutRaw === undefined ? QUANT_ASK_DEFAULT_TIMEOUT_S : Number(timeoutRaw);
   const text4 = "error" in parsed ? "" : parsed.positionals[0] ?? "";
   if ("error" in parsed || parsed.positionals.length !== 1 || !text4.trim() || !Number.isInteger(timeoutS) || timeoutS < 1 || timeoutS > QUANT_ASK_MAX_TIMEOUT_S) {
-    writeScreenUsageFailure(ctx.deps, USAGE17, ctx.json);
+    writeScreenUsageFailure(ctx.deps, USAGE18, ctx.json);
     return 2;
   }
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
@@ -111605,7 +111754,7 @@ function readCard(body) {
   return card2;
 }
 var num = (value) => typeof value === "number" && Number.isFinite(value) ? value : null;
-function usd(value) {
+function usd2(value) {
   const n = num(value);
   return n === null ? null : formatUsd(n, { compact: true });
 }
@@ -111732,11 +111881,11 @@ ${usage14()}`, ctx.json);
   const rows = [
     ["Contract", card2.mint],
     ["Price", num(m.priceUsd) === null ? null : formatPrice(m.priceUsd)],
-    ["Market cap", usd(m.marketCapUsd)],
+    ["Market cap", usd2(m.marketCapUsd)],
     ["All-time high", athLine(card2)],
     ["5m change", percentChange(m.change5mPct)],
-    ["Liquidity", usd(m.liquidityUsd)],
-    ["Volume 5m", usd(m.volume5mUsd)],
+    ["Liquidity", usd2(m.liquidityUsd)],
+    ["Volume 5m", usd2(m.volume5mUsd)],
     ["Buys / sells 5m", pair(buys === null ? null : String(buys), sells === null ? null : String(sells), missing)],
     ["Bundles", fact(card2, "bundles")],
     ["Snipers", fact(card2, "snipers")],
@@ -112486,7 +112635,7 @@ async function client2(ctx) {
     refuse3(ctx, "SIGNAL_RECORDS_URL_INVALID", "Signal records need a valid HTTPS CANDLE_HACC_URL without credentials, query or fragment.");
   }
 }
-function answer2(ctx, result2, render3) {
+function answer2(ctx, result2, render4) {
   if (!result2.ok) {
     const { status, code, message, body } = result2.refusal;
     return refuse3(ctx, code, message, status ? { status, body } : undefined);
@@ -112495,7 +112644,7 @@ function answer2(ctx, result2, render3) {
     ctx.deps.stdout.write(`${JSON.stringify(result2.body)}
 `);
   else {
-    render3(result2.body);
+    render4(result2.body);
     measureLine(ctx, "stdout");
   }
   return 0;
@@ -113975,7 +114124,7 @@ init_human_output();
 init_render();
 init_usd();
 var KINDS = ["trade", "signal", "callout"];
-var USAGE18 = "Usage: candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]";
+var USAGE19 = "Usage: candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]";
 function readEventsBody(body) {
   if (body === null || typeof body !== "object" || !Array.isArray(body.events))
     return null;
@@ -114033,11 +114182,11 @@ async function tokenEvents(args, ctx) {
   const since = parsed.values["--since"];
   const before = parsed.values["--before"];
   if (parsed.positionals.length !== 1 || chain2 !== "solana" && !isEvmChainSlug(chain2)) {
-    writeUsageFailure(ctx.deps, USAGE18, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE19, ctx.json);
     return 2;
   }
   if (kind !== undefined && !KINDS.includes(kind)) {
-    writeUsageFailure(ctx.deps, USAGE18, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE19, ctx.json);
     return 2;
   }
   if (limit !== undefined && !/^[1-9][0-9]{0,3}$/.test(limit) || Number(limit) > 1000) {
@@ -114654,7 +114803,7 @@ init_solana_verify();
 init_trading();
 init_swap();
 import { randomUUID as randomUUID18 } from "node:crypto";
-var USAGE19 = `Usage: candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--client-id <id>] [--rpc-url <url>] [--yes] [--json]
+var USAGE20 = `Usage: candle transfer --to <address|wallet name|allowlist label|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--client-id <id>] [--rpc-url <url>] [--yes] [--json]
        candle transfer status <transfer id|client id> [--json]`;
 var CLIENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
@@ -114876,7 +115025,7 @@ async function transfer(args, ctx) {
   const flags2 = parsed.values;
   const asset = flags2["--asset"]?.toUpperCase();
   if (parsed.positionals.length !== 0 || !flags2["--to"] || !flags2["--amount"] || [flags2["--asset"], flags2["--mint"], flags2["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags2["--mint"] !== undefined && !BASE58_ADDRESS.test(flags2["--mint"]) || flags2["--token"] !== undefined && !checkEvmAddress(flags2["--token"]).ok || flags2["--client-id"] !== undefined && !CLIENT_ID.test(flags2["--client-id"])) {
-    writeUsageFailure(ctx.deps, USAGE19, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE20, ctx.json);
     return 2;
   }
   const to = flags2["--to"];
@@ -120522,17 +120671,17 @@ async function runTeeImport(ctx, opts) {
   if (!flow.ok) {
     const failure4 = flow.failure;
     if (failure4.kind === "api") {
-      const render3 = { apiUrl: ctx.apiUrl, authType: "key" };
+      const render4 = { apiUrl: ctx.apiUrl, authType: "key" };
       if (report2 === "write") {
-        writeFailure(ctx.deps, failure4.response, render3, ctx.json);
+        writeFailure(ctx.deps, failure4.response, render4, ctx.json);
         return { exit: 1 };
       }
-      const suggestion = suggestionFor(failure4.response, render3);
+      const suggestion = suggestionFor(failure4.response, render4);
       return {
         exit: 1,
         failure: {
-          code: errorEnvelope(failure4.response, render3).code,
-          message: renderError(failure4.response, render3),
+          code: errorEnvelope(failure4.response, render4).code,
+          message: renderError(failure4.response, render4),
           ...suggestion ? { suggestion } : {},
           stage: failure4.stage,
           status: failure4.response.status
@@ -123043,7 +123192,7 @@ init_human_output();
 init_release();
 import { dirname as dirname13, join as join15 } from "node:path";
 init_key_output();
-var USAGE20 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE21 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
@@ -123075,19 +123224,19 @@ async function verify(args, ctx) {
   });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, `${parsed.error}
-${USAGE20}`, json);
+${USAGE21}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeScreenUsageFailure(deps, `verify takes exactly one file.
-${USAGE20}`, json);
+${USAGE21}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeScreenUsageFailure(deps, `--bundle is required.
-${USAGE20}`, json);
+${USAGE21}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -123101,7 +123250,7 @@ ${USAGE20}`, json);
   }
   if (resolved.kind === "absent") {
     writeScreenUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE20}`, json);
+${USAGE21}`, json);
     return 2;
   }
   const identity4 = resolved.uri;
@@ -123455,7 +123604,7 @@ init_presentation();
 init_profiles();
 init_render();
 init_key_output();
-var USAGE21 = "Usage: candle wallets authorize [--no-browser] [--no-wait] [--timeout <seconds>] [--json]";
+var USAGE22 = "Usage: candle wallets authorize [--no-browser] [--no-wait] [--timeout <seconds>] [--json]";
 var AUTHORIZE_WAIT_DEFAULT_SECONDS = 600;
 var AUTHORIZE_POLL_MS = 3000;
 function authorizeUrl(apiUrl, portalOrigin) {
@@ -123478,12 +123627,12 @@ async function walletsAuthorize(args, ctx) {
   const parsed = parseArgs(args, { booleanFlags: ["--no-browser", "--no-wait"], valueFlags: ["--timeout"] });
   if ("error" in parsed) {
     writeScreenUsageFailure(deps, `${parsed.error}
-${USAGE21}`, json);
+${USAGE22}`, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
     writeScreenUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}
-${USAGE21}`, json);
+${USAGE22}`, json);
     return 2;
   }
   let timeoutSeconds = AUTHORIZE_WAIT_DEFAULT_SECONDS;
@@ -123492,7 +123641,7 @@ ${USAGE21}`, json);
     const n = Number(rawTimeout);
     if (!Number.isInteger(n) || n <= 0) {
       writeScreenUsageFailure(deps, `--timeout must be a whole number of seconds above 0, got ${rawTimeout}
-${USAGE21}`, json);
+${USAGE22}`, json);
       return 2;
     }
     timeoutSeconds = n;
@@ -123599,7 +123748,7 @@ init_solana_lite();
 init_trading();
 init_swap();
 import { randomUUID as randomUUID19 } from "node:crypto";
-var USAGE22 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--preview] [--yes] [--json]";
+var USAGE23 = "Usage: candle wallet close-empty [--wallet embedded|<tee address|label>] [--keep <mint>]... [--client-trade-id <id>] [--preview] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 var TOKEN_IX_CLOSE_ACCOUNT3 = 9;
@@ -123874,7 +124023,7 @@ async function closeTee(ctx, key, wallet3, name2, run2) {
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
   if ("error" in lifted) {
-    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE22}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE23}`, ctx.json);
     return 2;
   }
   const parsed = parseArgs(lifted.rest, {
@@ -123888,7 +124037,7 @@ async function walletsCloseEmpty(args, ctx) {
   const named = parsed.values["--client-trade-id"];
   const id = named ?? `close-${randomUUID19()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
-    writeUsageFailure(ctx.deps, USAGE22, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE23, ctx.json);
     return 2;
   }
   const run2 = {
@@ -124332,6 +124481,7 @@ var COMMANDS = {
   pnl: { bare: pnl },
   portfolio: { bare: portfolio },
   agent: {
+    bare: agentPerps,
     subcommands: {
       profile: agentProfile,
       post: agentPost,

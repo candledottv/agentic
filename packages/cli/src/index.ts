@@ -26,6 +26,7 @@ import { homedir, hostname } from "node:os"
 import { pathToFileURL } from "node:url"
 import { ApiKeyFileError, hasApiKeyFile } from "../../mcp/src/api-key-file"
 import { browserUrl, resolveApiUrl, setOwnerConfirmHooks } from "./client"
+import { agentPerps } from "./commands/agent-perps"
 import { agentPositions } from "./commands/agent-positions"
 import { agentPost } from "./commands/agent-post"
 import { agentProfile } from "./commands/agent-profile"
@@ -284,7 +285,9 @@ const COMMANDS: Record<string, CommandRoute> = {
   // FE-438: the creator fees this account's launched tokens can pay, and the claim to the wallet
   // fixed at launch. Candle signs; this machine sends a mint and a dry-run flag.
   // BE-1990: `agent positions` is the public positions read; it reads and sends no credential.
+  // BE-3775: the bare form is `candle agent <profile-id|slug> --perps`, the public perps summary.
   agent: {
+    bare: agentPerps,
     subcommands: {
       profile: agentProfile,
       post: agentPost,

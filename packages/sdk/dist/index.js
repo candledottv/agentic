@@ -6621,6 +6621,14 @@ class CandleClient {
     const { success: _success, ...positions } = await this.requestJson("GET", `/api/v1/agent/records/${encodeURIComponent(profileId)}/positions${params.size ? `?${params}` : ""}`);
     return positions;
   }
+  async getAgentPerpsSummary(profileId, options = {}) {
+    const params = new URLSearchParams;
+    if (options.window !== undefined)
+      params.set("window", options.window);
+    const response = await this.fetchImpl(`${this.apiUrl}/api/v1/agent/records/${encodeURIComponent(profileId)}/perps${params.size ? `?${params}` : ""}`, { method: "GET" });
+    const { success: _success, ...answer } = await this.parseResponse(response);
+    return answer;
+  }
   async getAgentPerpRound(profileId, roundId) {
     const {
       success: _success,
@@ -8519,7 +8527,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.31";
+var SDK_VERSION = "0.6.32";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

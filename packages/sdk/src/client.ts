@@ -1141,6 +1141,66 @@ export interface AgentPerpPosition {
 
 export type AgentPosition = AgentSpotPosition | AgentPerpPosition
 
+/** BE-3775: the windows the perps summary answers. */
+export type AgentPerpsSummaryWindow = "all" | "24h" | "7d" | "30d"
+
+/**
+ * BE-3775: one public agent's Hyperliquid perps summary for a window, from the same published bundle as
+ * its record, chart and positions. USD numbers; null where a figure is not known (an older bundle, no
+ * round with a recorded leverage, fewer than two chart points), never a fabricated zero.
+ */
+export interface AgentPerpsSummaryFigures {
+  available: true
+  window: AgentPerpsSummaryWindow
+  /** When the figures were true. */
+  asOfMs: number | null
+  /** All-time perps count from here. */
+  coverageFromMs: number | null
+  partial: boolean
+  perpsSnapshotId: string | null
+  /** realized + funding − fees + unrealized change. */
+  netUsd: number
+  realizedUsd: number
+  unrealizedUsd: number
+  /** Positive when received. */
+  fundingUsd: number
+  /** Hyperliquid fees, Candle's builder fee included. */
+  feesUsd: number
+  /** Σ px × sz of the agent's fills in the window, builder-dex fills included. */
+  volumeUsd: number | null
+  builderDexVolumeUsd: number | null
+  volumeUnpricedFills: number
+  /** fees ÷ main-exchange volume, percent. */
+  feesToVolumePct: number | null
+  roundsClosed: number
+  wins: number
+  losses: number
+  /** wins ÷ (wins + losses), percent. */
+  winRatePct: number | null
+  largestWinUsd: number | null
+  largestLossUsd: number | null
+  highestLeverage: number | null
+  /** Rounds with "leverage not recorded" are left out. */
+  averageLeverage: number | null
+  leverageNotRecordedRounds: number | null
+  liquidations: number | null
+  /** Peak to trough of the cumulative perps P&L, positive dollars. */
+  maxDrawdownUsd: number | null
+  perpsProvisional?: true
+  perpsCertifiedAsOfMs?: number
+}
+export type AgentPerpsSummary =
+  | AgentPerpsSummaryFigures
+  | { available: false; window: AgentPerpsSummaryWindow; asOfMs: number | null; partial: true }
+
+/** `getAgentPerpsSummary`'s answer, without `success`. `summary` is null for an agent with no perps history. */
+export interface AgentPerpsSummaryAnswer {
+  window: AgentPerpsSummaryWindow
+  publishedBuildId: string
+  summary: AgentPerpsSummary | null
+  seq?: number
+}
+
 /** BE-3756: how a perp round ended. `open` while its position is still held. */
 export type AgentPerpRoundOutcome = "open" | "won" | "lost" | "liquidated"
 
@@ -5169,6 +5229,31 @@ export class CandleClient {
   }
 
   /**
+   * BE-3775: one published agent's Hyperliquid perps summary for a window
+   * (`GET /api/v1/agent/records/:profileId/perps?window=`, no credential; `window` defaults to `all`):
+   * net, realized, unrealized, funding, fees, volume, fees to volume, rounds closed, win rate, largest
+   * win and loss, highest and average leverage, liquidations and max drawdown. `summary` is null for an
+   * agent with no perps history. Not published: 404 `RECORD_NOT_FOUND`; a server that does not serve
+   * it yet: 503 `perps_summary_unavailable` (`CandleApiError`).
+   */
+  async getAgentPerpsSummary(
+    profileId: string,
+    options: { window?: AgentPerpsSummaryWindow } = {},
+  ): Promise<AgentPerpsSummaryAnswer> {
+    const params = new URLSearchParams()
+    if (options.window !== undefined) params.set("window", options.window)
+    // Public: no key is sent even when one is configured, as for the record.
+    const response = await this.fetchImpl(
+      `${this.apiUrl}/api/v1/agent/records/${encodeURIComponent(profileId)}/perps${params.size ? `?${params}` : ""}`,
+      { method: "GET" },
+    )
+    const { success: _success, ...answer } = await this.parseResponse<{ success: true } & AgentPerpsSummaryAnswer>(
+      response,
+    )
+    return answer
+  }
+
+  /**
    * One perp round (open or closed) of a published agent (`GET /api/v1/agent/records/:profileId/perps/rounds/:roundId`,
    * no credential): fills, funding, fees split between Hyperliquid and Candle's builder fee, entry
    * and exit averages, return on margin and outcome. `roundId` is `rnd_...` from a round row, or
@@ -8532,7 +8617,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.31"
+export const SDK_VERSION = "0.6.32"
 
 let sdkUpdateWarned = false
 
