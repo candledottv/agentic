@@ -680,6 +680,98 @@ function assertHideEchoed(requested, response, what) {
   });
 }
 
+// src/holder-exit.ts
+class HolderExitError extends CandleApiError {
+  details;
+  outcome;
+  calls;
+  warnings;
+  body;
+  constructor(args) {
+    super({
+      code: args.code,
+      message: args.message,
+      status: args.status,
+      retryable: args.retryable,
+      ...args.stage !== undefined ? { stage: args.stage } : {},
+      ...args.reason !== undefined ? { reason: args.reason } : {}
+    });
+    this.name = "HolderExitError";
+    if (args.details !== undefined)
+      this.details = args.details;
+    if (args.outcome !== undefined)
+      this.outcome = args.outcome;
+    if (args.calls !== undefined)
+      this.calls = args.calls;
+    if (args.warnings !== undefined)
+      this.warnings = args.warnings;
+    this.body = args.body;
+  }
+}
+var isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+var stringRecord = (value) => {
+  if (!isObject(value))
+    return;
+  const out = {};
+  for (const [key, entry] of Object.entries(value))
+    if (typeof entry === "string")
+      out[key] = entry;
+  return out;
+};
+function holderExitErrorFromResponse(status, text) {
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = undefined;
+  }
+  const fallback = { code: `HTTP_${status}`, message: text || `HTTP ${status}`, status, retryable: false, body };
+  if (!isObject(body))
+    return new HolderExitError(fallback);
+  const top = body;
+  const sequence = {
+    ...typeof top.outcome === "string" ? { outcome: top.outcome } : {},
+    ...Array.isArray(top.calls) ? { calls: top.calls } : {},
+    ...Array.isArray(top.warnings) ? { warnings: top.warnings.filter((w) => typeof w === "string") } : {}
+  };
+  if (isObject(top.error) && typeof top.error.code === "string" && typeof top.error.message === "string") {
+    const error = top.error;
+    const details = stringRecord(error.details);
+    return new HolderExitError({
+      code: error.code,
+      message: error.message,
+      status,
+      retryable: error.retryable === true,
+      ...typeof error.stage === "string" ? { stage: error.stage } : {},
+      ...typeof error.reason === "string" ? { reason: error.reason } : {},
+      ...details ? { details } : {},
+      ...sequence,
+      body
+    });
+  }
+  if (top.success === false && typeof top.error === "string" && typeof top.code === "string") {
+    const details = stringRecord(top.details);
+    return new HolderExitError({
+      code: top.code,
+      message: top.error,
+      status,
+      retryable: top.retryable === true,
+      ...details ? { details } : {},
+      body
+    });
+  }
+  if (top.error === true && typeof top.payload === "string") {
+    return new HolderExitError({
+      code: typeof top.code === "string" ? top.code : `HTTP_${status}`,
+      message: top.payload,
+      status,
+      retryable: status === 503 || status === 429,
+      body
+    });
+  }
+  return new HolderExitError(fallback);
+}
+
 // src/hyperliquid.ts
 import { keccak_256 } from "@noble/hashes/sha3";
 
@@ -4081,7 +4173,7 @@ function parseSendAssetAmount(value, form) {
     return null;
   return BigInt(whole) * 1000000n + BigInt(frac.padEnd(6, "0"));
 }
-function isObject(value) {
+function isObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function exactKeys2(value, keys) {
@@ -4092,15 +4184,15 @@ function sameEvm(a, b) {
   return typeof a === "string" && EVM_ADDRESS_RE2.test(a) && a.toLowerCase() === b.toLowerCase();
 }
 function typesMatch(types, expected) {
-  if (!isObject(types) || !exactKeys2(types, Object.keys(expected)))
+  if (!isObject2(types) || !exactKeys2(types, Object.keys(expected)))
     return false;
   return Object.entries(expected).every(([key, want]) => {
     const fields = types[key];
-    return Array.isArray(fields) && fields.length === want.length && fields.every((field, i) => isObject(field) && exactKeys2(field, ["name", "type"]) && field.name === want[i]?.name && field.type === want[i]?.type);
+    return Array.isArray(fields) && fields.length === want.length && fields.every((field, i) => isObject2(field) && exactKeys2(field, ["name", "type"]) && field.name === want[i]?.name && field.type === want[i]?.type);
   });
 }
 function domainMatches(domain, expected) {
-  return isObject(domain) && exactKeys2(domain, ["name", "version", "chainId", "verifyingContract"]) && domain.name === expected.name && domain.version === expected.version && domain.chainId === expected.chainId && typeof domain.verifyingContract === "string" && domain.verifyingContract.toLowerCase() === ZERO;
+  return isObject2(domain) && exactKeys2(domain, ["name", "version", "chainId", "verifyingContract"]) && domain.name === expected.name && domain.version === expected.version && domain.chainId === expected.chainId && typeof domain.verifyingContract === "string" && domain.verifyingContract.toLowerCase() === ZERO;
 }
 function verifyWithdrawMapping(build, expect) {
   const refuse = (reason) => ({ ok: false, reason });
@@ -4119,14 +4211,14 @@ function verifyWithdrawMapping(build, expect) {
   if (parseWithdrawAmount(build.amountUsdc) !== expect.amountMicros)
     return refuse("the build is for another amount");
   const typed = build.typedData;
-  if (!isObject(typed) || typed.primary_type !== "NonceMapping")
+  if (!isObject2(typed) || typed.primary_type !== "NonceMapping")
     return refuse("the typed data is not a NonceMapping");
   if (!domainMatches(typed.domain, { name: "RelayNonceMapping", version: "2", chainId: 1 }))
     return refuse("the NonceMapping domain is not Relay's");
   if (!typesMatch(typed.types, RELAY_NONCE_MAPPING_TYPES))
     return refuse("the NonceMapping type list differs");
   const message = typed.message;
-  if (!isObject(message) || !exactKeys2(message, ["chainId", "wallet", "depositor", "id", "nonce"]))
+  if (!isObject2(message) || !exactKeys2(message, ["chainId", "wallet", "depositor", "id", "nonce"]))
     return refuse("the NonceMapping message has other fields");
   if (message.chainId !== "hyperliquid")
     return refuse("the NonceMapping names another chain");
@@ -4148,14 +4240,14 @@ function verifyWithdrawSendAsset(authorization, expect) {
   if (pins === null)
     return refuse("no withdrawal pins are set");
   const typed = authorization.typedData;
-  if (!isObject(typed) || typed.primary_type !== "HyperliquidTransaction:SendAsset")
+  if (!isObject2(typed) || typed.primary_type !== "HyperliquidTransaction:SendAsset")
     return refuse("the typed data is not a SendAsset");
   if (!domainMatches(typed.domain, { name: "HyperliquidSignTransaction", version: "1", chainId: 42161 }))
     return refuse("the SendAsset domain is not Hyperliquid's user-signed domain");
   if (!typesMatch(typed.types, HYPERLIQUID_SEND_ASSET_TYPES))
     return refuse("the SendAsset type list differs");
   const m = typed.message;
-  if (!isObject(m) || !exactKeys2(m, SEND_ASSET_KEYS))
+  if (!isObject2(m) || !exactKeys2(m, SEND_ASSET_KEYS))
     return refuse("the SendAsset message has other fields");
   if (m.hyperliquidChain !== "Mainnet")
     return refuse("the SendAsset is not on Mainnet");
@@ -4174,7 +4266,7 @@ function verifyWithdrawSendAsset(authorization, expect) {
   if (typeof m.destination !== "string" || !pins.depositories.includes(m.destination.toLowerCase()))
     return refuse("the SendAsset destination is not a Relay depository on the allow-list");
   const action = authorization.action;
-  if (!isObject(action) || !exactKeys2(action, ["type", "signatureChainId", ...SEND_ASSET_KEYS]))
+  if (!isObject2(action) || !exactKeys2(action, ["type", "signatureChainId", ...SEND_ASSET_KEYS]))
     return refuse("the action has other fields");
   if (action.type !== "sendAsset" || action.signatureChainId !== "0xa4b1")
     return refuse("the action is not a sendAsset");
@@ -6353,6 +6445,53 @@ class CandleClient {
     const body = await this.requestJson("GET", `/api/v1/markets/${chain}/${encodeURIComponent(mint)}`);
     return body.market;
   }
+  async getHolderExit(curve, account) {
+    const query = account === undefined ? "" : `?account=${encodeURIComponent(account)}`;
+    const body = await this.holderExitJson("GET", `/api/v1/hood/curves/${encodeURIComponent(curve)}/holder-exit${query}`);
+    return body.payload;
+  }
+  async getHolderExits(account) {
+    const body = await this.holderExitJson("GET", `/api/v1/hood/holder-exits?account=${encodeURIComponent(account)}`);
+    return body.payload;
+  }
+  async buildHolderExit(request) {
+    const { curve, account, action, amountRaw } = request;
+    const body = await this.holderExitJson("POST", `/api/v1/hood/curves/${encodeURIComponent(curve)}/holder-exit/build`, { account, action, ...amountRaw !== undefined ? { amountRaw } : {} });
+    return body.payload;
+  }
+  async recordHolderExit(request) {
+    const { curve, account, txHash } = request;
+    const body = await this.holderExitJson("POST", `/api/v1/hood/curves/${encodeURIComponent(curve)}/holder-exit/record`, { account, txHash });
+    return body.payload;
+  }
+  async holderExit(request) {
+    this.requireKey("holderExit()");
+    const { curve, action, amountRaw, dryRun, wallet, linkedSigning } = request;
+    return this.holderExitJson("POST", `/api/v1/agent/hood/holder-exit/${encodeURIComponent(curve)}`, {
+      action,
+      ...amountRaw !== undefined ? { amountRaw } : {},
+      dryRun: dryRun === true,
+      ...wallet !== undefined ? { wallet } : {},
+      ...linkedSigning === true ? { linkedSigning: true } : {}
+    });
+  }
+  async submitHolderExit(request) {
+    this.requireKey("submitHolderExit()");
+    const { curve, ...body } = request;
+    return this.holderExitJson("POST", `/api/v1/agent/hood/holder-exit/${encodeURIComponent(curve)}/submit`, body);
+  }
+  async holderExitJson(method, path, body) {
+    const res = await this.fetchImpl(`${this.apiUrl}${path}`, {
+      method,
+      headers: this.headers({ json: body !== undefined }),
+      ...body !== undefined ? { body: JSON.stringify(body) } : {}
+    });
+    noteLatestSdkVersion(res.headers?.get?.("x-candle-sdk-latest") ?? null);
+    const text = await res.text();
+    if (!res.ok)
+      throw holderExitErrorFromResponse(res.status, text);
+    return JSON.parse(text);
+  }
   async getQuote(chain, mint, q) {
     const params = new URLSearchParams({ side: q.side, amountIn: q.amountIn });
     if (q.slippageBps !== undefined)
@@ -8349,7 +8488,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.27";
+var SDK_VERSION = "0.6.28";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))
@@ -9044,6 +9183,7 @@ export {
   hyperliquidExchangeOutcome,
   hyperliquidActionHash,
   hyperliquidAccountMode,
+  holderExitErrorFromResponse,
   generateSignerKeypair,
   formatPlanBps,
   encryptWalletKeyForImport,
@@ -9085,6 +9225,7 @@ export {
   JsonRpcError,
   InMemorySecretStore,
   HyperliquidReadError,
+  HolderExitError,
   HYPERLIQUID_STANDARD_ACCOUNT_MODES,
   HYPERLIQUID_RISK_DEFAULTS,
   HYPERLIQUID_EXCHANGE_URLS,

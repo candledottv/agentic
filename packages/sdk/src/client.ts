@@ -70,6 +70,19 @@ import {
 } from "./evm-tx"
 import { assertHideEchoed, assertHideSupportedByDryRun, hideField, hideRequested } from "./hide-echo"
 import {
+  type AgentHolderExitRequest,
+  type AgentHolderExitResult,
+  type AgentHolderExitSubmitRequest,
+  type HolderExit,
+  type HolderExitBuild,
+  type HolderExitBuildRequest,
+  type HolderExitList,
+  type HolderExitRead,
+  type HolderExitRecord,
+  type HolderExitRecordRequest,
+  holderExitErrorFromResponse,
+} from "./holder-exit"
+import {
   HYPERLIQUID_CLOID_RE,
   HYPERLIQUID_EXCHANGE_URLS,
   HYPERLIQUID_STANDARD_ACCOUNT_MODES,
@@ -918,6 +931,15 @@ export interface MarketState {
     method: "claimRecovery(uint256)"
     requiresApprovalTo: string
   }
+  /**
+   * Hood only, additive (BE-3791; absent on an older API). Where a holder of this curve stands if
+   * the launch does not migrate: state, Recovery window, rate, rescue request, team escrow, and the
+   * actions that would succeed now. `disclosure` is one sentence per state: show it verbatim. For
+   * one account's figures read `getHolderExit(curve, account)`. `recovery` above is its older shape.
+   */
+  holderExit?: HolderExit
+  /** Hood only: true when the chain read behind `holderExit` failed. The market still loaded. */
+  holderExitUnavailable?: true
   migration: MigrationStatus
 }
 
@@ -4724,6 +4746,114 @@ export class CandleClient {
     return body.market
   }
 
+  /**
+   * Hood holder exits (BE-3794): where a holder of one Hood curve stands if the launch does not
+   * migrate (GET /api/v1/hood/curves/{curve}/holder-exit). No key needed. With `account`, the
+   * figures are that wallet's: balance, what a Recovery claim pays, and the actions it may take now.
+   * A curve Candle does not list answers 404. Throws `HolderExitError`.
+   */
+  async getHolderExit(curve: string, account?: string): Promise<HolderExitRead> {
+    const query = account === undefined ? "" : `?account=${encodeURIComponent(account)}`
+    const body = await this.holderExitJson<{ payload: HolderExitRead }>(
+      "GET",
+      `/api/v1/hood/curves/${encodeURIComponent(curve)}/holder-exit${query}`,
+    )
+    return body.payload
+  }
+
+  /**
+   * The account's open Hood exits across the curves it holds or has a team allocation in
+   * (GET /api/v1/hood/holder-exits). No key needed. `unavailableCount` above zero means some curves
+   * could not be read and the list may be short.
+   */
+  async getHolderExits(account: string): Promise<HolderExitList> {
+    const body = await this.holderExitJson<{ payload: HolderExitList }>(
+      "GET",
+      `/api/v1/hood/holder-exits?account=${encodeURIComponent(account)}`,
+    )
+    return body.payload
+  }
+
+  /**
+   * The unsigned calls for one holder exit, for the holder's own wallet to sign and send in order
+   * (POST /api/v1/hood/curves/{curve}/holder-exit/build). No key needed: the chain authorizes the
+   * sender. Nothing is signed. Every call is simulated first; a call that would revert is refused
+   * by name (`HOOD_RECOVERY_NOT_READY`, `HOOD_VESTING_NOT_MIGRATED`, ...). After sending, call
+   * `recordHolderExit` with the hash (optional: the indexer records it anyway).
+   */
+  async buildHolderExit(request: HolderExitBuildRequest): Promise<HolderExitBuild> {
+    const { curve, account, action, amountRaw } = request
+    const body = await this.holderExitJson<{ payload: HolderExitBuild }>(
+      "POST",
+      `/api/v1/hood/curves/${encodeURIComponent(curve)}/holder-exit/build`,
+      { account, action, ...(amountRaw !== undefined ? { amountRaw } : {}) },
+    )
+    return body.payload
+  }
+
+  /**
+   * Proves a sent holder exit from its receipt and records it once
+   * (POST /api/v1/hood/curves/{curve}/holder-exit/record). No key needed. A transaction that is not
+   * confirmed, or carries no exit of this curve for this account, is `HOOD_EXIT_NOT_CONFIRMED`.
+   */
+  async recordHolderExit(request: HolderExitRecordRequest): Promise<HolderExitRecord> {
+    const { curve, account, txHash } = request
+    const body = await this.holderExitJson<{ payload: HolderExitRecord }>(
+      "POST",
+      `/api/v1/hood/curves/${encodeURIComponent(curve)}/holder-exit/record`,
+      { account, txHash },
+    )
+    return body.payload
+  }
+
+  /**
+   * Runs one holder exit for this account's wallet (POST /api/v1/agent/hood/holder-exit/{curve}).
+   * Candle signs with the embedded Hood wallet unless `wallet` names a linked wallet, which with
+   * `linkedSigning: true` gets `signing[]` to sign itself and pass to `submitHolderExit`. Needs
+   * `swap:write` for `enter_recovery` and `claim_recovery`, `launch:write` for `claim_team`.
+   * `dryRun: true` builds and simulates and signs nothing. A refusal, or a sequence that did not
+   * complete (`outcome` `partial`, `failed` or `indeterminate`), throws `HolderExitError`.
+   */
+  async holderExit(request: AgentHolderExitRequest): Promise<AgentHolderExitResult> {
+    this.requireKey("holderExit()")
+    const { curve, action, amountRaw, dryRun, wallet, linkedSigning } = request
+    return this.holderExitJson<AgentHolderExitResult>(
+      "POST",
+      `/api/v1/agent/hood/holder-exit/${encodeURIComponent(curve)}`,
+      {
+        action,
+        ...(amountRaw !== undefined ? { amountRaw } : {}),
+        dryRun: dryRun === true,
+        ...(wallet !== undefined ? { wallet } : {}),
+        ...(linkedSigning === true ? { linkedSigning: true } : {}),
+      },
+    )
+  }
+
+  /** Broadcasts a linked wallet's signed holder-exit transactions, bound by the build's `claimToken`. */
+  async submitHolderExit(request: AgentHolderExitSubmitRequest): Promise<AgentHolderExitResult> {
+    this.requireKey("submitHolderExit()")
+    const { curve, ...body } = request
+    return this.holderExitJson<AgentHolderExitResult>(
+      "POST",
+      `/api/v1/agent/hood/holder-exit/${encodeURIComponent(curve)}/submit`,
+      body,
+    )
+  }
+
+  /** The holder-exit routes' refusal shapes differ from the agent envelope; `HolderExitError` reads all three. */
+  private async holderExitJson<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+    const res = await this.fetchImpl(`${this.apiUrl}${path}`, {
+      method,
+      headers: this.headers({ json: body !== undefined }),
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    })
+    noteLatestSdkVersion(res.headers?.get?.("x-candle-sdk-latest") ?? null)
+    const text = await res.text()
+    if (!res.ok) throw holderExitErrorFromResponse(res.status, text)
+    return JSON.parse(text) as T
+  }
+
   async getQuote(
     chain: Chain,
     mint: string,
@@ -8303,7 +8433,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.27"
+export const SDK_VERSION = "0.6.28"
 
 let sdkUpdateWarned = false
 

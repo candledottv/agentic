@@ -176,6 +176,11 @@ function harness(opts: {
    * nothing there. `"down"` answers every Hyperliquid request with HTTP 502.
    */
   hyperliquid?: Record<string, unknown> | "down"
+  /**
+   * BE-3794: `GET /api/v1/markets/hood/<mint>` answers, by lowercased mint: a market body, or a
+   * status for a failed read. A mint not named has no market (404), so no exit mark.
+   */
+  markets?: Record<string, Record<string, unknown> | number>
 }) {
   const stdout = createCapture()
   const stderr = createCapture()
@@ -290,6 +295,18 @@ function harness(opts: {
         ...(opts.lp ? { lp: opts.lp } : {}),
         ...(opts.hood ? { hood: opts.hood } : {}),
       })
+    }
+    if (url.pathname.startsWith("/api/v1/markets/hood/")) {
+      const mint = decodeURIComponent(url.pathname.slice("/api/v1/markets/hood/".length)).toLowerCase()
+      const answer = opts.markets?.[mint]
+      if (typeof answer === "number")
+        return Response.json(
+          { success: false, error: { code: "FEED_UNAVAILABLE", message: "down" } },
+          { status: answer },
+        )
+      if (answer === undefined)
+        return Response.json({ success: false, error: { code: "MARKET_NOT_FOUND", message: "none" } }, { status: 404 })
+      return Response.json({ success: true, market: answer })
     }
     if (url.pathname === "/api/v1/agent/prices") {
       const { mints = [], hood = [] } = JSON.parse(body) as { mints?: string[]; hood?: string[] }
@@ -1009,8 +1026,14 @@ describe("Ember 4d: Hood in candle portfolio", () => {
       hood: hoodSection(),
     })
     expect(await run(["portfolio"], h.deps)).toBe(0)
-    // Hood rows come from Candle's one read; nothing else is asked.
-    expect(h.candleRequests().map((r) => `${r.method} ${r.path}`)).toEqual(["GET /api/v1/agent/portfolio"])
+    // Hood rows come from Candle's one read. BE-3794: then one market read per Hood token held (not
+    // ETH or USDG), for its holder-exit mark; a token with no market (404) is simply unmarked.
+    expect(h.candleRequests().map((r) => `${r.method} ${r.path}`)).toEqual([
+      "GET /api/v1/agent/portfolio",
+      `GET /api/v1/markets/hood/${HOODIE.toLowerCase()}`,
+      `GET /api/v1/markets/hood/${STALE.toLowerCase()}`,
+    ])
+    expect(h.stderr.text).not.toContain("Holder exits were not checked")
     expect(h.evmRequests()).toEqual([])
     const out = h.stdout.text
     expect(humanText(out)).toContain(humanText("GROUP     CHAIN   WALLET"))
@@ -1661,5 +1684,78 @@ describe("BE-1582: the Hyperliquid section (spec A-11, AC16)", () => {
     expect(await run(["portfolio"], h.deps)).toBe(0)
     expect(humanText(h.stdout.text)).toContain(humanText("1 EVM TEE wallet holds nothing on Hyperliquid."))
     expect(h.stdout.text).not.toContain("Hyperliquid subtotal")
+  })
+})
+
+describe("BE-3794: holder-exit marks on Hood positions", () => {
+  const exitMarket = (state: string) => ({
+    chain: "hood",
+    curveAddress: "0x9999999999999999999999999999999999999999",
+    holderExit: { state, disclosure: `Disclosure for ${state}.`, actions: [] },
+  })
+
+  test("a token in Recovery is marked in --json and pointed at candle token exit in the table", async () => {
+    const dir = await emptyConfigDir()
+    const markets = {
+      [HOODIE.toLowerCase()]: exitMarket("recovery"),
+      [STALE.toLowerCase()]: exitMarket("awaiting_migration"),
+    }
+    const json = harness({ dir, candlePrices: HOOD_PRICES, hood: hoodSection(), markets })
+    expect(await run(["portfolio", "--json"], json.deps)).toBe(0)
+    const doc = JSON.parse(json.stdout.text)
+    expect(doc.holderExits).toEqual([
+      { mint: HOODIE, symbol: "HOODIE", state: "recovery", disclosure: "Disclosure for recovery." },
+    ])
+    expect(doc.holderExitsUnread).toBeUndefined()
+    const holdings = doc.groups.flatMap((g: { wallets: { holdings: unknown[] | null }[] }) =>
+      g.wallets.flatMap((w) => w.holdings ?? []),
+    ) as { mint: string; holderExit?: string }[]
+    expect(holdings.find((h) => h.mint === HOODIE)?.holderExit).toBe("recovery")
+    // awaiting_migration is not an open exit for a position: unmarked.
+    expect(holdings.find((h) => h.mint === STALE)?.holderExit).toBeUndefined()
+
+    const human = harness({ dir, candlePrices: HOOD_PRICES, hood: hoodSection(), markets })
+    expect(await run(["portfolio"], human.deps)).toBe(0)
+    const text = humanText(human.stdout.text)
+    expect(text).toContain("HOODIE")
+    expect(text).toContain("in Recovery. Disclosure for recovery.")
+    expect(text).toContain(`candle token exit ${HOODIE}`)
+  })
+
+  test("rescue_pending and rescued are marked too", async () => {
+    const dir = await emptyConfigDir()
+    const h = harness({
+      dir,
+      candlePrices: HOOD_PRICES,
+      hood: hoodSection(),
+      markets: { [HOODIE.toLowerCase()]: exitMarket("rescue_pending"), [STALE.toLowerCase()]: exitMarket("rescued") },
+    })
+    expect(await run(["portfolio", "--json"], h.deps)).toBe(0)
+    expect(JSON.parse(h.stdout.text).holderExits.map((m: { state: string }) => m.state)).toEqual([
+      "rescue_pending",
+      "rescued",
+    ])
+  })
+
+  test("a failed mark read leaves the position unmarked, says so on stderr, and the portfolio stays complete", async () => {
+    const dir = await emptyConfigDir()
+    const markets = { [HOODIE.toLowerCase()]: 503 }
+    const json = harness({ dir, candlePrices: HOOD_PRICES, hood: hoodSection(), markets })
+    expect(await run(["portfolio", "--json"], json.deps)).toBe(0)
+    const doc = JSON.parse(json.stdout.text)
+    expect(doc.complete).toBe(true)
+    expect(doc.holderExits).toBeUndefined()
+    expect(doc.holderExitsUnread).toBe(1)
+
+    const human = harness({ dir, candlePrices: HOOD_PRICES, hood: hoodSection(), markets })
+    expect(await run(["portfolio"], human.deps)).toBe(0)
+    expect(humanText(human.stderr.text)).toContain("Holder exits were not checked for 1 Hood token")
+  })
+
+  test("--chain solana reads no market", async () => {
+    const dir = await emptyConfigDir()
+    const h = harness({ dir, candlePrices: HOOD_PRICES, hood: hoodSection() })
+    expect(await run(["portfolio", "--chain", "solana", "--json"], h.deps)).toBe(0)
+    expect(h.candleRequests().some((r) => r.path.startsWith("/api/v1/markets/"))).toBe(false)
   })
 })

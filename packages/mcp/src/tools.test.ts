@@ -27,6 +27,7 @@ test("all registered tools are listed", () => {
   expect([...TOOL_NAMES].sort()).toEqual([
     "candle_atomic_launch_dry_run",
     "candle_claim_fees",
+    "candle_claim_holder_exit",
     "candle_claim_staking_reward",
     "candle_create_post",
     "candle_delete_post",
@@ -56,6 +57,7 @@ test("all registered tools are listed", () => {
     "candle_get_swap_receipt",
     "candle_get_trading_wallets",
     "candle_get_wallets",
+    "candle_holder_exit",
     "candle_lab_edges",
     "candle_lab_replay",
     "candle_lab_replay_result",

@@ -100,6 +100,7 @@ import { teeRebind, teeRebinds } from "./commands/tee-rebind"
 import { teeRename } from "./commands/tee-rename"
 import { tokenClusters } from "./commands/token-clusters"
 import { tokenEvents } from "./commands/token-events"
+import { tokenExit } from "./commands/token-exit"
 import { tokenEdit, tokenHistory } from "./commands/token-metadata"
 import {
   tokenAbout,
@@ -298,6 +299,8 @@ const COMMANDS: Record<string, CommandRoute> = {
     subcommands: {
       clusters: tokenClusters,
       events: tokenEvents,
+      // BE-3794: Hood holder exits. The read is public; --recover, --enter-recovery and --claim-team act on the key.
+      exit: tokenExit,
       forensics: tokenForensics,
       "vamp-candidates": tokenVampCandidates,
       about: tokenAbout,
@@ -986,9 +989,12 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
   // BE-1959: `token` is unguarded for its reads, but a token page write (and the private
   // capabilities read) acts as the key's account, so it pays for the same check. BE-2140: so does
   // `token edit`, the creator metadata write.
+  // BE-3794: so does a `token exit` action, which signs as the key's account.
   const tokenPageActs =
     word === "token" &&
-    (["claim", "section", "flag", "edit"].includes(sub ?? "") || (sub === "about" && tokens.includes("--capabilities")))
+    (["claim", "section", "flag", "edit"].includes(sub ?? "") ||
+      (sub === "about" && tokens.includes("--capabilities")) ||
+      (sub === "exit" && ["--recover", "--enter-recovery", "--claim-team"].some((flag) => tokens.includes(flag))))
   if (
     ROUTED_COMMANDS.has(word) &&
     (!NEVER_GUARDED.has(word) || tokenPageActs) &&

@@ -13,7 +13,7 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 
 1. **Read without credentials.** `candle_get_market`, `candle_get_price_history`, `candle_get_feed`, `candle_token_events`, `candle_token_card`, `candle_token_history`,
    `candle_get_agent_profile`, `candle_list_agents`, `candle_list_agent_posts`, `candle_get_agent_positions`, `candle_get_agent_perp_round`, `candle_get_agent_open_orders`, `candle_get_perp_candles`,
-   `candle_token_forensics`, `candle_token_clusters`, `candle_resolve_token` and
+   `candle_token_forensics`, `candle_token_clusters`, `candle_holder_exit`, `candle_resolve_token` and
    `candle_get_plans` need no API key. Use them to confirm the server is wired before asking anyone for a credential.
 2. **Get a key** when you need to write or read Hacc intelligence (below). Install the Candle CLI
    (`curl -fsSL https://candle.tv/install.sh | bash`, or `brew install candledottv/tap/candle`),
@@ -150,6 +150,13 @@ anyone signs up for anything.
 | --- | --- | --- |
 | `candle_get_fees` | yes | the creator fees your launched tokens can pay, and the reason a token cannot be claimed |
 | `candle_claim_fees` | yes | pay one token's creator fees to the wallet fixed at launch. It has no destination argument. Use `dryRun: true` first. Always on for a key with `launch:write` |
+
+**Hood holder exits**
+
+| Tool | Key | What it does |
+| --- | --- | --- |
+| `candle_holder_exit` | no | where a holder of a Candle Hood launch stands if it does not migrate: state, Recovery window and fixed rate, any rescue request, the team vesting escrow, and with `account` that wallet's balance, Recovery payout and the actions it may take now; give `curve` or `token`; quote `holderExit.disclosure` verbatim (unreleased source) |
+| `candle_claim_holder_exit` | yes | run one Hood holder exit for the account's wallet: `enter_recovery`, `claim_recovery` (approves the exact amount, then redeems) or `claim_team` (always pays the escrow's recipient); Candle signs with the embedded Hood wallet; `dryRun` defaults to true; no destination argument. Needs `swap:write` (`launch:write` for `claim_team`) (unreleased source) |
 | `candle_get_staking` | yes | read eligible Solana wallets' CNDL/sCNDL, withdrawals, rewards, pool wait and eligibility notes |
 | `candle_stake` | yes | stake raw CNDL from the embedded wallet or build for a linked/TEE payer; stable clientStakeId, dryRun first |
 | `candle_unstake` | yes | start withdrawing raw sCNDL; no instant unstake, wait for the pool timelock |

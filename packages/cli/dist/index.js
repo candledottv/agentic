@@ -206,7 +206,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.33";
+var CLI_VERSION = "0.13.34";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
@@ -10711,7 +10711,7 @@ var init_chain_registry = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.38";
+var SERVER_VERSION = "0.10.39";
 
 // ../mcp/src/client.ts
 function isLoopbackHost2(hostname) {
@@ -12934,9 +12934,10 @@ var init_launch_schema = __esm(() => {
 });
 
 // ../mcp/src/market-disclosure.ts
-var EXTERNAL_MARKET_DISCLOSURE;
+var EXTERNAL_MARKET_DISCLOSURE, HOLDER_EXIT_DISCLOSURE;
 var init_market_disclosure = __esm(() => {
   EXTERNAL_MARKET_DISCLOSURE = "For external tokens (external: true), buysOpen, sellsOpen, quoteMint, feeBps, venue, " + "graduationVenue and poolAddress are compatibility placeholders, not measured facts about " + "trading availability, pool pairing, fees or pool venue; trade.routable is stored eligibility " + "and does not verify those fields.";
+  HOLDER_EXIT_DISCLOSURE = "On a Hood market, holderExit says where a holder stands if the launch does not migrate: state " + "(none, awaiting_migration, recovery_open, recovery, rescue_pending, rescued), the Recovery window " + "and rate, any rescue request, the team vesting escrow, and the actions that would succeed now. " + "holderExit.disclosure is one sentence for that state: quote it to the user verbatim before any " + "exit or trade on that token. Recovery pays by tokens held, not by what was paid. rescue_pending " + "closes buying; rescued has no on-chain claim.";
 });
 
 // ../mcp/src/request-chain.ts
@@ -14666,6 +14667,33 @@ function buildRequest(name, args, cfg) {
         init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify({ dryRun: dryRun === true }) }
       };
     }
+    case "candle_holder_exit": {
+      const { curve, account } = args;
+      if (typeof curve !== "string")
+        throw new Error("candle_holder_exit needs a curve here");
+      const query2 = typeof account === "string" ? `?account=${encodeURIComponent(account)}` : "";
+      return {
+        url: `${base2}/api/v1/hood/curves/${encodeURIComponent(curve)}/holder-exit${query2}`,
+        init: { method: "GET", headers: jsonHeaders() }
+      };
+    }
+    case "candle_claim_holder_exit": {
+      const apiKey = requireApiKey2(cfg);
+      const { curve, action, amountRaw, dryRun, wallet: wallet3 } = args;
+      return {
+        url: `${base2}/api/v1/agent/hood/holder-exit/${encodeURIComponent(curve)}`,
+        init: {
+          method: "POST",
+          headers: jsonHeaders(apiKey),
+          body: JSON.stringify({
+            action,
+            ...amountRaw !== undefined ? { amountRaw } : {},
+            dryRun: dryRun !== false,
+            ...wallet3 !== undefined ? { wallet: wallet3 } : {}
+          })
+        }
+      };
+    }
     case "candle_get_wallets": {
       const apiKey = requireApiKey2(cfg);
       return {
@@ -14787,6 +14815,35 @@ ${promotion}` : markdown;
   } catch {
     return "";
   }
+}
+async function holderExitRelay(args, cfg, doFetch) {
+  const errorText2 = (code, message) => ({
+    content: [{ type: "text", text: JSON.stringify({ success: false, error: { code, message } }) }],
+    isError: true
+  });
+  let curve = typeof args.curve === "string" ? args.curve : undefined;
+  if (curve === undefined) {
+    if (typeof args.token !== "string")
+      return errorText2("VALIDATION_FAILED", "Give curve or token");
+    const res = await doFetch(`${cfg.apiUrl}/api/v1/markets/hood/${encodeURIComponent(args.token)}`, {
+      method: "GET",
+      headers: jsonHeaders()
+    });
+    noteVersionHeaders(res);
+    const text = await res.text();
+    if (!res.ok)
+      return { content: [{ type: "text", text }], isError: true };
+    let market;
+    try {
+      market = JSON.parse(text).market;
+    } catch {
+      market = undefined;
+    }
+    if (typeof market?.curveAddress !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(market.curveAddress))
+      return errorText2("NO_HOOD_CURVE", "This token has no Candle Hood curve, so it has no holder exit");
+    curve = market.curveAddress;
+  }
+  return callAndRelay("candle_holder_exit", { curve, ...args.account !== undefined ? { account: args.account } : {} }, cfg, doFetch);
 }
 async function callAndRelay(name, args, cfg, doFetch) {
   const { url, init } = buildRequest(name, args, cfg);
@@ -15084,7 +15141,7 @@ function registerToolSubset(server, options) {
   });
   register("candle_get_market", {
     title: "Get market state",
-    description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. quoteAsset names the pool pair; quoteAssets lists accepted settlement ids, with quoteAssets[0] the default (not a liquidity promise). " + "quoteState, when the quote watcher covers the quote token, says whether it is paused (paused) or in a split hold (split) and whether new launches against it are blocked (launchBlocked, refusal). " + EXTERNAL_MARKET_DISCLOSURE + " " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
+    description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. quoteAsset names the pool pair; quoteAssets lists accepted settlement ids, with quoteAssets[0] the default (not a liquidity promise). " + "quoteState, when the quote watcher covers the quote token, says whether it is paused (paused) or in a split hold (split) and whether new launches against it are blocked (launchBlocked, refusal). " + EXTERNAL_MARKET_DISCLOSURE + " " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable. " + HOLDER_EXIT_DISCLOSURE + " holderExitUnavailable: true means that read failed; the market still loaded.",
     inputSchema: getMarketShape
   }, async (args) => callAndRelay("candle_get_market", args, getConfig(), doFetch));
   register("candle_quote", {
@@ -15310,6 +15367,16 @@ function registerToolSubset(server, options) {
     description: "Collect one token's creator fees and pay them to the wallet fixed at launch. There is no destination " + "argument and the tool cannot send funds anywhere else. Candle signs with the embedded wallet, which " + "pays the network fee. A fee recipient that is a TEE wallet is refused here: claim it with the candle CLI " + "(`candle fees claim`). The dry run reports the same refusal (`claimable: false`, `reason: " + "wallet_not_signable`) and counts only what this tool could claim. Needs launch:write. " + "Call it with dryRun: true first; a real claim moves real funds into the recipient wallet, which may be " + "the wallet this agent trades from. Not idempotent by id: if the result is lost, read candle_get_fees " + "before claiming again.",
     inputSchema: claimFeesShape
   }, async (args) => callAndRelay("candle_claim_fees", args, getConfig(), doFetch));
+  register("candle_holder_exit", {
+    title: "Read a Hood holder exit",
+    description: "Where a holder of one Candle Hood curve stands if the launch does not migrate, read from the chain " + "at one block. No key needed. Give curve, or token to look its curve up. With account, the answer " + "carries that wallet's balance, what a Recovery claim would pay it (recoveryQuoteOutRaw) and the " + "actions it may take now. Raw integer strings. A curve Candle does not list is a 404. Reads only. " + HOLDER_EXIT_DISCLOSURE,
+    inputSchema: holderExitShape
+  }, async (args) => holderExitRelay(args, getConfig(), doFetch));
+  register("candle_claim_holder_exit", {
+    title: "Run a Hood holder exit",
+    description: "Run one holder exit on a Candle Hood curve for this account's wallet: enter_recovery (open Recovery " + "once its gate is open), claim_recovery (approve the exact amount, then redeem it at the fixed rate) " + "or claim_team (release vested team tokens, always to the escrow's recipient). dryRun DEFAULTS TO " + "TRUE: it builds and simulates and signs nothing. With dryRun: false, Candle signs with the embedded " + "Hood wallet and MOVES REAL FUNDS: it burns the redeemed tokens and pays the curve's quote token into " + "that wallet. There is no destination argument. Needs swap:write for the Recovery actions and " + "launch:write for claim_team. Read candle_holder_exit first and only ask for an action in its " + "actions list. outcome partial means the approval landed and the claim did not: read again and run " + "the claim; never resend a call whose outcome is indeterminate. " + HOLDER_EXIT_DISCLOSURE,
+    inputSchema: claimHolderExitShape
+  }, async (args) => callAndRelay("candle_claim_holder_exit", args, getConfig(), doFetch));
   register("candle_get_wallets", {
     title: "List the wallets Candle executes with",
     description: "The account's EMBEDDED wallets, one per chain, with their delegation state. These are " + "the wallets candle_trade, candle_swap and candle_transfer spend from, so this is how an " + "agent finds its own funding addresses. Reads only; moves nothing. Not the same as the " + "account's LINKED wallets, which are the owner's own wallets and are not spent from here. " + "Balances are not included: read a specific one with the market and balance endpoints.",
@@ -15704,7 +15771,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   }
   return eligible;
 }
-var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, SIGNAL_RECORD_TOOL_NAMES, isSignalRecordTool = (name) => SIGNAL_RECORD_TOOL_NAMES.includes(name), PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, SWAP_RECEIPT_DESCRIPTION, SWAP_SETTLEMENT_REREAD, getMarketShape, quoteShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getAgentPerpRoundShape, getAgentOpenOrdersShape, getPerpCandlesShape, getPerpMarketShape, getOperationShape, getSwapReceiptShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, resolveTokenShape, tradingWalletsShape, spendableBalancesShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID, localServerConfigs;
+var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, SIGNAL_RECORD_TOOL_NAMES, isSignalRecordTool = (name) => SIGNAL_RECORD_TOOL_NAMES.includes(name), PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, SWAP_RECEIPT_DESCRIPTION, SWAP_SETTLEMENT_REREAD, getMarketShape, quoteShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getAgentPerpRoundShape, getAgentOpenOrdersShape, getPerpCandlesShape, getPerpMarketShape, getOperationShape, getSwapReceiptShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, HOOD_ADDRESS, holderExitShape, claimHolderExitShape, resolveTokenShape, tradingWalletsShape, spendableBalancesShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID, localServerConfigs;
 var init_tools = __esm(() => {
   init_perps_transfer();
   init_zod();
@@ -15805,6 +15872,8 @@ var init_tools = __esm(() => {
     "candle_recover_operation",
     "candle_get_fees",
     "candle_claim_fees",
+    "candle_holder_exit",
+    "candle_claim_holder_exit",
     "candle_get_staking",
     "candle_stake",
     "candle_unstake",
@@ -16010,6 +16079,19 @@ var init_tools = __esm(() => {
   claimFeesShape = {
     mint: exports_external.string().describe("The launched token: a Solana mint or a Hood token address, as candle_get_fees lists it"),
     dryRun: exports_external.boolean().optional().describe("Check and read only. Sends nothing and writes nothing. Use it first to see what would be claimed")
+  };
+  HOOD_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+  holderExitShape = {
+    curve: exports_external.string().regex(HOOD_ADDRESS).optional().describe("The Hood curve address (candle_get_market's curveAddress). Give this or token"),
+    token: exports_external.string().regex(HOOD_ADDRESS).optional().describe("The Hood token address; its curve is read from the market. Give this or curve"),
+    account: exports_external.string().regex(HOOD_ADDRESS).optional().describe("A Hood wallet: the answer then carries its balance, what Recovery pays it and its actions")
+  };
+  claimHolderExitShape = {
+    curve: exports_external.string().regex(HOOD_ADDRESS).describe("The Hood curve address (candle_holder_exit's curve)"),
+    action: exports_external.enum(["enter_recovery", "claim_recovery", "claim_team"]).describe("One of holderExit.actions from candle_holder_exit for this wallet"),
+    amountRaw: exports_external.string().regex(/^[1-9][0-9]{0,77}$/).optional().describe("claim_recovery only: base raw units to redeem. Defaults to the whole balance"),
+    dryRun: exports_external.boolean().optional().describe("Defaults to true: build and simulate, sign nothing. Pass false to send"),
+    wallet: exports_external.string().regex(HOOD_ADDRESS).optional().describe("Defaults to the account's embedded Hood wallet, which Candle signs for")
   };
   resolveTokenShape = {
     mint: exports_external.string().describe("Token mint (Solana, base58) or contract address (Hood, 0x-prefixed)")
@@ -77752,6 +77834,7 @@ var init_server3 = __esm(() => {
 
 START HERE — fifteen tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
   candle_get_market       price, market cap, volume, curve state for one token
+  candle_holder_exit      where a Hood holder stands if a launch does not migrate: Recovery, rescue, team vesting; quote its disclosure
   candle_get_price_history one Solana token's OHLC bars in USD (1m to 1d, up to 500, page back with to); source and volumeUnit say whose bars
   candle_get_feed         the roster: hot streak, new pairs, graduated, final stretch, blue chip (final stretch is refused where it is not switched on; use another bucket)
   candle_token_page_about public About summary, switches default off
@@ -77789,6 +77872,7 @@ candle_get_market and candle_resolve_token answer for same-chain indexed externa
 when trade.routable is false. Read candleLaunched, launchpad, venue and trade; jupiterOk and
 paperDiscoveryOk are separate signals. Identity-only Solana reads have route_unverified.
 ${EXTERNAL_MARKET_DISCLOSURE}
+${HOLDER_EXIT_DISCLOSURE}
 General quotes use POST /api/v1/trade/agent/quote; curve quotes/lifecycle describe Candle launches.
 Stored eligibility is not a successful quote or permission. MARKET_NOT_FOUND remains a legacy
 code: read error.routing.reason, error.discovery and sibling error.retryable. A curve-only
@@ -81115,7 +81199,7 @@ var HELP = {
     group: "Account",
     intro: "Holdings, prices and value of every wallet",
     summary: "Every wallet's holdings, prices and value on Solana and Hood (vault read over your own RPCs)",
-    description: "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade. With a filter, only the wallets whose label or address contains it are read and shown, the subtotals and total are for those wallets, and the first line says how many matched. When Candle listed only part of the account's wallets, the result stays partial even if every wallet shown was read, and no match says so. After the totals, a Hyperliquid section (live from Hyperliquid, not in the ledger, and never in the total) lists each EVM TEE wallet's Hyperliquid account value, unrealized P&L, positions and risk at the default thresholds, read from Hyperliquid's public API on this machine; a failed read there is not read and the exit is 3. --chain solana and --no-perps read nothing from Hyperliquid. The vault is read only for its addresses, so the command needs no terminal: without one, a factor that asks nothing (--factor touch-id or passkey) still unlocks it, and otherwise the vault row says not read and the other groups are shown, but the result is partial: the total says so and the exit is 3. --no-vault leaves the vault out on purpose, and then the result can be complete (exit 0).",
+    description: "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade. A Hood token whose launch is in Recovery, has a pending rescue, or was rescued is named after the table with the API's disclosure and candle token exit <token> (one market read per Hood token held, at most 50; a mark that could not be read is said on stderr and leaves the result complete). With a filter, only the wallets whose label or address contains it are read and shown, the subtotals and total are for those wallets, and the first line says how many matched. When Candle listed only part of the account's wallets, the result stays partial even if every wallet shown was read, and no match says so. After the totals, a Hyperliquid section (live from Hyperliquid, not in the ledger, and never in the total) lists each EVM TEE wallet's Hyperliquid account value, unrealized P&L, positions and risk at the default thresholds, read from Hyperliquid's public API on this machine; a failed read there is not read and the exit is 3. --chain solana and --no-perps read nothing from Hyperliquid. The vault is read only for its addresses, so the command needs no terminal: without one, a factor that asks nothing (--factor touch-id or passkey) still unlocks it, and otherwise the vault row says not read and the other groups are shown, but the result is partial: the total says so and the exit is 3. --no-vault leaves the vault out on purpose, and then the result can be complete (exit 0).",
     usage: [
       "candle portfolio [<filter>] [--chain solana|hood] [--rpc-url <url>] [--evm-rpc-url <url>] [--no-perps] [--no-vault] [--json]"
     ],
@@ -81246,12 +81330,14 @@ var HELP = {
   },
   token: {
     group: "Account",
-    summary: "Token About pages, creator metadata edits, events, cluster analysis, forensics and the vamp finder",
-    intro: "Token About pages, events, clusters, forensics, vamp finder",
-    description: "edit sets Candle's copy of a token's description and its four links (website, X, Telegram, Discord) as the token's creator: the key's account must be the one that launched it, and the key needs launch:write. Name, symbol and image cannot be changed. A flag sets a field; --clear <field> removes it (repeatable); fields not named keep their value. A description is at most 500 characters and safe for on-chain JSON, and a link is an absolute http(s) URL of at most 200 characters. The chain is read from the address (0x is Hood) unless --chain says otherwise. Candle's token page and API change at once; wallets and terminals that read the on-chain metadata do not, since this edit writes nothing on chain. A Hood token that carries its metadata on chain is refused (ONCHAIN_METADATA_TOKEN) and is edited with Candle's on-chain edit instead, and a TEE-launched Hood token is refused (TEE_LAUNCHED_HOOD_TOKEN). Re-sending the current values changes nothing and is not counted as an edit. Each edit sends an Idempotency-Key and retries once on no answer with the same key; exit 3 means the outcome is unknown (rerun with the printed --idempotency-key). Off on a deployment until TOKEN_METADATA_EDIT_ENABLED is on; until then edit answers METADATA_EDIT_DISABLED. history <mint> with no section lists the token's edits, newest first, with what each changed from and to; it is public and sends no key. about, claim, section, history and flag are the token's About page: three shared sections (thesis, tokenomics, lore) any eligible holder may edit, with full history. about and history are public and send no key. about --capabilities reads this account's own eligibility (token-pages:read). claim, section set, section restore and flag act as the key's account and need token-pages:write; neither scope is in any preset, so grant them with keys create --scopes token-pages:read,token-pages:write. Candle checks on every write that the account's Candle-known wallets hold at least 0.5% of the token's current supply (any positive balance to flag); the scope is never a holding. A creator proof is a message, never a transaction: claim --creator --challenge prints the exact bytes to sign (and --message-out writes them to a file), you sign them on your own machine, for example with candle sign message, and claim --creator --challenge-id <id> --signature <sig> sends the signature; a creator wallet already among the account's known wallets needs no signature. Section text comes from --file and is checked here first (valid UTF-8, at most 32 KiB, no control characters but newline and tab, thesis 280 characters, tokenomics and lore 5,000); the file is only read. Every write sends an Idempotency-Key and retries once on no answer with the same key. Exit codes: 0 done, 1 refused (the code is in --json), 2 usage or local input refused (nothing sent), 3 no answer so the outcome is unknown (rerun with the printed --idempotency-key), 4 revision conflict (your file is untouched; read history, merge, rerun with the latest --base-revision). Token page switches ship off; a switched-off server answers feature_off or not_found. events lists one token's signals, callouts and tracked-wallet trades, one event per line: time, kind, name or short address, action, size. Needs no key; a configured key is sent so wallet group names follow its tier. Off on a deployment until TOKEN_EVENTS_ENABLED is on; until then the command answers TOKEN_EVENTS_DISABLED. clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded.",
+    summary: "Token About pages, creator metadata edits, events, cluster analysis, forensics, the vamp finder and Hood holder exits",
+    intro: "Token About pages, events, clusters, forensics, vamps, exits",
+    description: "edit sets Candle's copy of a token's description and its four links (website, X, Telegram, Discord) as the token's creator: the key's account must be the one that launched it, and the key needs launch:write. Name, symbol and image cannot be changed. A flag sets a field; --clear <field> removes it (repeatable); fields not named keep their value. A description is at most 500 characters and safe for on-chain JSON, and a link is an absolute http(s) URL of at most 200 characters. The chain is read from the address (0x is Hood) unless --chain says otherwise. Candle's token page and API change at once; wallets and terminals that read the on-chain metadata do not, since this edit writes nothing on chain. A Hood token that carries its metadata on chain is refused (ONCHAIN_METADATA_TOKEN) and is edited with Candle's on-chain edit instead, and a TEE-launched Hood token is refused (TEE_LAUNCHED_HOOD_TOKEN). Re-sending the current values changes nothing and is not counted as an edit. Each edit sends an Idempotency-Key and retries once on no answer with the same key; exit 3 means the outcome is unknown (rerun with the printed --idempotency-key). Off on a deployment until TOKEN_METADATA_EDIT_ENABLED is on; until then edit answers METADATA_EDIT_DISABLED. history <mint> with no section lists the token's edits, newest first, with what each changed from and to; it is public and sends no key. about, claim, section, history and flag are the token's About page: three shared sections (thesis, tokenomics, lore) any eligible holder may edit, with full history. about and history are public and send no key. about --capabilities reads this account's own eligibility (token-pages:read). claim, section set, section restore and flag act as the key's account and need token-pages:write; neither scope is in any preset, so grant them with keys create --scopes token-pages:read,token-pages:write. Candle checks on every write that the account's Candle-known wallets hold at least 0.5% of the token's current supply (any positive balance to flag); the scope is never a holding. A creator proof is a message, never a transaction: claim --creator --challenge prints the exact bytes to sign (and --message-out writes them to a file), you sign them on your own machine, for example with candle sign message, and claim --creator --challenge-id <id> --signature <sig> sends the signature; a creator wallet already among the account's known wallets needs no signature. Section text comes from --file and is checked here first (valid UTF-8, at most 32 KiB, no control characters but newline and tab, thesis 280 characters, tokenomics and lore 5,000); the file is only read. Every write sends an Idempotency-Key and retries once on no answer with the same key. Exit codes: 0 done, 1 refused (the code is in --json), 2 usage or local input refused (nothing sent), 3 no answer so the outcome is unknown (rerun with the printed --idempotency-key), 4 revision conflict (your file is untouched; read history, merge, rerun with the latest --base-revision). Token page switches ship off; a switched-off server answers feature_off or not_found. events lists one token's signals, callouts and tracked-wallet trades, one event per line: time, kind, name or short address, action, size. Needs no key; a configured key is sent so wallet group names follow its tier. Off on a deployment until TOKEN_EVENTS_ENABLED is on; until then the command answers TOKEN_EVENTS_DISABLED. clusters reads third-party estimates of linked Solana wallets. Exchange, pool and service wallets may be grouped together; the figures do not establish common ownership or wrongdoing. Unavailable analysis is a normal result and exits 0. Needs no key and sends none. forensics and vamp-candidates send the profile's API key when it has one. Where the API offers x402 per-use payments, forensics past the free rate and the vamp finder without a key (or past a Free account's daily allowance) answer with a price: the CLI pays it in USDC from a Solana vault key, at a terminal, after a typed confirm (or --yes), within the limits candle spend sets, or prints the price and pays nothing. A paid call that Candle then fails to serve is credited, never refunded. exit reads where a holder of a Candle Hood launch stands if it does not migrate: the state (none, awaiting migration, Recovery can be opened, Recovery, rescue pending, rescued), the API's one-sentence disclosure for it (printed verbatim), when Recovery opens (the creator after 7 days, anyone after 30), the fixed Recovery rate and what is left, any rescue request, the team vesting escrow, and for the wallet its balance, what Recovery would pay it and the actions it may take now. Recovery pays by tokens held, not by what was paid. The read needs no key; its wallet is --wallet, else the account's embedded Hood wallet when a key is selected. --recover (redeem: the exact amount is approved, then claimed), --enter-recovery and --claim-team run that action through Candle with the embedded Hood wallet (swap:write for the Recovery actions, launch:write for --claim-team): the API's dry run is shown first, then the CLI asks, or takes --yes; --dry-run stops after it. There is no destination: Recovery pays the wallet that redeems, and a team claim always pays the escrow's recipient. A refusal prints the API's code beside the disclosure. Outcome partial means the approval landed and the claim did not: run it again. Exit 3 means a call's outcome is not known yet: read again before running it again.",
     usage: [
       "candle token clusters <mint> [--chain solana|hood] [--json]",
       "candle token events <mint> [--chain solana|hood] [--kind trade|signal|callout] [--since <iso-8601>] [--limit <n>] [--before <cursor>] [--json]",
+      "candle token exit <token> [--wallet <0x address|main>] [--json]",
+      "candle token exit <token> --recover [--amount <tokens>] | --enter-recovery | --claim-team [--wallet <0x address>] [--dry-run] [--yes] [--json]",
       "candle token forensics <mint> [--chain solana|hood] [--wallet <vault key>] [--yes] [--json]",
       "candle token vamp-candidates [--limit <n>] [--min-copies <n>] [--stage final_stretch|graduated|all] [--wallet <vault key>] [--yes] [--json]",
       "candle token about <address> [--chain solana|hood] [--capabilities] [--json]",
@@ -81275,6 +81361,10 @@ var HELP = {
       {
         invocation: "events <mint>",
         description: "Signals, callouts and tracked-wallet trades for one token, one per line"
+      },
+      {
+        invocation: "exit <token>",
+        description: "Hood: where a holder stands if the launch does not migrate (Recovery, rescue, team vesting), and the exit"
       },
       { invocation: "forensics <mint>", description: "Token forensics; may cost a per-use payment past the free rate" },
       {
@@ -81327,10 +81417,24 @@ var HELP = {
       { invocation: "--before <cursor>", description: "events: continue the page a previous answer's cursor names" },
       { invocation: "--stage <stage>", description: "vamp-candidates: final_stretch, graduated or all (default)" },
       {
-        invocation: "--wallet <vault key>",
-        description: "The Solana vault key that pays, by label or address (needed when the vault has several)"
+        invocation: "--recover",
+        description: "exit: redeem at the Recovery rate (approves the exact amount, then claims)"
       },
-      { invocation: "--yes", description: "Pay without the typed confirm (the vault unlock still prompts)" },
+      { invocation: "--amount <tokens>", description: "exit --recover: how many tokens to redeem (default all)" },
+      {
+        invocation: "--enter-recovery",
+        description: "exit: open Recovery once its gate is open (creator 7 days, anyone 30)"
+      },
+      { invocation: "--claim-team", description: "exit: release vested team tokens, always to the escrow's recipient" },
+      { invocation: "--dry-run", description: "exit: build and simulate the action; send nothing" },
+      {
+        invocation: "--wallet <vault key>",
+        description: "The Solana vault key that pays, by label or address (needed when the vault has several); exit: the Hood wallet, a 0x address or main"
+      },
+      {
+        invocation: "--yes",
+        description: "Pay without the typed confirm (the vault unlock still prompts); exit: run without asking"
+      },
       {
         invocation: "--file <path>",
         description: "section set, update or comment: the text, UTF-8; an empty section file needs --clear"
@@ -81362,6 +81466,8 @@ var HELP = {
       "candle token clusters <mint>",
       "candle token clusters <mint> --json",
       "candle token events <mint> --kind signal --limit 50",
+      "candle token exit <token>",
+      "candle token exit <token> --recover --dry-run",
       "candle token forensics <mint>",
       "candle token vamp-candidates --stage graduated --json"
     ],
@@ -82580,6 +82686,7 @@ var TOOL_CLASSES = {
   candle_perps_account: READ,
   candle_perps_risk: READ,
   candle_perps_thresholds: READ,
+  candle_holder_exit: READ,
   candle_trade: card("trade", "clientTradeId"),
   candle_trade_execute: card("trade"),
   candle_swap: card("swap", "clientSwapId"),
@@ -82589,6 +82696,7 @@ var TOOL_CLASSES = {
   candle_unstake: card("stake", "clientStakeId"),
   candle_finish_unstake: card("stake", "clientStakeId"),
   candle_claim_fees: card("claim"),
+  candle_claim_holder_exit: card("claim"),
   candle_claim_staking_reward: card("claim", "rewardId"),
   candle_perps_setup: card("perps"),
   candle_perps_open: card("perps", "clientId"),
@@ -99396,6 +99504,8 @@ var MCP_TOOL_NAMES = [
   "candle_get_fees",
   "candle_atomic_launch_dry_run",
   "candle_claim_fees",
+  "candle_holder_exit",
+  "candle_claim_holder_exit",
   "candle_get_staking",
   "candle_stake",
   "candle_unstake",
@@ -99454,6 +99564,7 @@ var READ_ONLY_TOOL_NAMES = [
   "candle_get_agent_open_orders",
   "candle_get_perp_candles",
   "candle_get_perp_market",
+  "candle_holder_exit",
   "candle_resolve_token",
   "candle_get_plans"
 ];
@@ -110096,6 +110207,7 @@ async function portfolio(args, ctx) {
       hoodTotals.unpricedByReason = reasons;
     }
     const matched = filter === undefined ? undefined : { filter, matched: all.length, wallets: known };
+    const exits = showHood ? await markHolderExits(ctx, apiKey, groups) : undefined;
     if (ctx.json) {
       writeJson(deps, {
         ok: true,
@@ -110111,7 +110223,9 @@ async function portfolio(args, ctx) {
         ...lp ? { lp } : {},
         byChain,
         groups,
-        ...perps ? { hyperliquid: perps } : {}
+        ...perps ? { hyperliquid: perps } : {},
+        ...exits && exits.open.length > 0 ? { holderExits: exits.open } : {},
+        ...exits && exits.unread > 0 ? { holderExitsUnread: exits.unread } : {}
       });
       return complete ? 0 : 3;
     }
@@ -110137,8 +110251,68 @@ async function portfolio(args, ctx) {
     });
     if (perps)
       writePerpsSection(ctx, perps);
+    if (exits)
+      writeHolderExits(ctx, exits);
     return complete ? 0 : 3;
   });
+}
+var OPEN_EXIT_STATES = ["recovery", "rescue_pending", "rescued"];
+var EXIT_MARKS_MAX_TOKENS = 50;
+var EXIT_MARKS_IN_FLIGHT = 8;
+async function markHolderExits(ctx, apiKey, groups) {
+  const holdings2 = groups.filter((g) => g.group !== "vault").flatMap((g) => g.wallets).filter((w) => w.chain === "hood").flatMap((w) => w.holdings ?? []).filter((h) => h.mint !== HOOD_NATIVE && h.mint.toLowerCase() !== HOOD_USDG.toLowerCase() && h.amountRaw !== "0");
+  const mints = [...new Set(holdings2.map((h) => h.mint.toLowerCase()))];
+  const read3 = mints.slice(0, EXIT_MARKS_MAX_TOKENS);
+  const states = new Map;
+  let unread = mints.length - read3.length;
+  for (let i = 0;i < read3.length; i += EXIT_MARKS_IN_FLIGHT) {
+    const settled = await Promise.allSettled(read3.slice(i, i + EXIT_MARKS_IN_FLIGHT).map(async (mint) => {
+      const result2 = await apiRequest(`/api/v1/markets/hood/${encodeURIComponent(mint)}`, {
+        auth: "key",
+        credentials: { apiKey },
+        apiUrl: ctx.apiUrl,
+        fetch: ctx.deps.fetch,
+        env: ctx.deps.env
+      });
+      if (!result2.ok && result2.status === 404)
+        return;
+      if (!result2.ok)
+        throw new Error(result2.message);
+      const market = result2.body?.market;
+      if (market?.holderExitUnavailable === true)
+        throw new Error("holder-exit read unavailable");
+      const exit = market?.holderExit;
+      if (typeof exit?.state === "string" && OPEN_EXIT_STATES.includes(exit.state))
+        states.set(mint, {
+          state: exit.state,
+          disclosure: typeof exit.disclosure === "string" ? exit.disclosure : ""
+        });
+    }));
+    unread += settled.filter((r) => r.status === "rejected").length;
+  }
+  const open8 = [];
+  for (const holding of holdings2) {
+    const found = states.get(holding.mint.toLowerCase());
+    if (!found)
+      continue;
+    holding.holderExit = found.state;
+    if (!open8.some((mark) => mark.mint.toLowerCase() === holding.mint.toLowerCase()))
+      open8.push({ mint: holding.mint, symbol: holding.symbol, ...found });
+  }
+  return { open: open8, unread };
+}
+var EXIT_STATE_WORDS = {
+  recovery: "in Recovery",
+  rescue_pending: "rescue pending, buying closed",
+  rescued: "rescued, no on-chain claim"
+};
+function writeHolderExits(ctx, exits) {
+  for (const mark of exits.open) {
+    const name2 = mark.symbol ? `${terminalText(mark.symbol)} (${terminalText(mark.mint)})` : terminalText(mark.mint);
+    notice(ctx.deps, "stdout", "warning", `${name2}: ${EXIT_STATE_WORDS[mark.state]}. ${terminalText(mark.disclosure)} See: candle token exit ${terminalText(mark.mint)}`);
+  }
+  if (exits.unread > 0)
+    notice(ctx.deps, "stderr", "note", `Holder exits were not checked for ${exits.unread} Hood ${exits.unread === 1 ? "token" : "tokens"}; candle token exit <token> reads one.`);
 }
 function matches(wallet3, filter) {
   const needle = filter.toLowerCase();
@@ -113803,6 +113977,282 @@ async function tokenEvents(args, ctx) {
   if (body.nextCursor !== null)
     writeFields(ctx.deps, "stdout", [["Next page", `--before ${body.nextCursor}`]]);
   return 0;
+}
+
+// src/commands/token-exit.ts
+init_args();
+init_client();
+init_deps();
+init_human_output();
+init_presentation();
+init_render();
+init_trading();
+init_swap();
+var TOKEN_EXIT_USAGE = "Usage: candle token exit <token> [--wallet <0x address|main>] [--recover [--amount <tokens>] | --enter-recovery | --claim-team] [--dry-run] [--yes] [--json]";
+var ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+var ACTIONS = {
+  "--recover": "claim_recovery",
+  "--enter-recovery": "enter_recovery",
+  "--claim-team": "claim_team"
+};
+var ACTION_WORDS = {
+  claim_recovery: "Redeem at the Recovery rate",
+  enter_recovery: "Open Recovery",
+  claim_team: "Claim vested team tokens"
+};
+var STATE_WORDS = {
+  none: "none: ordinary trading, nothing to exit",
+  awaiting_migration: "awaiting migration",
+  recovery_open: "Recovery can be opened",
+  recovery: "Recovery: redeem at a fixed rate",
+  rescue_pending: "rescue pending: buying is closed",
+  rescued: "rescued: no on-chain claim"
+};
+var OUTCOME_WORDS = {
+  complete: "complete",
+  partial: "partial: a call landed and a later one did not; run the exit again for the rest",
+  indeterminate: "unknown: a call was sent and its result is not known yet; read before running it again",
+  failed: "failed: the transaction reverted",
+  not_started: "nothing was sent"
+};
+var isRaw = (value) => typeof value === "string" && /^\d+$/.test(value);
+function amount(raw2, decimals, unit = "") {
+  if (!isRaw(raw2))
+    return;
+  const text5 = decimalAmount(raw2, decimals);
+  const trimmed = text5.includes(".") ? text5.replace(/\.?0+$/, "") : text5;
+  return `${trimmed}${unit ? ` ${unit}` : ""}`;
+}
+function when(seconds) {
+  if (!isRaw(seconds))
+    return;
+  const ms = Number(seconds) * 1000;
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
+}
+function readFailure2(result2) {
+  const raw2 = result2.raw ?? null;
+  const code = typeof raw2?.code === "string" ? raw2.code : result2.code ?? `HTTP_${result2.status}`;
+  const message = typeof raw2?.payload === "string" ? raw2.payload : result2.message;
+  return new TradingError(code, message);
+}
+async function tokenExit(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--wallet", "--amount"],
+    booleanFlags: ["--recover", "--enter-recovery", "--claim-team", "--dry-run", "--yes"]
+  });
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  const { values, positionals, booleans } = parsed;
+  const token2 = positionals[0];
+  const chosen = Object.keys(ACTIONS).filter((flag) => booleans.has(flag));
+  const action2 = chosen[0] ? ACTIONS[chosen[0]] : undefined;
+  const wallet3 = values["--wallet"];
+  if (positionals.length !== 1 || !token2 || !ADDRESS.test(token2) || chosen.length > 1 || values["--amount"] !== undefined && action2 !== "claim_recovery" || (booleans.has("--dry-run") || booleans.has("--yes")) && action2 === undefined || wallet3 !== undefined && wallet3 !== "main" && wallet3 !== "embedded" && !ADDRESS.test(wallet3)) {
+    writeUsageFailure(ctx.deps, TOKEN_EXIT_USAGE, ctx.json);
+    return 2;
+  }
+  try {
+    const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+    const send = (path) => apiRequest(path, {
+      apiUrl: ctx.apiUrl,
+      auth: apiKey ? "key" : "none",
+      credentials: apiKey ? { apiKey } : {},
+      env: ctx.deps.env,
+      fetch: ctx.deps.fetch
+    });
+    const marketRead = await send(`/api/v1/markets/hood/${encodeURIComponent(token2)}`);
+    if (!marketRead.ok)
+      throw readFailure2(marketRead);
+    const market = marketRead.body?.market ?? {};
+    const curve = typeof market.curveAddress === "string" && ADDRESS.test(market.curveAddress) ? market.curveAddress : null;
+    if (!curve)
+      throw new TradingError("NO_HOOD_CURVE", "This token has no Candle Hood curve, so it has no holder exit.");
+    const baseDecimals = typeof market.decimals === "number" && Number.isInteger(market.decimals) ? market.decimals : 18;
+    let account = wallet3 !== undefined && ADDRESS.test(wallet3) ? wallet3 : undefined;
+    if (account === undefined && (wallet3 !== undefined || apiKey)) {
+      if (!apiKey)
+        throw new TradingError("API_KEY_REQUIRED", "--wallet main reads the account's embedded wallet: select a key.");
+      const embedded = await request(ctx, apiKey, "/api/v1/agent/wallets/embedded");
+      const evm = embedded.wallets?.evm?.address;
+      if (typeof evm === "string")
+        account = evm;
+      else if (wallet3 !== undefined || action2 !== undefined)
+        throw new TradingError("NO_EMBEDDED_WALLET", "This account has no embedded Hood wallet. Name one with --wallet.");
+    }
+    const readPath = `/api/v1/hood/curves/${encodeURIComponent(curve)}/holder-exit${account ? `?account=${encodeURIComponent(account)}` : ""}`;
+    const read3 = await send(readPath);
+    if (!read3.ok)
+      throw readFailure2(read3);
+    const readBody = read3.body ?? {};
+    const view = readBody.payload?.holderExit ?? {};
+    const disclosure = typeof view.disclosure === "string" ? view.disclosure : "";
+    if (action2 === undefined) {
+      if (ctx.json)
+        return printTradingResult(ctx, readBody);
+      printView(ctx, token2, curve, view, baseDecimals);
+      return 0;
+    }
+    const key = apiKey;
+    if (!key)
+      throw new TradingError("API_KEY_REQUIRED", "An exit runs on an agent key. Select a profile with one.");
+    const amountRaw = values["--amount"] !== undefined ? rawAmount(values["--amount"], baseDecimals) : undefined;
+    const body = {
+      action: action2,
+      ...amountRaw !== undefined ? { amountRaw } : {},
+      ...wallet3 !== undefined && ADDRESS.test(wallet3) ? { wallet: wallet3 } : {}
+    };
+    const agentPath = `/api/v1/agent/hood/holder-exit/${encodeURIComponent(curve)}`;
+    const run2 = async (dryRun) => {
+      const result2 = await apiRequest(agentPath, {
+        apiUrl: ctx.apiUrl,
+        auth: "key",
+        credentials: { apiKey: key },
+        method: "POST",
+        body: { ...body, dryRun },
+        env: ctx.deps.env,
+        fetch: ctx.deps.fetch
+      });
+      if (result2.ok)
+        return result2.body ?? {};
+      const raw2 = result2.raw ?? {};
+      const error = raw2.error ?? {};
+      const outcome = typeof raw2.outcome === "string" ? raw2.outcome : undefined;
+      throw new TradingError(result2.code ?? `HTTP_${result2.status}`, result2.message, {
+        details: {
+          ...disclosure ? { disclosure } : {},
+          ...typeof error.stage === "string" ? { stage: error.stage } : {},
+          ...error.details && typeof error.details === "object" ? { refusal: error.details } : {},
+          ...typeof error.reason === "string" ? { reason: error.reason } : {},
+          ...outcome ? { outcome } : {},
+          ...Array.isArray(raw2.calls) ? { calls: raw2.calls } : {},
+          ...Array.isArray(raw2.warnings) ? { warnings: raw2.warnings } : {}
+        },
+        ...outcome === "indeterminate" || error.stage === "unconfirmed" ? { exitCode: 3 } : {}
+      });
+    };
+    const out = ctx.json ? "stderr" : "stdout";
+    if (disclosure)
+      notice(ctx.deps, out, "note", safeText(disclosure));
+    const preview = await run2(true);
+    if (booleans.has("--dry-run")) {
+      if (ctx.json)
+        return printTradingResult(ctx, preview);
+      printAgentResult(ctx, action2, preview, baseDecimals);
+      return 0;
+    }
+    if (!ctx.json)
+      printAgentResult(ctx, action2, preview, baseDecimals);
+    if (preview.signable === false)
+      throw new TradingError("HOOD_EXIT_WALLET_NOT_SIGNABLE", `Candle cannot sign this exit for that wallet${typeof preview.reason === "string" ? ` (${safeText(preview.reason)})` : ""}. Nothing was sent.`, { details: { ...disclosure ? { disclosure } : {}, stage: "not_broadcast" } });
+    if (!booleans.has("--yes")) {
+      if (!ctx.deps.isTTY.stdin)
+        throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or pass --yes. Nothing was sent.");
+      const answer3 = (await ctx.deps.promptLine(`${ACTION_WORDS[action2]} now? [y/N] `)).trim().toLowerCase();
+      if (answer3 !== "y") {
+        notice(ctx.deps, out, "note", "Cancelled. Nothing was sent.");
+        return CANCELLED_EXIT;
+      }
+    }
+    const done = await run2(false);
+    if (ctx.json)
+      return printTradingResult(ctx, done);
+    printAgentResult(ctx, action2, done, baseDecimals);
+    return 0;
+  } catch (error) {
+    if (!ctx.json && error instanceof TradingError && typeof error.details?.disclosure === "string") {
+      notice(ctx.deps, "stderr", "note", safeText(error.details.disclosure));
+      return tradingFailure(ctx, new TradingError(error.code, `${error.code}: ${error.message}`, {
+        details: error.details,
+        exitCode: error.exitCode,
+        ...error.suggestion ? { suggestion: error.suggestion } : {}
+      }));
+    }
+    return tradingFailure(ctx, error);
+  }
+}
+function printView(ctx, token2, curve, view, baseDecimals) {
+  const quoteDecimals = view.recovery?.quoteDecimals ?? 18;
+  const quote = view.recovery?.quoteToken ? safeText(view.recovery.quoteToken) : "";
+  writeFields(ctx.deps, "stdout", [
+    ["Token", safeText(token2)],
+    ["Curve", safeText(curve)],
+    ["State", view.state ? STATE_WORDS[view.state] ?? safeText(view.state) : undefined],
+    ["Lifecycle", view.lifecycle ? safeText(view.lifecycle) : undefined]
+  ]);
+  if (view.disclosure)
+    notice(ctx.deps, "stdout", "note", safeText(view.disclosure));
+  const rows = [];
+  if (view.recoveryWindow) {
+    rows.push(["Creator may open Recovery", when(view.recoveryWindow.creatorMayEnterAt)]);
+    rows.push(["Anyone may open Recovery", when(view.recoveryWindow.anyoneMayEnterAt)]);
+  }
+  if (view.recovery) {
+    rows.push(["Recovery rate", amount(view.recovery.ratePerTokenRaw, quoteDecimals, `${quote} per token`.trim())]);
+    rows.push(["Recovery left", amount(view.recovery.remainingRaw, baseDecimals, "tokens")]);
+  }
+  if (view.rescue) {
+    rows.push(["Rescue to", view.rescue.to ? safeText(view.rescue.to) : undefined]);
+    rows.push(["Rescue executes", when(view.rescue.executableAt)]);
+    if (view.rescue.valid === false)
+      rows.push(["Rescue request", `void${view.rescue.voidReason ? ` (${safeText(view.rescue.voidReason)})` : ""}`]);
+  }
+  if (view.team) {
+    rows.push(["Team recipient", view.team.recipient ? safeText(view.team.recipient) : undefined]);
+    rows.push(["Team allocation", amount(view.team.amountRaw, baseDecimals, "tokens")]);
+    rows.push(["Team vested", amount(view.team.vestedRaw, baseDecimals, "tokens")]);
+    rows.push(["Team claimed", amount(view.team.claimedRaw, baseDecimals, "tokens")]);
+    rows.push(["Team claimable", amount(view.team.claimableRaw, baseDecimals, "tokens")]);
+    rows.push(["Team status", view.team.status ? safeText(view.team.status) : undefined]);
+  }
+  if (view.account) {
+    rows.push(["Wallet", view.account.address ? safeText(view.account.address) : undefined]);
+    rows.push(["Balance", amount(view.account.baseBalanceRaw, baseDecimals, "tokens")]);
+    if (view.state === "recovery" || view.state === "rescue_pending")
+      rows.push(["Recovery would pay", amount(view.account.recoveryQuoteOutRaw, quoteDecimals, quote)]);
+  }
+  const shown = rows.filter(([, value]) => value !== undefined);
+  if (shown.length)
+    writeFields(ctx.deps, "stdout", shown);
+  const actions = Array.isArray(view.actions) ? view.actions : [];
+  const flags2 = {
+    enter_recovery: "--enter-recovery",
+    claim_recovery: "--recover",
+    claim_team: "--claim-team"
+  };
+  for (const a of actions)
+    if (flags2[a])
+      notice(ctx.deps, "stdout", "note", `Available now: candle token exit ${safeText(token2)} ${flags2[a]}`);
+}
+function printAgentResult(ctx, action2, result2, baseDecimals) {
+  const build = result2.build ?? {};
+  const quoteDecimals = typeof build.quoteDecimals === "number" ? build.quoteDecimals : 18;
+  const calls = Array.isArray(result2.calls) ? result2.calls : [];
+  const dryRun = result2.dryRun === true;
+  writeFields(ctx.deps, "stdout", [
+    ["Action", ACTION_WORDS[action2]],
+    ["Wallet", typeof result2.wallet === "string" ? safeText(result2.wallet) : undefined],
+    ["Redeems", amount(build.amountRaw, baseDecimals, "tokens")],
+    [
+      dryRun ? "Would pay" : "Pays",
+      amount(build.expectedQuoteOutRaw, quoteDecimals, typeof build.quoteToken === "string" ? build.quoteToken : "")
+    ],
+    ["Releases", amount(build.expectedBaseOutRaw, baseDecimals, "tokens")],
+    ["To", typeof build.recipient === "string" ? safeText(build.recipient) : undefined],
+    [
+      "Calls",
+      calls.length ? calls.map((c) => `${safeText(String(c.kind))} ${safeText(String(c.status))}${c.txHash ? ` ${safeText(String(c.txHash))}` : ""}`).join(", ") : undefined
+    ],
+    ["Outcome", dryRun ? undefined : OUTCOME_WORDS[String(result2.outcome)] ?? safeText(String(result2.outcome))]
+  ], dryRun ? "Dry run" : "Exit");
+  if (dryRun && result2.signable === false)
+    notice(ctx.deps, "stdout", "warning", `A real run would be refused: ${typeof result2.reason === "string" ? safeText(result2.reason) : "this wallet is not signable here"}.`);
+  if (dryRun)
+    notice(ctx.deps, "stdout", "note", "Nothing was sent.");
+  if (Array.isArray(result2.warnings))
+    for (const warning of result2.warnings)
+      notice(ctx.deps, "stderr", "warning", safeText(String(warning)));
 }
 
 // src/commands/token-metadata.ts
@@ -118013,11 +118463,11 @@ async function vaultFund(args, ctx) {
   }
   if (looksLikeEvmAddress(teeAddress))
     return vaultFundEvm(ctx, parsed, teeAddress);
-  const amount = parsed.values["--amount"];
+  const amount2 = parsed.values["--amount"];
   const asset = (parsed.values["--asset"] ?? "SOL").toUpperCase();
-  if (!amount)
+  if (!amount2)
     return usage2(ctx, "--amount <n> is required.");
-  if (amount.toLowerCase() === "max")
+  if (amount2.toLowerCase() === "max")
     return usage2(ctx, "--amount must be a number; funding a wallet takes no max.");
   if (asset !== "SOL" && asset !== "USDC")
     return usage2(ctx, "--asset must be SOL or USDC.");
@@ -118036,7 +118486,7 @@ async function vaultFund(args, ctx) {
     const raw2 = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
-      reason: describeSend(amount, asset, teeAddress)
+      reason: describeSend(amount2, asset, teeAddress)
     });
     const vault = hold(opened.vault);
     assertNotEvmEntry(vault.index, teeAddress, "vault fund");
@@ -118046,7 +118496,7 @@ async function vaultFund(args, ctx) {
     if (teeEntry === undefined) {
       const external3 = findExternalEntry(vault.index, teeAddress);
       if (external3 !== undefined)
-        return fundExternal(ctx, vault, external3, { amount, asset, solana, parsed });
+        return fundExternal(ctx, vault, external3, { amount: amount2, asset, solana, parsed });
       writeLocalFailure(ctx.deps, {
         code: "TEE_WALLET_UNKNOWN",
         message: `${teeAddress} is neither a TEE wallet nor an external wallet in this vault.`,
@@ -118087,7 +118537,7 @@ async function vaultFund(args, ctx) {
     const plan2 = await solana.read(() => planTransfer({
       from: fromEntry.address,
       to: teeAddress,
-      amount,
+      amount: amount2,
       asset,
       rpc: solana.rpc
     }));
@@ -118143,11 +118593,11 @@ async function vaultFund(args, ctx) {
   });
 }
 async function vaultFundEvm(ctx, parsed, teeAddress) {
-  const amount = parsed.values["--amount"];
+  const amount2 = parsed.values["--amount"];
   const asset = (parsed.values["--asset"] ?? "ETH").toUpperCase();
-  if (!amount)
+  if (!amount2)
     return usage2(ctx, "--amount <n> is required.");
-  if (amount.toLowerCase() === "max")
+  if (amount2.toLowerCase() === "max")
     return usage2(ctx, "--amount must be a number; funding a TEE wallet takes no max.");
   if (asset !== "ETH" && asset !== "USDG")
     return usage2(ctx, "--asset must be ETH or USDG for a Hood TEE wallet.");
@@ -118169,7 +118619,7 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
     const raw2 = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
-      reason: describeSend(amount, asset, teeAddress)
+      reason: describeSend(amount2, asset, teeAddress)
     });
     const vault = hold(opened.vault);
     const teeEntry = vault.index.entries.find((entry2) => entry2.chain === "evm" && entry2.role === "tee-wallet" && sameAddress2(entry2.address, teeAddress));
@@ -118208,7 +118658,7 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
       pinHoodChain: true,
       from: fromEntry,
       to: teeEntry.address,
-      amount,
+      amount: amount2,
       asset,
       confirmSend: (send) => confirmSend(ctx, send),
       decryptSecret: () => decryptKey(vault, fromEntry.id),
@@ -122277,11 +122727,11 @@ async function vaultTransfer(args, ctx) {
   if (!to || extra !== undefined) {
     return usage2(ctx, "Usage: candle vault transfer <to> --amount <n|max> --asset SOL|<mint>|ETH|USDG|<0x token> --from <label> [--rpc-url <url>]");
   }
-  const amount = parsed.values["--amount"];
+  const amount2 = parsed.values["--amount"];
   const asset = parsed.values["--asset"];
   const fromLabel = parsed.values["--from"];
   const rpcUrlFlag = parsed.values["--rpc-url"];
-  if (!amount)
+  if (!amount2)
     return usage2(ctx, "--amount <n|max> is required.");
   if (!asset)
     return usage2(ctx, "--asset SOL|<mint>|ETH|USDG|<0x token> is required.");
@@ -122309,7 +122759,7 @@ async function vaultTransfer(args, ctx) {
     const opened = await unlockInteractively(ctx, path, raw2, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       promptText: "Vault passphrase (input hidden): ",
-      reason: describeSend(amount, asset, to)
+      reason: describeSend(amount2, asset, to)
     });
     const vault = hold(opened.vault);
     const fromEntry = findTransferSource(vault.index, fromLabel);
@@ -122352,7 +122802,7 @@ async function vaultTransfer(args, ctx) {
         builtIn: evmRpc.builtIn,
         from: fromEntry,
         to,
-        amount,
+        amount: amount2,
         asset,
         confirmSend: (send) => confirmSend(ctx, send),
         decryptSecret: () => decryptKey(vault, secretRef2.id),
@@ -122390,7 +122840,7 @@ async function vaultTransfer(args, ctx) {
     const buildPlan = () => solana.read(() => planTransfer({
       from: fromEntry.address,
       to,
-      amount,
+      amount: amount2,
       asset,
       rpc: solana.rpc
     }));
@@ -123757,6 +124207,7 @@ var COMMANDS = {
     subcommands: {
       clusters: tokenClusters,
       events: tokenEvents,
+      exit: tokenExit,
       forensics: tokenForensics,
       "vamp-candidates": tokenVampCandidates,
       about: tokenAbout,
@@ -124166,7 +124617,7 @@ async function runCommand(argv, deps) {
   const publicPerpsRead = word3 === "perps" && ["markets", "market", "book", "candles"].includes(sub ?? "");
   const coreFace = word3 === "core" && sub === "mcp";
   const actsAsIdentity = !publicPerpsRead && !coreFace && (word3 !== "mcp" || mcpActsAsIdentity(tokens.slice(1)));
-  const tokenPageActs = word3 === "token" && (["claim", "section", "flag", "edit"].includes(sub ?? "") || sub === "about" && tokens.includes("--capabilities"));
+  const tokenPageActs = word3 === "token" && (["claim", "section", "flag", "edit"].includes(sub ?? "") || sub === "about" && tokens.includes("--capabilities") || sub === "exit" && ["--recover", "--enter-recovery", "--claim-team"].some((flag) => tokens.includes(flag)));
   if (ROUTED_COMMANDS.has(word3) && (!NEVER_GUARDED.has(word3) || tokenPageActs) && routesToCommand(cmd, sub) && actsAsIdentity) {
     const verdict = await verifyProfileAccount(ctx, config2);
     if (!verdict.ok) {

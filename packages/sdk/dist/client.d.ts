@@ -1,6 +1,7 @@
 import type { HoodTeeOperation } from "./hood-tee";
 import { type OwnTransferBuild } from "./hyperliquid-transfer";
 import { type SignedTradeLeg } from "./errors";
+import { type AgentHolderExitRequest, type AgentHolderExitResult, type AgentHolderExitSubmitRequest, type HolderExit, type HolderExitBuild, type HolderExitBuildRequest, type HolderExitList, type HolderExitRead, type HolderExitRecord, type HolderExitRecordRequest } from "./holder-exit";
 import { type HyperliquidNetwork, type HyperliquidSubmitOutcome, type HyperliquidTypedData } from "./hyperliquid";
 import { type PerpsBuildReview, type PerpsTpslParams, type PerpsWorkflowResult } from "./hyperliquid-manage";
 import { type PerpsBookOptions, type PerpsBookResult, type PerpsCandlesOptions, type PerpsCandlesResult, type PerpsMarketResult, type PerpsMarketsOptions, type PerpsMarketsResult } from "./hyperliquid-markets";
@@ -792,6 +793,15 @@ export interface MarketState {
         method: "claimRecovery(uint256)";
         requiresApprovalTo: string;
     };
+    /**
+     * Hood only, additive (BE-3791; absent on an older API). Where a holder of this curve stands if
+     * the launch does not migrate: state, Recovery window, rate, rescue request, team escrow, and the
+     * actions that would succeed now. `disclosure` is one sentence per state: show it verbatim. For
+     * one account's figures read `getHolderExit(curve, account)`. `recovery` above is its older shape.
+     */
+    holderExit?: HolderExit;
+    /** Hood only: true when the chain read behind `holderExit` failed. The market still loaded. */
+    holderExitUnavailable?: true;
     migration: MigrationStatus;
 }
 /** All amounts are decimal strings in the relevant asset's smallest unit. */
@@ -3975,6 +3985,46 @@ export declare class CandleClient {
      */
     allowlistProof(mint: string, wallet: string): Promise<AllowlistProofResult>;
     getMarket(chain: Chain, mint: string): Promise<MarketState>;
+    /**
+     * Hood holder exits (BE-3794): where a holder of one Hood curve stands if the launch does not
+     * migrate (GET /api/v1/hood/curves/{curve}/holder-exit). No key needed. With `account`, the
+     * figures are that wallet's: balance, what a Recovery claim pays, and the actions it may take now.
+     * A curve Candle does not list answers 404. Throws `HolderExitError`.
+     */
+    getHolderExit(curve: string, account?: string): Promise<HolderExitRead>;
+    /**
+     * The account's open Hood exits across the curves it holds or has a team allocation in
+     * (GET /api/v1/hood/holder-exits). No key needed. `unavailableCount` above zero means some curves
+     * could not be read and the list may be short.
+     */
+    getHolderExits(account: string): Promise<HolderExitList>;
+    /**
+     * The unsigned calls for one holder exit, for the holder's own wallet to sign and send in order
+     * (POST /api/v1/hood/curves/{curve}/holder-exit/build). No key needed: the chain authorizes the
+     * sender. Nothing is signed. Every call is simulated first; a call that would revert is refused
+     * by name (`HOOD_RECOVERY_NOT_READY`, `HOOD_VESTING_NOT_MIGRATED`, ...). After sending, call
+     * `recordHolderExit` with the hash (optional: the indexer records it anyway).
+     */
+    buildHolderExit(request: HolderExitBuildRequest): Promise<HolderExitBuild>;
+    /**
+     * Proves a sent holder exit from its receipt and records it once
+     * (POST /api/v1/hood/curves/{curve}/holder-exit/record). No key needed. A transaction that is not
+     * confirmed, or carries no exit of this curve for this account, is `HOOD_EXIT_NOT_CONFIRMED`.
+     */
+    recordHolderExit(request: HolderExitRecordRequest): Promise<HolderExitRecord>;
+    /**
+     * Runs one holder exit for this account's wallet (POST /api/v1/agent/hood/holder-exit/{curve}).
+     * Candle signs with the embedded Hood wallet unless `wallet` names a linked wallet, which with
+     * `linkedSigning: true` gets `signing[]` to sign itself and pass to `submitHolderExit`. Needs
+     * `swap:write` for `enter_recovery` and `claim_recovery`, `launch:write` for `claim_team`.
+     * `dryRun: true` builds and simulates and signs nothing. A refusal, or a sequence that did not
+     * complete (`outcome` `partial`, `failed` or `indeterminate`), throws `HolderExitError`.
+     */
+    holderExit(request: AgentHolderExitRequest): Promise<AgentHolderExitResult>;
+    /** Broadcasts a linked wallet's signed holder-exit transactions, bound by the build's `claimToken`. */
+    submitHolderExit(request: AgentHolderExitSubmitRequest): Promise<AgentHolderExitResult>;
+    /** The holder-exit routes' refusal shapes differ from the agent envelope; `HolderExitError` reads all three. */
+    private holderExitJson;
     getQuote(chain: Chain, mint: string, q: {
         side: "buy" | "sell";
         amountIn: string;
@@ -5161,7 +5211,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.27";
+export declare const SDK_VERSION = "0.6.28";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

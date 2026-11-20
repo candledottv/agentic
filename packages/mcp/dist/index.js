@@ -101,7 +101,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.38";
+var SERVER_VERSION = "0.10.39";
 
 // src/client.ts
 var DEFAULT_API_URL = "https://api.alpha.candle.tv";
@@ -232,6 +232,7 @@ function resolveConfig(env = process.env) {
 
 // src/market-disclosure.ts
 var EXTERNAL_MARKET_DISCLOSURE = "For external tokens (external: true), buysOpen, sellsOpen, quoteMint, feeBps, venue, " + "graduationVenue and poolAddress are compatibility placeholders, not measured facts about " + "trading availability, pool pairing, fees or pool venue; trade.routable is stored eligibility " + "and does not verify those fields.";
+var HOLDER_EXIT_DISCLOSURE = "On a Hood market, holderExit says where a holder stands if the launch does not migrate: state " + "(none, awaiting_migration, recovery_open, recovery, rescue_pending, rescued), the Recovery window " + "and rate, any rescue request, the team vesting escrow, and the actions that would succeed now. " + "holderExit.disclosure is one sentence for that state: quote it to the user verbatim before any " + "exit or trade on that token. Recovery pays by tokens held, not by what was paid. rescue_pending " + "closes buying; rescued has no on-chain claim.";
 
 // src/perps-transfer.ts
 import { createPrivateKey as createPrivateKey2, sign as sign2 } from "node:crypto";
@@ -8552,6 +8553,8 @@ var TOOL_NAMES = [
   "candle_recover_operation",
   "candle_get_fees",
   "candle_claim_fees",
+  "candle_holder_exit",
+  "candle_claim_holder_exit",
   "candle_get_staking",
   "candle_stake",
   "candle_unstake",
@@ -9019,6 +9022,33 @@ function buildRequest(name, args, cfg) {
         init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify({ dryRun: dryRun === true }) }
       };
     }
+    case "candle_holder_exit": {
+      const { curve, account } = args;
+      if (typeof curve !== "string")
+        throw new Error("candle_holder_exit needs a curve here");
+      const query2 = typeof account === "string" ? `?account=${encodeURIComponent(account)}` : "";
+      return {
+        url: `${base2}/api/v1/hood/curves/${encodeURIComponent(curve)}/holder-exit${query2}`,
+        init: { method: "GET", headers: jsonHeaders() }
+      };
+    }
+    case "candle_claim_holder_exit": {
+      const apiKey = requireApiKey2(cfg);
+      const { curve, action, amountRaw, dryRun, wallet: wallet3 } = args;
+      return {
+        url: `${base2}/api/v1/agent/hood/holder-exit/${encodeURIComponent(curve)}`,
+        init: {
+          method: "POST",
+          headers: jsonHeaders(apiKey),
+          body: JSON.stringify({
+            action,
+            ...amountRaw !== undefined ? { amountRaw } : {},
+            dryRun: dryRun !== false,
+            ...wallet3 !== undefined ? { wallet: wallet3 } : {}
+          })
+        }
+      };
+    }
     case "candle_get_wallets": {
       const apiKey = requireApiKey2(cfg);
       return {
@@ -9140,6 +9170,35 @@ ${promotion}` : markdown;
   } catch {
     return "";
   }
+}
+async function holderExitRelay(args, cfg, doFetch) {
+  const errorText2 = (code, message) => ({
+    content: [{ type: "text", text: JSON.stringify({ success: false, error: { code, message } }) }],
+    isError: true
+  });
+  let curve = typeof args.curve === "string" ? args.curve : undefined;
+  if (curve === undefined) {
+    if (typeof args.token !== "string")
+      return errorText2("VALIDATION_FAILED", "Give curve or token");
+    const res = await doFetch(`${cfg.apiUrl}/api/v1/markets/hood/${encodeURIComponent(args.token)}`, {
+      method: "GET",
+      headers: jsonHeaders()
+    });
+    noteVersionHeaders(res);
+    const text = await res.text();
+    if (!res.ok)
+      return { content: [{ type: "text", text }], isError: true };
+    let market;
+    try {
+      market = JSON.parse(text).market;
+    } catch {
+      market = undefined;
+    }
+    if (typeof market?.curveAddress !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(market.curveAddress))
+      return errorText2("NO_HOOD_CURVE", "This token has no Candle Hood curve, so it has no holder exit");
+    curve = market.curveAddress;
+  }
+  return callAndRelay("candle_holder_exit", { curve, ...args.account !== undefined ? { account: args.account } : {} }, cfg, doFetch);
 }
 async function callAndRelay(name, args, cfg, doFetch) {
   const { url, init } = buildRequest(name, args, cfg);
@@ -9394,6 +9453,19 @@ var atomicLaunchDryRunShape = (() => {
 var claimFeesShape = {
   mint: z13.string().describe("The launched token: a Solana mint or a Hood token address, as candle_get_fees lists it"),
   dryRun: z13.boolean().optional().describe("Check and read only. Sends nothing and writes nothing. Use it first to see what would be claimed")
+};
+var HOOD_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+var holderExitShape = {
+  curve: z13.string().regex(HOOD_ADDRESS).optional().describe("The Hood curve address (candle_get_market's curveAddress). Give this or token"),
+  token: z13.string().regex(HOOD_ADDRESS).optional().describe("The Hood token address; its curve is read from the market. Give this or curve"),
+  account: z13.string().regex(HOOD_ADDRESS).optional().describe("A Hood wallet: the answer then carries its balance, what Recovery pays it and its actions")
+};
+var claimHolderExitShape = {
+  curve: z13.string().regex(HOOD_ADDRESS).describe("The Hood curve address (candle_holder_exit's curve)"),
+  action: z13.enum(["enter_recovery", "claim_recovery", "claim_team"]).describe("One of holderExit.actions from candle_holder_exit for this wallet"),
+  amountRaw: z13.string().regex(/^[1-9][0-9]{0,77}$/).optional().describe("claim_recovery only: base raw units to redeem. Defaults to the whole balance"),
+  dryRun: z13.boolean().optional().describe("Defaults to true: build and simulate, sign nothing. Pass false to send"),
+  wallet: z13.string().regex(HOOD_ADDRESS).optional().describe("Defaults to the account's embedded Hood wallet, which Candle signs for")
 };
 var resolveTokenShape = {
   mint: z13.string().describe("Token mint (Solana, base58) or contract address (Hood, 0x-prefixed)")
@@ -9670,7 +9742,7 @@ function registerToolSubset(server, options) {
   });
   register("candle_get_market", {
     title: "Get market state",
-    description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. quoteAsset names the pool pair; quoteAssets lists accepted settlement ids, with quoteAssets[0] the default (not a liquidity promise). " + "quoteState, when the quote watcher covers the quote token, says whether it is paused (paused) or in a split hold (split) and whether new launches against it are blocked (launchBlocked, refusal). " + EXTERNAL_MARKET_DISCLOSURE + " " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
+    description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. quoteAsset names the pool pair; quoteAssets lists accepted settlement ids, with quoteAssets[0] the default (not a liquidity promise). " + "quoteState, when the quote watcher covers the quote token, says whether it is paused (paused) or in a split hold (split) and whether new launches against it are blocked (launchBlocked, refusal). " + EXTERNAL_MARKET_DISCLOSURE + " " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable. " + HOLDER_EXIT_DISCLOSURE + " holderExitUnavailable: true means that read failed; the market still loaded.",
     inputSchema: getMarketShape
   }, async (args) => callAndRelay("candle_get_market", args, getConfig(), doFetch));
   register("candle_quote", {
@@ -9896,6 +9968,16 @@ function registerToolSubset(server, options) {
     description: "Collect one token's creator fees and pay them to the wallet fixed at launch. There is no destination " + "argument and the tool cannot send funds anywhere else. Candle signs with the embedded wallet, which " + "pays the network fee. A fee recipient that is a TEE wallet is refused here: claim it with the candle CLI " + "(`candle fees claim`). The dry run reports the same refusal (`claimable: false`, `reason: " + "wallet_not_signable`) and counts only what this tool could claim. Needs launch:write. " + "Call it with dryRun: true first; a real claim moves real funds into the recipient wallet, which may be " + "the wallet this agent trades from. Not idempotent by id: if the result is lost, read candle_get_fees " + "before claiming again.",
     inputSchema: claimFeesShape
   }, async (args) => callAndRelay("candle_claim_fees", args, getConfig(), doFetch));
+  register("candle_holder_exit", {
+    title: "Read a Hood holder exit",
+    description: "Where a holder of one Candle Hood curve stands if the launch does not migrate, read from the chain " + "at one block. No key needed. Give curve, or token to look its curve up. With account, the answer " + "carries that wallet's balance, what a Recovery claim would pay it (recoveryQuoteOutRaw) and the " + "actions it may take now. Raw integer strings. A curve Candle does not list is a 404. Reads only. " + HOLDER_EXIT_DISCLOSURE,
+    inputSchema: holderExitShape
+  }, async (args) => holderExitRelay(args, getConfig(), doFetch));
+  register("candle_claim_holder_exit", {
+    title: "Run a Hood holder exit",
+    description: "Run one holder exit on a Candle Hood curve for this account's wallet: enter_recovery (open Recovery " + "once its gate is open), claim_recovery (approve the exact amount, then redeem it at the fixed rate) " + "or claim_team (release vested team tokens, always to the escrow's recipient). dryRun DEFAULTS TO " + "TRUE: it builds and simulates and signs nothing. With dryRun: false, Candle signs with the embedded " + "Hood wallet and MOVES REAL FUNDS: it burns the redeemed tokens and pays the curve's quote token into " + "that wallet. There is no destination argument. Needs swap:write for the Recovery actions and " + "launch:write for claim_team. Read candle_holder_exit first and only ask for an action in its " + "actions list. outcome partial means the approval landed and the claim did not: read again and run " + "the claim; never resend a call whose outcome is indeterminate. " + HOLDER_EXIT_DISCLOSURE,
+    inputSchema: claimHolderExitShape
+  }, async (args) => callAndRelay("candle_claim_holder_exit", args, getConfig(), doFetch));
   register("candle_get_wallets", {
     title: "List the wallets Candle executes with",
     description: "The account's EMBEDDED wallets, one per chain, with their delegation state. These are " + "the wallets candle_trade, candle_swap and candle_transfer spend from, so this is how an " + "agent finds its own funding addresses. Reads only; moves nothing. Not the same as the " + "account's LINKED wallets, which are the owner's own wallets and are not spent from here. " + "Balances are not included: read a specific one with the market and balance endpoints.",
@@ -10296,6 +10378,7 @@ var INSTRUCTIONS = `Candle is a trading and token-launch rail for agents. You ho
 
 START HERE — fifteen tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
   candle_get_market       price, market cap, volume, curve state for one token
+  candle_holder_exit      where a Hood holder stands if a launch does not migrate: Recovery, rescue, team vesting; quote its disclosure
   candle_get_price_history one Solana token's OHLC bars in USD (1m to 1d, up to 500, page back with to); source and volumeUnit say whose bars
   candle_get_feed         the roster: hot streak, new pairs, graduated, final stretch, blue chip (final stretch is refused where it is not switched on; use another bucket)
   candle_token_page_about public About summary, switches default off
@@ -10333,6 +10416,7 @@ candle_get_market and candle_resolve_token answer for same-chain indexed externa
 when trade.routable is false. Read candleLaunched, launchpad, venue and trade; jupiterOk and
 paperDiscoveryOk are separate signals. Identity-only Solana reads have route_unverified.
 ${EXTERNAL_MARKET_DISCLOSURE}
+${HOLDER_EXIT_DISCLOSURE}
 General quotes use POST /api/v1/trade/agent/quote; curve quotes/lifecycle describe Candle launches.
 Stored eligibility is not a successful quote or permission. MARKET_NOT_FOUND remains a legacy
 code: read error.routing.reason, error.discovery and sibling error.retryable. A curve-only

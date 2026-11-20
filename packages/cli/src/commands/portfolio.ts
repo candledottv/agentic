@@ -73,6 +73,15 @@
  * partial like a failed Solana one (exit 3), with `unread` naming `eth`, `usdg` or `hood-tokens`,
  * and the footer names the chain. Subtotals are per group, then per chain, then one total. A bridge
  * (4c) moves value between the two chain subtotals; it is not a trade.
+ *
+ * ── Holder exits (BE-3794, BE-3630 spec 6.2) ─────────────────────────────────────────────────
+ *
+ * Each distinct Hood token held in a TEE or embedded wallet (not ETH or USDG, never a vault
+ * address) costs one `GET /markets/hood/<token>`, at most 50 tokens, eight at once. A token whose
+ * launch is in Recovery, has a pending rescue, or was rescued is marked (`holderExit` on the
+ * holding, `holderExits` in `--json`) and, in the table, named with the API's disclosure and
+ * `candle token exit <token>`. A mark that could not be read is said on stderr
+ * (`holderExitsUnread` in `--json`) and never makes the portfolio partial.
  */
 import { parseArgs } from "../args"
 import { enabledEvmChainSlugs } from "../chain-registry"
@@ -258,6 +267,8 @@ export interface Holding extends RawHolding {
   priceSource: MintPrice["source"]
   /** Why a Hood holding has no price, shown where its value would be. */
   unpricedReason?: HoodUnpricedReason
+  /** BE-3794: a Hood token whose launch has an open holder exit (`candle token exit <mint>`). */
+  holderExit?: OpenExitState
 }
 /** One side of an LP position, as shown: amount and unclaimed fees in whole tokens, and its value. */
 export interface LpPositionToken extends Omit<LpToken, "symbol"> {
@@ -808,6 +819,9 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       hoodTotals.unpricedByReason = reasons
     }
     const matched = filter === undefined ? undefined : { filter, matched: all.length, wallets: known }
+    // BE-3794: Hood positions whose launch has an open holder exit. Advisory: a failed mark leaves
+    // the position unmarked and says so on stderr; it never makes the portfolio partial.
+    const exits = showHood ? await markHolderExits(ctx, apiKey, groups) : undefined
 
     if (ctx.json) {
       writeJson(deps, {
@@ -825,6 +839,8 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
         byChain,
         groups,
         ...(perps ? { hyperliquid: perps } : {}),
+        ...(exits && exits.open.length > 0 ? { holderExits: exits.open } : {}),
+        ...(exits && exits.unread > 0 ? { holderExitsUnread: exits.unread } : {}),
       })
       return complete ? 0 : 3
     }
@@ -858,8 +874,107 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       lp,
     })
     if (perps) writePerpsSection(ctx, perps)
+    if (exits) writeHolderExits(ctx, exits)
     return complete ? 0 : 3
   })
+}
+
+/** The holder-exit states a position is marked with (spec 6.2): the launch did not migrate, or its quote was rescued. */
+const OPEN_EXIT_STATES = ["recovery", "rescue_pending", "rescued"] as const
+type OpenExitState = (typeof OPEN_EXIT_STATES)[number]
+/** Market reads for exit marks: at most this many distinct Hood tokens, this many at once. */
+const EXIT_MARKS_MAX_TOKENS = 50
+const EXIT_MARKS_IN_FLIGHT = 8
+
+export interface HolderExitMark {
+  mint: string
+  symbol: string | null
+  state: OpenExitState
+  /** The API's sentence for the state, verbatim. */
+  disclosure: string
+}
+
+/**
+ * Reads the market of every distinct Hood token held in Candle's wallets (TEE and embedded, never
+ * a vault address) and marks the holdings whose launch is in Recovery, has a pending rescue, or was
+ * rescued. The state is the curve's (`holderExit` on the market read), so one read per token covers
+ * every wallet holding it. ETH and USDG have no curve and are not read.
+ */
+async function markHolderExits(
+  ctx: CommandContext,
+  apiKey: string,
+  groups: PortfolioGroup[],
+): Promise<{ open: HolderExitMark[]; unread: number }> {
+  const holdings = groups
+    .filter((g) => g.group !== "vault")
+    .flatMap((g) => g.wallets)
+    // chain-lint-allowed: holder exits are a Hood-curve feature (BE-3630); the market route is Hood's
+    .filter((w) => w.chain === "hood")
+    .flatMap((w) => w.holdings ?? [])
+    .filter((h) => h.mint !== HOOD_NATIVE && h.mint.toLowerCase() !== HOOD_USDG.toLowerCase() && h.amountRaw !== "0")
+  const mints = [...new Set(holdings.map((h) => h.mint.toLowerCase()))]
+  const read = mints.slice(0, EXIT_MARKS_MAX_TOKENS)
+  const states = new Map<string, { state: OpenExitState; disclosure: string }>()
+  let unread = mints.length - read.length
+  for (let i = 0; i < read.length; i += EXIT_MARKS_IN_FLIGHT) {
+    const settled = await Promise.allSettled(
+      read.slice(i, i + EXIT_MARKS_IN_FLIGHT).map(async (mint) => {
+        const result = await apiRequest(`/api/v1/markets/hood/${encodeURIComponent(mint)}`, {
+          auth: "key",
+          credentials: { apiKey },
+          apiUrl: ctx.apiUrl,
+          fetch: ctx.deps.fetch,
+          env: ctx.deps.env,
+        })
+        // A token Candle has no market for has no curve and no exit: an answer, not a failed read.
+        if (!result.ok && result.status === 404) return
+        if (!result.ok) throw new Error(result.message)
+        const market = (result.body as { market?: { holderExit?: unknown; holderExitUnavailable?: unknown } })?.market
+        if (market?.holderExitUnavailable === true) throw new Error("holder-exit read unavailable")
+        const exit = market?.holderExit as { state?: unknown; disclosure?: unknown } | undefined
+        if (typeof exit?.state === "string" && (OPEN_EXIT_STATES as readonly string[]).includes(exit.state))
+          states.set(mint, {
+            state: exit.state as OpenExitState,
+            disclosure: typeof exit.disclosure === "string" ? exit.disclosure : "",
+          })
+      }),
+    )
+    unread += settled.filter((r) => r.status === "rejected").length
+  }
+  const open: HolderExitMark[] = []
+  for (const holding of holdings) {
+    const found = states.get(holding.mint.toLowerCase())
+    if (!found) continue
+    holding.holderExit = found.state
+    if (!open.some((mark) => mark.mint.toLowerCase() === holding.mint.toLowerCase()))
+      open.push({ mint: holding.mint, symbol: holding.symbol, ...found })
+  }
+  return { open, unread }
+}
+
+const EXIT_STATE_WORDS: Record<OpenExitState, string> = {
+  recovery: "in Recovery",
+  rescue_pending: "rescue pending, buying closed",
+  rescued: "rescued, no on-chain claim",
+}
+
+function writeHolderExits(ctx: CommandContext, exits: { open: HolderExitMark[]; unread: number }): void {
+  for (const mark of exits.open) {
+    const name = mark.symbol ? `${terminalText(mark.symbol)} (${terminalText(mark.mint)})` : terminalText(mark.mint)
+    notice(
+      ctx.deps,
+      "stdout",
+      "warning",
+      `${name}: ${EXIT_STATE_WORDS[mark.state]}. ${terminalText(mark.disclosure)} See: candle token exit ${terminalText(mark.mint)}`,
+    )
+  }
+  if (exits.unread > 0)
+    notice(
+      ctx.deps,
+      "stderr",
+      "note",
+      `Holder exits were not checked for ${exits.unread} Hood ${exits.unread === 1 ? "token" : "tokens"}; candle token exit <token> reads one.`,
+    )
 }
 
 /**

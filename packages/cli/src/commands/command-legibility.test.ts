@@ -155,3 +155,67 @@ describe("release C remaining commands", () => {
     expect(stderr.text).toBe("")
   })
 })
+
+describe("BE-3794 token exit", () => {
+  const token = "0x2222222222222222222222222222222222222222"
+  const curve = "0x1111111111111111111111111111111111111111"
+  const wallet = "0x3333333333333333333333333333333333333333"
+  const holderExit = {
+    generation: 2,
+    state: "recovery",
+    lifecycle: "recovery",
+    recoveryWindow: null,
+    recovery: {
+      quoteToken: "0x5555555555555555555555555555555555555555",
+      quoteDecimals: 6,
+      reserveSnapshotRaw: "1000000000",
+      eligibleSupplyRaw: "2000000000000000000000",
+      surrenderedRaw: "0",
+      remainingRaw: "2000000000000000000000",
+      ratePerTokenRaw: "500000",
+      paysBy: "tokens_held",
+    },
+    rescue: null,
+    team: null,
+    account: {
+      address: wallet,
+      baseBalanceRaw: "10000000000000000000",
+      allowanceToCurveRaw: "0",
+      recoveryQuoteOutRaw: "5000000",
+      mayEnterRecoveryNow: false,
+      isTeamRecipient: false,
+    },
+    actions: ["claim_recovery"],
+    disclosure:
+      "This launch did not migrate. Holders redeem the curve's reserve at a fixed rate of 0.5 USDG per token. Recovery pays by tokens held, not by what you paid.",
+  }
+
+  test("the read wraps prose to 40 columns, keeps addresses whole, and --json is one value", async () => {
+    const { fetch } = createRoutedFetch({
+      [`/api/v1/markets/hood/${token}`]: () =>
+        jsonResponse(200, { success: true, market: { chain: "hood", curveAddress: curve, decimals: 18 } }),
+      [`/api/v1/hood/curves/${curve}/holder-exit`]: () => jsonResponse(200, { payload: { curve, token, holderExit } }),
+    })
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      stdout,
+      stderr,
+      env: { CANDLE_PLAIN: "1" },
+      columns: { stdout: 40, stderr: 40 },
+    })
+    expect(await run(["token", "exit", token, "--wallet", wallet], deps)).toBe(0)
+    expect(stdout.text.replace(/\s+/g, " ")).toContain("Recovery pays by tokens held, not by what you paid.")
+    expect(stdout.text).not.toContain("\x1b")
+    for (const line of stdout.text.split("\n")) {
+      if (!/0x[0-9a-fA-F]{40}/.test(line)) expect(displayWidth(line)).toBeLessThanOrEqual(40)
+    }
+    expect(stderr.text).toBe("")
+
+    stdout.text = ""
+    expect(await run(["token", "exit", token, "--wallet", wallet, "--json"], deps)).toBe(0)
+    expect(stdout.text.trimEnd().split("\n")).toHaveLength(1)
+    expect(JSON.parse(stdout.text).payload.holderExit.state).toBe("recovery")
+  })
+})

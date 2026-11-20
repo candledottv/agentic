@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-one hundred and two tools over stdio, plus four Hyperliquid market reads (one hundred and six in all; the published 0.10.36 ships `candle_recover_operation`, `candle_get_swap_receipt`, `candle_perps_transfer` and the three hacc signal record tools along with the rest; `candle_perps_activity` is source only until the next release), so an MCP-capable agent can launch tokens (optionally seeded with a dev
+one hundred and four tools over stdio, plus four Hyperliquid market reads (one hundred and eight in all; the published 0.10.36 ships `candle_recover_operation`, `candle_get_swap_receipt`, `candle_perps_transfer` and the three hacc signal record tools along with the rest; `candle_perps_activity` is source only until the next release), so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity,
 check an agent profile, backtest a strategy in hacc's strategy lab, and read hacc's scorecard and signal records without hand-rolling HTTP calls. The five
@@ -11,12 +11,12 @@ Not sure this is the right tool? [How to choose: SDK, MCP or CLI](https://docs.c
 
 ## Try it without a key
 
-Twenty-three tools are read-only and need nothing but `CANDLE_API_URL` (which already defaults to
+Twenty-four tools are read-only and need nothing but `CANDLE_API_URL` (which already defaults to
 production): `candle_get_market`, `candle_get_price_history`, `candle_get_feed`, `candle_token_events`, `candle_token_card`, `candle_token_history`,
 `candle_token_page_about`, `candle_token_page_burns`, `candle_token_page_history`, `candle_token_page_updates`, `candle_token_page_comments`, `candle_token_forensics`, `candle_token_clusters`,
-`candle_get_agent_profile`, `candle_list_agents`, `candle_list_agent_posts`, `candle_get_agent_positions`, `candle_get_agent_perp_round`, `candle_get_agent_open_orders`, `candle_get_perp_candles`, `candle_get_perp_market`, `candle_resolve_token` and `candle_get_plans`.
-All of them are in the published 0.10.36 (`candle_get_agent_perp_round`, `candle_get_agent_open_orders` and `candle_get_perp_candles` are new since 0.10.31); `candle_get_agent_positions` is new since 0.10.27 and `candle_get_price_history` is new since 0.10.29.
-With token-page reads enabled on the deployment, those twenty-three work immediately without a key.
+`candle_get_agent_profile`, `candle_list_agents`, `candle_list_agent_posts`, `candle_get_agent_positions`, `candle_get_agent_perp_round`, `candle_get_agent_open_orders`, `candle_get_perp_candles`, `candle_get_perp_market`, `candle_holder_exit`, `candle_resolve_token` and `candle_get_plans`.
+All of them are in the published 0.10.36 (`candle_get_agent_perp_round`, `candle_get_agent_open_orders` and `candle_get_perp_candles` are new since 0.10.31); `candle_get_agent_positions` is new since 0.10.27 and `candle_get_price_history` is new since 0.10.29; `candle_holder_exit` is new in 0.10.39.
+With token-page reads enabled on the deployment, those twenty-four work immediately without a key.
 Install the released server with no `env` block at all and its ten public reads work immediately:
 
 ```json
@@ -39,7 +39,7 @@ environment.
 To mint a key for another agent without keeping it as the CLI profile's working key, run `candle keys create --access write --label agent-one --no-store` after device login. The key is printed once; put it in the intended agent's secret store. `--json` reports `stored: false` and exits 0. The profile's existing working key, prefix and scopes stay unchanged, even when it has no working key. Add `--embedded-wallet allow` at a terminal if this key needs the account's embedded wallet. This is a CLI storage option; it adds no MCP tool and does not change tool counts.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all one hundred and six: the one hundred and two tools in the table below plus the four Hyperliquid
+Unset means all one hundred and eight: the one hundred and four tools in the table below plus the four Hyperliquid
 market reads. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
@@ -153,7 +153,7 @@ before installed-package support can be claimed.
   non-loopback host. For a trusted local endpoint that is not loopback, such as a devcontainer
   reaching its host; not for anything that leaves the machine.
 - `CANDLE_AGENT_API_KEY` -- an agent API key (`cndl_live_...` / `cndl_test_...`), issued from a
-  Candle account's agent settings page. Required by every tool except the twenty-three read-only ones
+  Candle account's agent settings page. Required by every tool except the twenty-four read-only ones
   listed above, which includes the account-scoped reads (`candle_get_wallets`,
   `candle_execution_status`, `candle_get_operation`) as well as the writes; those eighteen
   work without it, so the server is useful the moment it is installed and only asks for a key when
@@ -181,7 +181,7 @@ before installed-package support can be claimed.
 | Tool | Description | REST call | Auth |
 | --- | --- | --- | --- |
 | `candle_launch_token` | Launch a token on Candle | `POST /api/v1/launch/headless` (or `/dry-run` when `dryRun: true`); with `imagePath`, `POST /api/v1/uploads/agent-image` first | `CANDLE_AGENT_API_KEY` |
-| `candle_get_market` | Get market state. From 0.10.33 it carries `quoteState` when the quote watcher covers the quote token: `paused`, `split` (with `multiplier` and any pending one), `launchBlocked` and `refusal`; omitted when the watcher does not cover it | `GET /api/v1/markets/:chain/:mint` | none |
+| `candle_get_market` | Get market state. From 0.10.33 it carries `quoteState` when the quote watcher covers the quote token: `paused`, `split` (with `multiplier` and any pending one), `launchBlocked` and `refusal`; omitted when the watcher does not cover it. From 0.10.39 a Hood market carries `holderExit` (where a holder stands if the launch does not migrate, with its `disclosure` sentence) or `holderExitUnavailable: true` | `GET /api/v1/markets/:chain/:mint` | none |
 | `candle_get_price_history` | One Solana token's OHLC bars in USD per token, oldest first (interval 1m-1d, limit 1-500, `to` unix seconds); `source` and `volumeUnit` say whose bars. Hood is refused with its REST route | `GET /api/v1/markets/solana/:mint/candles` | none |
 | `candle_quote` | Price a buy or sell before making it; moves nothing. Returns `amountOut` in base units, `venue`, `quoteAsset`, `quoteDecimals`, `quotedAt`; `route` appears only on some answers. `amountRaw` is in base units. Limit 600 a minute per key | `POST /api/v1/trade/agent/quote` | `CANDLE_AGENT_API_KEY` with `swap:write` (a read-only key cannot quote) |
 | `candle_get_feed` | Get a token feed (`finalstretch`: at most the 200 most complete; `where` on `progress` narrows it) | `GET /api/v1/markets/feed?bucket=...` | none |
@@ -247,6 +247,8 @@ before installed-package support can be claimed.
 | `candle_get_fees` | The creator fees the account's launched tokens can pay: raw amounts from chain reads, and the reason a token cannot be claimed | `GET /api/v1/agent/fees` | `CANDLE_AGENT_API_KEY` (`account:read`) |
 | `candle_atomic_launch_dry_run` | Check a Solana launch with first buys and price each buy on the curve it would deploy; builds, reserves and writes nothing | `POST /api/v1/launch/atomic/dry-run` | `CANDLE_AGENT_API_KEY` (`launch:write`, `swap:write`, Pro or Max) |
 | `candle_claim_fees` | Collect one token's creator fees to the wallet fixed at launch (no destination argument); `dryRun` sends nothing | `POST /api/v1/agent/fees/:mint/claim` | `CANDLE_AGENT_API_KEY` (`launch:write`) |
+| `candle_holder_exit` | Where a holder of a Candle Hood launch stands if it does not migrate: state, Recovery window and fixed rate, any rescue request, the team vesting escrow, and with `account` that wallet's balance, Recovery payout and the actions it may take now; give `curve` or `token`; quote `holderExit.disclosure` verbatim (BE-3794) | `GET /api/v1/hood/curves/:curve/holder-exit` (with `token`, `GET /api/v1/markets/hood/:token` first) | none |
+| `candle_claim_holder_exit` | Run one Hood holder exit for the account's wallet: `enter_recovery`, `claim_recovery` (approves the exact amount, then redeems) or `claim_team` (always pays the escrow's recipient); Candle signs with the embedded Hood wallet; `dryRun` defaults to true; no destination argument (BE-3794) | `POST /api/v1/agent/hood/holder-exit/:curve` | `CANDLE_AGENT_API_KEY` (`swap:write`; `launch:write` for `claim_team`) |
 | `candle_get_staking` | Read CNDL/sCNDL, withdrawals, rewards, pool wait and wallet eligibility notes | `GET /api/v1/agent/staking` |
 | `candle_stake` | Stake raw CNDL; stable clientStakeId, dryRun first | `POST /api/v1/agent/staking/stake/build` |
 | `candle_unstake` | Start a withdrawal of raw sCNDL; no instant unstake | `POST /api/v1/agent/staking/unstake/build` |
@@ -352,7 +354,7 @@ it: a same-id resend replays the stored first answer.
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-one hundred and two tools:
+one hundred and four tools:
 
 - `candle_token_events`, called with `kind`, is the one narrowing of a SUCCESS body, never an
   error one: the relayed `events` are filtered to that kind and the body gains `filteredByKind`.

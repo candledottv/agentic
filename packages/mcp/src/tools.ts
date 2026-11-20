@@ -84,7 +84,7 @@ import {
   launchTokenShape,
   socialsRefusal,
 } from "./launch-schema"
-import { EXTERNAL_MARKET_DISCLOSURE } from "./market-disclosure"
+import { EXTERNAL_MARKET_DISCLOSURE, HOLDER_EXIT_DISCLOSURE } from "./market-disclosure"
 import {
   executeLaunchAndSeed,
   executeSweep,
@@ -254,6 +254,9 @@ export const TOOL_NAMES = [
   // FE-438: the creator fees this account's launched tokens can pay, and the claim.
   "candle_get_fees",
   "candle_claim_fees",
+  // BE-3794 (BE-3630 spec 6.3): Hood holder exits. The read is keyless; the exit runs on an agent key.
+  "candle_holder_exit",
+  "candle_claim_holder_exit",
   "candle_get_staking",
   "candle_stake",
   "candle_unstake",
@@ -903,6 +906,43 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       }
     }
 
+    case "candle_holder_exit": {
+      // Keyless. The token form resolves its curve first (holderExitRelay); this builds the curve read.
+      const { curve, account } = args as { curve?: string; account?: string }
+      if (typeof curve !== "string") throw new Error("candle_holder_exit needs a curve here")
+      const query = typeof account === "string" ? `?account=${encodeURIComponent(account)}` : ""
+      return {
+        url: `${base}/api/v1/hood/curves/${encodeURIComponent(curve)}/holder-exit${query}`,
+        init: { method: "GET", headers: jsonHeaders() },
+      }
+    }
+
+    case "candle_claim_holder_exit": {
+      const apiKey = requireApiKey(cfg)
+      // Only these fields are forwarded: the route has no destination, and the API refuses any other key.
+      // dryRun defaults to TRUE here (as candle_claim_fees asks callers to): a send needs dryRun: false.
+      const { curve, action, amountRaw, dryRun, wallet } = args as {
+        curve: string
+        action: string
+        amountRaw?: string
+        dryRun?: boolean
+        wallet?: string
+      }
+      return {
+        url: `${base}/api/v1/agent/hood/holder-exit/${encodeURIComponent(curve)}`,
+        init: {
+          method: "POST",
+          headers: jsonHeaders(apiKey),
+          body: JSON.stringify({
+            action,
+            ...(amountRaw !== undefined ? { amountRaw } : {}),
+            dryRun: dryRun !== false,
+            ...(wallet !== undefined ? { wallet } : {}),
+          }),
+        },
+      }
+    }
+
     case "candle_get_wallets": {
       const apiKey = requireApiKey(cfg)
       return {
@@ -1034,6 +1074,44 @@ export function plansMarkdown(body: string): string {
   } catch {
     return ""
   }
+}
+
+/**
+ * candle_holder_exit: the per-curve holder-exit read, relayed as it is. Given `token` and no `curve`,
+ * the curve is read first from the token's market (`curveAddress`); a market error is relayed as
+ * the result, and a market with no curve answers `NO_HOOD_CURVE`.
+ */
+async function holderExitRelay(args: Record<string, unknown>, cfg: RequestConfig, doFetch: FetchLike) {
+  const errorText = (code: string, message: string) => ({
+    content: [{ type: "text" as const, text: JSON.stringify({ success: false, error: { code, message } }) }],
+    isError: true,
+  })
+  let curve = typeof args.curve === "string" ? args.curve : undefined
+  if (curve === undefined) {
+    if (typeof args.token !== "string") return errorText("VALIDATION_FAILED", "Give curve or token")
+    const res = await doFetch(`${cfg.apiUrl}/api/v1/markets/hood/${encodeURIComponent(args.token)}`, {
+      method: "GET",
+      headers: jsonHeaders(),
+    })
+    noteVersionHeaders(res)
+    const text = await res.text()
+    if (!res.ok) return { content: [{ type: "text" as const, text }], isError: true }
+    let market: { curveAddress?: unknown } | undefined
+    try {
+      market = (JSON.parse(text) as { market?: { curveAddress?: unknown } }).market
+    } catch {
+      market = undefined
+    }
+    if (typeof market?.curveAddress !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(market.curveAddress))
+      return errorText("NO_HOOD_CURVE", "This token has no Candle Hood curve, so it has no holder exit")
+    curve = market.curveAddress
+  }
+  return callAndRelay(
+    "candle_holder_exit",
+    { curve, ...(args.account !== undefined ? { account: args.account } : {}) },
+    cfg,
+    doFetch,
+  )
 }
 
 async function callAndRelay(name: RestToolName, args: Record<string, unknown>, cfg: RequestConfig, doFetch: FetchLike) {
@@ -1521,6 +1599,44 @@ const claimFeesShape = {
     .boolean()
     .optional()
     .describe("Check and read only. Sends nothing and writes nothing. Use it first to see what would be claimed"),
+}
+
+const HOOD_ADDRESS = /^0x[0-9a-fA-F]{40}$/
+
+const holderExitShape = {
+  curve: z
+    .string()
+    .regex(HOOD_ADDRESS)
+    .optional()
+    .describe("The Hood curve address (candle_get_market's curveAddress). Give this or token"),
+  token: z
+    .string()
+    .regex(HOOD_ADDRESS)
+    .optional()
+    .describe("The Hood token address; its curve is read from the market. Give this or curve"),
+  account: z
+    .string()
+    .regex(HOOD_ADDRESS)
+    .optional()
+    .describe("A Hood wallet: the answer then carries its balance, what Recovery pays it and its actions"),
+}
+
+const claimHolderExitShape = {
+  curve: z.string().regex(HOOD_ADDRESS).describe("The Hood curve address (candle_holder_exit's curve)"),
+  action: z
+    .enum(["enter_recovery", "claim_recovery", "claim_team"])
+    .describe("One of holderExit.actions from candle_holder_exit for this wallet"),
+  amountRaw: z
+    .string()
+    .regex(/^[1-9][0-9]{0,77}$/)
+    .optional()
+    .describe("claim_recovery only: base raw units to redeem. Defaults to the whole balance"),
+  dryRun: z.boolean().optional().describe("Defaults to true: build and simulate, sign nothing. Pass false to send"),
+  wallet: z
+    .string()
+    .regex(HOOD_ADDRESS)
+    .optional()
+    .describe("Defaults to the account's embedded Hood wallet, which Candle signs for"),
 }
 
 const resolveTokenShape = {
@@ -2199,7 +2315,9 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " +
         "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " +
         "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " +
-        "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
+        "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable. " +
+        HOLDER_EXIT_DISCLOSURE +
+        " holderExitUnavailable: true means that read failed; the market still loaded.",
       inputSchema: getMarketShape,
     },
     async (args) => callAndRelay("candle_get_market", args, getConfig(), doFetch),
@@ -2742,6 +2860,41 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: claimFeesShape,
     },
     async (args) => callAndRelay("candle_claim_fees", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_holder_exit",
+    {
+      title: "Read a Hood holder exit",
+      description:
+        "Where a holder of one Candle Hood curve stands if the launch does not migrate, read from the chain " +
+        "at one block. No key needed. Give curve, or token to look its curve up. With account, the answer " +
+        "carries that wallet's balance, what a Recovery claim would pay it (recoveryQuoteOutRaw) and the " +
+        "actions it may take now. Raw integer strings. A curve Candle does not list is a 404. Reads only. " +
+        HOLDER_EXIT_DISCLOSURE,
+      inputSchema: holderExitShape,
+    },
+    async (args) => holderExitRelay(args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_claim_holder_exit",
+    {
+      title: "Run a Hood holder exit",
+      description:
+        "Run one holder exit on a Candle Hood curve for this account's wallet: enter_recovery (open Recovery " +
+        "once its gate is open), claim_recovery (approve the exact amount, then redeem it at the fixed rate) " +
+        "or claim_team (release vested team tokens, always to the escrow's recipient). dryRun DEFAULTS TO " +
+        "TRUE: it builds and simulates and signs nothing. With dryRun: false, Candle signs with the embedded " +
+        "Hood wallet and MOVES REAL FUNDS: it burns the redeemed tokens and pays the curve's quote token into " +
+        "that wallet. There is no destination argument. Needs swap:write for the Recovery actions and " +
+        "launch:write for claim_team. Read candle_holder_exit first and only ask for an action in its " +
+        "actions list. outcome partial means the approval landed and the claim did not: read again and run " +
+        "the claim; never resend a call whose outcome is indeterminate. " +
+        HOLDER_EXIT_DISCLOSURE,
+      inputSchema: claimHolderExitShape,
+    },
+    async (args) => callAndRelay("candle_claim_holder_exit", args, getConfig(), doFetch),
   )
 
   register(

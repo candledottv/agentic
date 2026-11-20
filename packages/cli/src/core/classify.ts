@@ -104,6 +104,8 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_perps_account: READ,
   candle_perps_risk: READ,
   candle_perps_thresholds: READ,
+  // BE-3794: the public Hood holder-exit read.
+  candle_holder_exit: READ,
   // Money writes (K-1).
   candle_trade: card("trade", "clientTradeId"),
   // BE-2657: the second half of a deferred candle_trade. It is its own card with a core-issued id:
@@ -116,6 +118,9 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_unstake: card("stake", "clientStakeId"),
   candle_finish_unstake: card("stake", "clientStakeId"),
   candle_claim_fees: card("claim"),
+  // BE-3794: a Hood holder exit (Recovery or team vesting). No id and no record to read back, so an
+  // interrupted one stays unknown until the user resolves it, as the staking-reward claim does.
+  candle_claim_holder_exit: card("claim"),
   // `rewardId` names the server's reward, so it is the operation's id as given, never minted (V-5).
   candle_claim_staking_reward: card("claim", "rewardId"),
   candle_perps_setup: card("perps"),

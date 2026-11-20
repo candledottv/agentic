@@ -115,6 +115,8 @@ export const MCP_TOOL_NAMES = [
   "candle_get_fees",
   "candle_atomic_launch_dry_run",
   "candle_claim_fees",
+  "candle_holder_exit",
+  "candle_claim_holder_exit",
   "candle_get_staking",
   "candle_stake",
   "candle_unstake",
@@ -198,6 +200,7 @@ export const READ_ONLY_TOOL_NAMES = [
   "candle_get_agent_open_orders",
   "candle_get_perp_candles",
   "candle_get_perp_market",
+  "candle_holder_exit",
   "candle_resolve_token",
   "candle_get_plans",
 ] as const

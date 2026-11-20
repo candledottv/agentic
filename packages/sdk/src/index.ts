@@ -273,6 +273,8 @@ export {
   TradeLandedUnconfirmedError,
   TradeLegOutcomeError,
 } from "./errors"
+// BE-3794: Hood holder exits (types, `HolderExitError`).
+export * from "./holder-exit"
 export type { GuardReason, GuardSummary, HoodPreview, HoodTeeOperation, WalletBusyDetails } from "./hood-tee"
 export {
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,

@@ -692,6 +692,15 @@ vendor requests or fabricated opening prices. The window requires the Postgres a
 blank, fractional or future inputs return `VALIDATION_FAILED` (400). Omitting it returns the existing
 all-time response without `window`.
 
+## Hood holder exits (BE-3794)
+
+If a Hood launch does not migrate, a holder can redeem at a fixed Recovery rate. The SDK reads and runs it; it encodes no calldata and no request has a destination field.
+
+- `getHolderExit(curve, account?)` and `getHolderExits(account)` read `HolderExit` with no key: `state` (`none`, `awaiting_migration`, `recovery_open`, `recovery`, `rescue_pending`, `rescued`), the Recovery window, rate and progress, any rescue request, the team vesting escrow, the `actions` that would succeed now, and `disclosure`, one sentence to show verbatim. `MarketState.holderExit` carries the same read, and `holderExitUnavailable: true` says it failed.
+- `buildHolderExit({ curve, account, action, amountRaw? })` returns the unsigned calls for the holder's own wallet and signs nothing; `recordHolderExit({ curve, account, txHash })` records a sent exit.
+- `holderExit({ curve, action, amountRaw?, dryRun?, wallet?, linkedSigning? })` runs it on an agent key (Candle signs with the embedded Hood wallet; a linked wallet gets `signing[]` for `submitHolderExit`). Results use the fee claim's per-call `not_sent`, `submitted_unknown`, `confirmed` and `reverted` plus a sequence `outcome`.
+- A refusal is a `HolderExitError` (a `CandleApiError`) with the API's `code`, `details` and, for a sequence that did not complete, `outcome`, `calls` and `warnings`.
+
 ## Uncertain Hood legs (BE-3072)
 
 `CandleApiError` now carries `operationId`, `landedLegs`, `legEvidence`, `reconciliation`,

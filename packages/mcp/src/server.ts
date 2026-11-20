@@ -20,7 +20,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import { type RequestConfig, resolveConfig } from "./client"
-import { EXTERNAL_MARKET_DISCLOSURE } from "./market-disclosure"
+import { EXTERNAL_MARKET_DISCLOSURE, HOLDER_EXIT_DISCLOSURE } from "./market-disclosure"
 import { registerEligibleProfileTool, registerTools } from "./tools"
 import { SERVER_VERSION } from "./version"
 
@@ -45,6 +45,7 @@ const INSTRUCTIONS = `Candle is a trading and token-launch rail for agents. You 
 
 START HERE — fifteen tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
   candle_get_market       price, market cap, volume, curve state for one token
+  candle_holder_exit      where a Hood holder stands if a launch does not migrate: Recovery, rescue, team vesting; quote its disclosure
   candle_get_price_history one Solana token's OHLC bars in USD (1m to 1d, up to 500, page back with to); source and volumeUnit say whose bars
   candle_get_feed         the roster: hot streak, new pairs, graduated, final stretch, blue chip (final stretch is refused where it is not switched on; use another bucket)
   candle_token_page_about public About summary, switches default off
@@ -82,6 +83,7 @@ candle_get_market and candle_resolve_token answer for same-chain indexed externa
 when trade.routable is false. Read candleLaunched, launchpad, venue and trade; jupiterOk and
 paperDiscoveryOk are separate signals. Identity-only Solana reads have route_unverified.
 ${EXTERNAL_MARKET_DISCLOSURE}
+${HOLDER_EXIT_DISCLOSURE}
 General quotes use POST /api/v1/trade/agent/quote; curve quotes/lifecycle describe Candle launches.
 Stored eligibility is not a successful quote or permission. MARKET_NOT_FOUND remains a legacy
 code: read error.routing.reason, error.discovery and sibling error.retryable. A curve-only
