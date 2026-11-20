@@ -208,7 +208,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.40";
+var CLI_VERSION = "0.13.41";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
@@ -666,7 +666,7 @@ function scopesForPreset(preset) {
   }
 }
 function sameSet(scopes, preset) {
-  const held = new Set(scopes);
+  const held = new Set(scopes.filter((scope) => !UNIVERSAL_SCOPES.has(scope)));
   return held.size === preset.length && preset.every((scope) => held.has(scope));
 }
 function presetForScopes(scopes) {
@@ -711,7 +711,7 @@ function agentKeyAccessWords(access) {
 function sortAgentKeyScopes(scopes) {
   return [...scopes].sort();
 }
-var READ_SCOPES, READWRITE_SCOPES, READWRITETRANSFER_SCOPES, TRADEPERPS_SCOPES, AGENT_KEY_PRESET_LABELS, CAPABILITY_SCOPES, NAMED_CAPABILITY_SCOPES, AGENT_KEY_CAPABILITY_CHIPS;
+var READ_SCOPES, READWRITE_SCOPES, READWRITETRANSFER_SCOPES, TRADEPERPS_SCOPES, AGENT_KEY_PRESET_LABELS, UNIVERSAL_SCOPES, CAPABILITY_SCOPES, NAMED_CAPABILITY_SCOPES, AGENT_KEY_CAPABILITY_CHIPS;
 var init_agent_key_access = __esm(() => {
   READ_SCOPES = ["account:read"];
   READWRITE_SCOPES = [
@@ -737,6 +737,7 @@ var init_agent_key_access = __esm(() => {
     readwritetransfer: "Withdraw",
     tradeperps: "Trade perps"
   };
+  UNIVERSAL_SCOPES = new Set(["telegram:notify"]);
   CAPABILITY_SCOPES = {
     read: "account:read",
     launch: "launch:write",

@@ -42,7 +42,8 @@ export const AGENT_KEY_SCOPES = [
   // wallet under its limits. Owner-granted and in no default; only the Trade perps preset names it
   // (2026-10-17 C spec, section 7). It moves no funds off the account: no transfer, no withdrawal.
   "perps:write",
-  // Self-service only by explicit grant. No preset or device default includes notifications.
+  // Every key holds it (BE-4185, Andrew 2026-11-20): the API grants it at check time whatever a
+  // key stored, so no preset needs to name it and preset matching ignores it (`UNIVERSAL_SCOPES`).
   "telegram:notify",
 ] as const
 export type AgentKeyScope = (typeof AGENT_KEY_SCOPES)[number]
@@ -142,8 +143,15 @@ export const AGENT_KEY_PRESET_LABELS = {
   tradeperps: "Trade perps",
 } as const satisfies Record<AgentKeyPreset, string>
 
+/**
+ * Scopes every key holds whatever it stored (BE-4185): mirrors `UNIVERSAL_AGENT_KEY_SCOPES` in
+ * apps/api/src/lib/agent-keys.ts. A key that also stored one (minted while `telegram:notify` had to
+ * be named) holds nothing more than one that did not, so preset matching leaves them out.
+ */
+const UNIVERSAL_SCOPES: ReadonlySet<string> = new Set(["telegram:notify"])
+
 function sameSet(scopes: readonly string[], preset: readonly string[]): boolean {
-  const held = new Set(scopes)
+  const held = new Set(scopes.filter((scope) => !UNIVERSAL_SCOPES.has(scope)))
   return held.size === preset.length && preset.every((scope) => held.has(scope))
 }
 
@@ -151,7 +159,8 @@ function sameSet(scopes: readonly string[], preset: readonly string[]): boolean 
  * The inverse of `scopesForPreset`: which preset a key's STORED scopes are. Set equality against
  * each preset's own list, so order and duplicates do not matter and the answer cannot drift from
  * what the create form mints. Anything else -- a strict subset, a superset (Write plus
- * `lp:write`), or a legacy Full Access key without `account:read` -- is null.
+ * `lp:write`), or a legacy Full Access key without `account:read` -- is null. A universal scope
+ * (`telegram:notify`) in the stored list is ignored: Write plus `telegram:notify` is Write.
  */
 export function presetForScopes(scopes: readonly string[]): AgentKeyPreset | null {
   if (sameSet(scopes, READ_SCOPES)) return "read"

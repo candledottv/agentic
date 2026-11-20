@@ -399,7 +399,8 @@ describe("keys create telegram:notify (BE-3720)", () => {
     expect(sent?.scopes).toEqual(["account:read", "telegram:notify"])
   })
 
-  test("it is never added implicitly: omitted --scopes and every --access preset leave it out", async () => {
+  // BE-4185: every key holds it at check time, so the CLI never needs to send it.
+  test("it is never sent implicitly: omitted --scopes and every --access preset leave it out", async () => {
     const omitted = await mint([])
     expect(omitted.sent?.scopes).toBeUndefined()
     for (const access of ["read", "write", "withdraw", "trade-perps"]) {

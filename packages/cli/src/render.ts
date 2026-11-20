@@ -52,14 +52,15 @@ export const ALL_AGENT_SCOPES = [
   // `keys create --access trade-perps` grants it with `account:read` (2026-10-17 C spec, section 7).
   "perps:write",
   // Client Telegram notifications (BE-3179): queue a message for the owner's linked Quant chat.
-  // Named-only: never in the default, never in a preset, and never added implicitly. Only
-  // `keys create --scopes telegram:notify` (or a list naming it) mints a key that holds it.
+  // Every key holds it (BE-4185): the API grants it at check time, so the default and the presets
+  // need not send it. `keys create --scopes telegram:notify` still accepts it as a name.
   "telegram:notify",
 ] as const
 export type AgentScope = (typeof ALL_AGENT_SCOPES)[number]
 
-/** Mirrors `DEFAULT_AGENT_KEY_SCOPES`: what `POST /keys` grants when `scopes` is omitted.
- * `swap:write` moves real funds on every call, so it is deliberately excluded from the default. */
+/** Mirrors `DEFAULT_AGENT_KEY_SCOPES`: what `POST /keys` stores when `scopes` is omitted.
+ * `swap:write` moves real funds on every call, so it is deliberately excluded from the default.
+ * `telegram:notify` is held by every key at check time (BE-4185), so it is not stored either. */
 export const DEFAULT_AGENT_SCOPES: readonly AgentScope[] = ALL_AGENT_SCOPES.filter(
   (scope) =>
     scope !== "swap:write" &&

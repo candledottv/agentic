@@ -266,7 +266,7 @@ describe("formatScopesForSummary", () => {
     expect([...DEFAULT_AGENT_SCOPES]).toEqual(["launch:write", "launch:read", "account:read", "activity:write"])
   })
 
-  test("telegram:notify is a known scope but named-only: never in the default", () => {
+  test("telegram:notify is a known scope the default does not store: every key holds it at check time (BE-4185)", () => {
     expect(ALL_AGENT_SCOPES).toContain("telegram:notify")
     expect(DEFAULT_AGENT_SCOPES).not.toContain("telegram:notify")
   })
