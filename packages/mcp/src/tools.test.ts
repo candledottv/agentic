@@ -38,6 +38,7 @@ test("all registered tools are listed", () => {
     "candle_get_agent_perp_round",
     "candle_get_agent_positions",
     "candle_get_agent_profile",
+    "candle_get_agent_record",
     "candle_get_feed",
     "candle_get_fees",
     "candle_get_market",

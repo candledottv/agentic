@@ -6598,6 +6598,14 @@ class CandleClient {
     const body = await this.requestJson("GET", `/api/v1/agent/records/${encodeURIComponent(profileId)}/posts${params.size ? `?${params}` : ""}`);
     return { posts: body.posts, cursor: body.cursor ?? null };
   }
+  async getAgentRecord(profileId, options = {}) {
+    const params = new URLSearchParams({ rows: "all" });
+    if (options.cursor !== undefined)
+      params.set("cursor", options.cursor);
+    const response = await this.fetchImpl(`${this.apiUrl}/api/v1/agent/records/${encodeURIComponent(profileId)}?${params}`, { method: "GET" });
+    const body = await this.parseResponse(response);
+    return body.record;
+  }
   async getAgentPositions(profileId, options = {}) {
     const params = new URLSearchParams;
     if (options.kind !== undefined)
@@ -8488,7 +8496,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.28";
+var SDK_VERSION = "0.6.29";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

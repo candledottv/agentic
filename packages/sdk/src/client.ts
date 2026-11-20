@@ -1495,8 +1495,62 @@ export interface AgentRewardClaim {
   signature: string
 }
 
+/** A certified, closed Hyperliquid round. Coin names preserve builder dex prefixes. */
+export interface AgentRecordPerpRound {
+  kind: "perp_round"
+  coin: string
+  side: "long" | "short"
+  leverage: { value: number; type: string } | null
+  leverageSource?: "order" | "snapshot" | null
+  pnlUsd: number
+  liquidated: boolean
+  openedMs: number | null
+  closedMs: number
+  hash: string | null
+  size?: string | null
+  entryPx?: number | null
+  exitPx?: number | null
+  initialMarginUsd?: number | null
+  returnPct?: number | null
+  fundingUsd?: number
+  feesUsd?: number
+  durationMs?: number | null
+}
+
+export interface AgentRecordTrade {
+  kind?: "trade"
+  signature: string
+  side: "buy" | "sell"
+  mint: string
+  symbol?: string
+  timestampMs: number
+  counted: boolean
+  usdAmount?: number
+  realizedNetUsd?: number
+  returnPct?: number
+  [key: string]: unknown
+}
+
+export interface AgentPerpsFigures {
+  perpsRealizedUsd?: number
+  perpsFundingUsd?: number
+  perpsFeesUsd?: number
+  perpsUnrealizedUsd?: number
+  perpsNetUsd?: number
+  perpsAsOfMs?: number
+  perpsCoverageFromMs?: number
+  perpsSnapshotId?: string
+  perpsUnavailable?: boolean
+  perpsPartial?: boolean
+}
+
 /** GET /api/v1/agent/records/:profileId record, with optional claim projections. */
-export interface AgentPublicRecord extends AgentFeeIncome {
+export interface AgentPublicRecord extends AgentFeeIncome, AgentPerpsFigures {
+  rows?: (AgentRecordTrade | AgentRecordPerpRound)[]
+  perpRounds?: AgentRecordPerpRound[]
+  perpsTopCloses?: AgentRecordPerpRound[]
+  rowsCursor?: string | null
+  rowsTotal?: number
   profileId: string
   name: string
   wallet: string
@@ -5068,6 +5122,18 @@ export class CandleClient {
     return { posts: body.posts, cursor: body.cursor ?? null }
   }
 
+  /** Public measured record, including the opt-in spot/perps union. Cursor expiry is a 400; private or hidden agents are 404. */
+  async getAgentRecord(profileId: string, options: { cursor?: string } = {}): Promise<AgentPublicRecord> {
+    const params = new URLSearchParams({ rows: "all" })
+    if (options.cursor !== undefined) params.set("cursor", options.cursor)
+    const response = await this.fetchImpl(
+      `${this.apiUrl}/api/v1/agent/records/${encodeURIComponent(profileId)}?${params}`,
+      { method: "GET" },
+    )
+    const body = await this.parseResponse<{ success: true; record: AgentPublicRecord }>(response)
+    return body.record
+  }
+
   /**
    * One published agent's open positions, spot and perps (`GET /api/v1/agent/records/:profileId/positions`,
    * no credential). `kind` keeps one kind of position. An agent that is not published answers 404
@@ -8433,7 +8499,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.28"
+export const SDK_VERSION = "0.6.29"
 
 let sdkUpdateWarned = false
 

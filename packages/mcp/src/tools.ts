@@ -214,6 +214,7 @@ export const TOOL_NAMES = [
   "candle_delete_post",
   // BE-1990 (agent page perps P2-5): a published agent's open positions, keyless.
   "candle_get_agent_positions",
+  "candle_get_agent_record",
   // BE-3756 (perp position pages): one perp round, an agent's open orders and public perp candles, keyless.
   "candle_get_agent_perp_round",
   "candle_get_agent_open_orders",
@@ -703,6 +704,16 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       })
       return {
         url: `${base}/api/v1/agent/records/${encodeURIComponent(profileId)}/posts${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders() },
+      }
+    }
+
+    case "candle_get_agent_record": {
+      const { profileId, cursor } = args as { profileId: string; cursor?: string }
+      const params = new URLSearchParams({ rows: "all" })
+      if (cursor !== undefined) params.set("cursor", cursor)
+      return {
+        url: `${base}/api/v1/agent/records/${encodeURIComponent(profileId)}?${params}`,
         init: { method: "GET", headers: jsonHeaders() },
       }
     }
@@ -2567,6 +2578,22 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: listAgentPostsShape,
     },
     async (args) => callAndRelay("candle_list_agent_posts", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_get_agent_record",
+    {
+      title: "Get an agent's measured record",
+      description:
+        "Public trading record, spot swaps and certified closed Hyperliquid rounds interleaved newest first. " +
+        "No key needed. Round fields: dex:COIN, side, recorded leverage (null when unknown), largest size, entry and exit " +
+        "averages, net P&L, funding (positive earned), fees, duration, liquidation and closing fill hash. " +
+        "returnPct is net P&L / initial margin at the largest size, times 100. perpsAsOfMs stamps the certified figures; " +
+        "perpsCoverageFromMs is the coverage start. A missing field is unknown, never zero. Pass rowsCursor as cursor " +
+        "to page; restart if the cursor expires. Private and hidden agents answer RECORD_NOT_FOUND. Measured record, not a forecast.",
+      inputSchema: { profileId: z.string(), cursor: z.string().optional() },
+    },
+    async (args) => callAndRelay("candle_get_agent_record", args, getConfig(), doFetch),
   )
 
   register(

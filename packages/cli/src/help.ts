@@ -897,12 +897,18 @@ export const HELP: Record<string, Topic> = {
       "candle agent post list [profile-id] [--limit <n>] [--cursor <cursor>]",
       "candle agent positions <profile-id|slug> [--kind spot|perp] [--orders] [--json]",
       "candle agent round <profile-id|slug> <round-id|open:COIN> [--json]",
+      "candle agent record <profile-id> [--cursor cursor] [--json]",
     ],
     rows: [
       { invocation: "profile show|set", description: "Read the displayed profile or edit allowed fields" },
       {
         invocation: "post create|delete|list",
         description: "Publish or delete a post on this agent's page; list an agent's posts (this key's own by default)",
+      },
+      {
+        invocation: "record <profile-id>",
+        description:
+          "Public measured record: spot swaps and closed perps, entry and exit, size, recorded leverage, fees, funding and ROE. --cursor pages older rows; --json preserves every field. No key needed.",
       },
       {
         invocation: "positions <profile-id|slug>",
