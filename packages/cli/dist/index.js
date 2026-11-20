@@ -208,7 +208,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.37";
+var CLI_VERSION = "0.13.38";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
