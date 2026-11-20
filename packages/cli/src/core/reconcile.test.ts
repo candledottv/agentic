@@ -27,7 +27,10 @@ const NOT_FOUND: ExecutionOutcome = {
 type Handler = (params: Record<string, unknown>) => ExecutionOutcome | Promise<ExecutionOutcome>
 
 const dirs: string[] = []
+// Bun 1.4 fails a test run on a FileHandle left for the garbage collector, so close each journal.
+const journals: Journal[] = []
 afterEach(async () => {
+  for (const journal of journals.splice(0)) await journal.close()
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true })
 })
 
@@ -44,6 +47,7 @@ async function setup(handlers: Record<string, Handler>, existingDir?: string) {
     profile: "staging",
     now: clock.now,
   })
+  journals.push(journal)
   const trading = await TradingState.open({
     settingsPath: join(dir, "settings.json"),
     now: clock.now,

@@ -187,10 +187,11 @@ function estimateCodePoint(codePoint: number): number {
     return 0
   }
   if (codePoint < 32 || (codePoint >= 0x7f && codePoint <= 0x9f)) return 0
-  // Wide before the combining-mark check: a voiced kana mark is Mn and still takes two columns.
-  if (eastAsianWide(codePoint)) return 2
+  // Combining marks before the wide check: a voiced kana mark (U+3099, U+309A) is Mn and takes no
+  // column of its own, so decomposed が is two columns, as Bun 1.4 measures it (BE-4095).
   const char = String.fromCodePoint(codePoint)
   if (/^\p{Mn}$/u.test(char) || /^\p{Me}$/u.test(char) || /^\p{Cf}$/u.test(char)) return 0
+  if (eastAsianWide(codePoint)) return 2
   if (/^\p{Emoji_Presentation}$/u.test(char)) return 2
   return 1
 }

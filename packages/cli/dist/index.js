@@ -20,12 +20,14 @@ var __toESM = (mod, isNodeMode, target) => {
   }
   target = mod != null ? __create(__getProtoOf(mod)) : {};
   const to = isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target;
-  for (let key of __getOwnPropNames(mod))
-    if (!__hasOwnProp.call(to, key))
-      __defProp(to, key, {
-        get: __accessProp.bind(mod, key),
-        enumerable: true
-      });
+  if (mod && typeof mod === "object" || typeof mod === "function") {
+    for (let key of __getOwnPropNames(mod))
+      if (!__hasOwnProp.call(to, key))
+        __defProp(to, key, {
+          get: __accessProp.bind(mod, key),
+          enumerable: true
+        });
+  }
   if (canCache)
     cache.set(mod, to);
   return to;
@@ -206,7 +208,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.36";
+var CLI_VERSION = "0.13.37";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
@@ -926,11 +928,11 @@ function estimateCodePoint(codePoint) {
   }
   if (codePoint < 32 || codePoint >= 127 && codePoint <= 159)
     return 0;
-  if (eastAsianWide(codePoint))
-    return 2;
   const char = String.fromCodePoint(codePoint);
   if (/^\p{Mn}$/u.test(char) || /^\p{Me}$/u.test(char) || /^\p{Cf}$/u.test(char))
     return 0;
+  if (eastAsianWide(codePoint))
+    return 2;
   if (/^\p{Emoji_Presentation}$/u.test(char))
     return 2;
   return 1;
@@ -5295,113 +5297,113 @@ var init_types = __esm(() => {
 // ../../node_modules/zod/v3/external.js
 var exports_external = {};
 __export(exports_external, {
-  void: () => voidType,
-  util: () => util,
-  unknown: () => unknownType,
-  union: () => unionType,
-  undefined: () => undefinedType,
-  tuple: () => tupleType,
-  transformer: () => effectsType,
-  symbol: () => symbolType,
-  string: () => stringType,
-  strictObject: () => strictObjectType,
-  setErrorMap: () => setErrorMap,
-  set: () => setType,
-  record: () => recordType,
-  quotelessJson: () => quotelessJson,
-  promise: () => promiseType,
-  preprocess: () => preprocessType,
-  pipeline: () => pipelineType,
-  ostring: () => ostring,
-  optional: () => optionalType,
-  onumber: () => onumber,
-  oboolean: () => oboolean,
-  objectUtil: () => objectUtil,
-  object: () => objectType,
-  number: () => numberType,
-  nullable: () => nullableType,
-  null: () => nullType,
-  never: () => neverType,
-  nativeEnum: () => nativeEnumType,
-  nan: () => nanType,
-  map: () => mapType,
-  makeIssue: () => makeIssue,
-  literal: () => literalType,
-  lazy: () => lazyType,
-  late: () => late,
-  isValid: () => isValid,
-  isDirty: () => isDirty,
-  isAsync: () => isAsync,
-  isAborted: () => isAborted,
-  intersection: () => intersectionType,
-  instanceof: () => instanceOfType,
-  getParsedType: () => getParsedType,
-  getErrorMap: () => getErrorMap,
-  function: () => functionType,
-  enum: () => enumType,
-  effect: () => effectsType,
-  discriminatedUnion: () => discriminatedUnionType,
-  defaultErrorMap: () => en_default,
-  datetimeRegex: () => datetimeRegex,
-  date: () => dateType,
-  custom: () => custom,
-  coerce: () => coerce,
-  boolean: () => booleanType,
-  bigint: () => bigIntType,
-  array: () => arrayType,
-  any: () => anyType,
-  addIssueToContext: () => addIssueToContext,
-  ZodVoid: () => ZodVoid,
-  ZodUnknown: () => ZodUnknown,
-  ZodUnion: () => ZodUnion,
-  ZodUndefined: () => ZodUndefined,
-  ZodType: () => ZodType,
-  ZodTuple: () => ZodTuple,
-  ZodTransformer: () => ZodEffects,
-  ZodSymbol: () => ZodSymbol,
-  ZodString: () => ZodString,
-  ZodSet: () => ZodSet,
-  ZodSchema: () => ZodType,
-  ZodRecord: () => ZodRecord,
-  ZodReadonly: () => ZodReadonly,
-  ZodPromise: () => ZodPromise,
-  ZodPipeline: () => ZodPipeline,
-  ZodParsedType: () => ZodParsedType,
-  ZodOptional: () => ZodOptional,
-  ZodObject: () => ZodObject,
-  ZodNumber: () => ZodNumber,
-  ZodNullable: () => ZodNullable,
-  ZodNull: () => ZodNull,
-  ZodNever: () => ZodNever,
-  ZodNativeEnum: () => ZodNativeEnum,
-  ZodNaN: () => ZodNaN,
-  ZodMap: () => ZodMap,
-  ZodLiteral: () => ZodLiteral,
-  ZodLazy: () => ZodLazy,
-  ZodIssueCode: () => ZodIssueCode,
-  ZodIntersection: () => ZodIntersection,
-  ZodFunction: () => ZodFunction,
-  ZodFirstPartyTypeKind: () => ZodFirstPartyTypeKind,
-  ZodError: () => ZodError,
-  ZodEnum: () => ZodEnum,
-  ZodEffects: () => ZodEffects,
-  ZodDiscriminatedUnion: () => ZodDiscriminatedUnion,
-  ZodDefault: () => ZodDefault,
-  ZodDate: () => ZodDate,
-  ZodCatch: () => ZodCatch,
-  ZodBranded: () => ZodBranded,
-  ZodBoolean: () => ZodBoolean,
-  ZodBigInt: () => ZodBigInt,
-  ZodArray: () => ZodArray,
-  ZodAny: () => ZodAny,
-  Schema: () => ZodType,
-  ParseStatus: () => ParseStatus,
-  OK: () => OK,
-  NEVER: () => NEVER,
-  INVALID: () => INVALID,
-  EMPTY_PATH: () => EMPTY_PATH,
+  BRAND: () => BRAND,
   DIRTY: () => DIRTY,
-  BRAND: () => BRAND
+  EMPTY_PATH: () => EMPTY_PATH,
+  INVALID: () => INVALID,
+  NEVER: () => NEVER,
+  OK: () => OK,
+  ParseStatus: () => ParseStatus,
+  Schema: () => ZodType,
+  ZodAny: () => ZodAny,
+  ZodArray: () => ZodArray,
+  ZodBigInt: () => ZodBigInt,
+  ZodBoolean: () => ZodBoolean,
+  ZodBranded: () => ZodBranded,
+  ZodCatch: () => ZodCatch,
+  ZodDate: () => ZodDate,
+  ZodDefault: () => ZodDefault,
+  ZodDiscriminatedUnion: () => ZodDiscriminatedUnion,
+  ZodEffects: () => ZodEffects,
+  ZodEnum: () => ZodEnum,
+  ZodError: () => ZodError,
+  ZodFirstPartyTypeKind: () => ZodFirstPartyTypeKind,
+  ZodFunction: () => ZodFunction,
+  ZodIntersection: () => ZodIntersection,
+  ZodIssueCode: () => ZodIssueCode,
+  ZodLazy: () => ZodLazy,
+  ZodLiteral: () => ZodLiteral,
+  ZodMap: () => ZodMap,
+  ZodNaN: () => ZodNaN,
+  ZodNativeEnum: () => ZodNativeEnum,
+  ZodNever: () => ZodNever,
+  ZodNull: () => ZodNull,
+  ZodNullable: () => ZodNullable,
+  ZodNumber: () => ZodNumber,
+  ZodObject: () => ZodObject,
+  ZodOptional: () => ZodOptional,
+  ZodParsedType: () => ZodParsedType,
+  ZodPipeline: () => ZodPipeline,
+  ZodPromise: () => ZodPromise,
+  ZodReadonly: () => ZodReadonly,
+  ZodRecord: () => ZodRecord,
+  ZodSchema: () => ZodType,
+  ZodSet: () => ZodSet,
+  ZodString: () => ZodString,
+  ZodSymbol: () => ZodSymbol,
+  ZodTransformer: () => ZodEffects,
+  ZodTuple: () => ZodTuple,
+  ZodType: () => ZodType,
+  ZodUndefined: () => ZodUndefined,
+  ZodUnion: () => ZodUnion,
+  ZodUnknown: () => ZodUnknown,
+  ZodVoid: () => ZodVoid,
+  addIssueToContext: () => addIssueToContext,
+  any: () => anyType,
+  array: () => arrayType,
+  bigint: () => bigIntType,
+  boolean: () => booleanType,
+  coerce: () => coerce,
+  custom: () => custom,
+  date: () => dateType,
+  datetimeRegex: () => datetimeRegex,
+  defaultErrorMap: () => en_default,
+  discriminatedUnion: () => discriminatedUnionType,
+  effect: () => effectsType,
+  enum: () => enumType,
+  function: () => functionType,
+  getErrorMap: () => getErrorMap,
+  getParsedType: () => getParsedType,
+  instanceof: () => instanceOfType,
+  intersection: () => intersectionType,
+  isAborted: () => isAborted,
+  isAsync: () => isAsync,
+  isDirty: () => isDirty,
+  isValid: () => isValid,
+  late: () => late,
+  lazy: () => lazyType,
+  literal: () => literalType,
+  makeIssue: () => makeIssue,
+  map: () => mapType,
+  nan: () => nanType,
+  nativeEnum: () => nativeEnumType,
+  never: () => neverType,
+  null: () => nullType,
+  nullable: () => nullableType,
+  number: () => numberType,
+  object: () => objectType,
+  objectUtil: () => objectUtil,
+  oboolean: () => oboolean,
+  onumber: () => onumber,
+  optional: () => optionalType,
+  ostring: () => ostring,
+  pipeline: () => pipelineType,
+  preprocess: () => preprocessType,
+  promise: () => promiseType,
+  quotelessJson: () => quotelessJson,
+  record: () => recordType,
+  set: () => setType,
+  setErrorMap: () => setErrorMap,
+  strictObject: () => strictObjectType,
+  string: () => stringType,
+  symbol: () => symbolType,
+  transformer: () => effectsType,
+  tuple: () => tupleType,
+  undefined: () => undefinedType,
+  union: () => unionType,
+  unknown: () => unknownType,
+  util: () => util,
+  void: () => voidType
 });
 var init_external = __esm(() => {
   init_errors();
@@ -14249,25 +14251,25 @@ var init_token_pages = __esm(() => {
 // ../mcp/src/tools.ts
 var exports_tools = {};
 __export(exports_tools, {
-  swapBody: () => swapBody,
-  resolveToolAllowlist: () => resolveToolAllowlist,
-  registerTools: () => registerTools,
-  registerToolSubset: () => registerToolSubset,
-  registerEligibleProfileTool: () => registerEligibleProfileTool,
-  recoveryNext: () => recoveryNext,
-  plansMarkdown: () => plansMarkdown,
-  operationNotFoundNext: () => operationNotFoundNext,
-  buildRequest: () => buildRequest,
-  VAMP_CANDIDATES_DESCRIPTION: () => VAMP_CANDIDATES_DESCRIPTION,
-  TOOL_NAMES: () => TOOL_NAMES,
-  SWAP_SETTLEMENT_REREAD: () => SWAP_SETTLEMENT_REREAD,
-  SWAP_RECEIPT_DESCRIPTION: () => SWAP_RECEIPT_DESCRIPTION,
-  STAKING_DISCLOSURE: () => STAKING_DISCLOSURE,
-  SIGNAL_RECORD_TOOL_NAMES: () => SIGNAL_RECORD_TOOL_NAMES,
-  PROFILE_PNL_HYPERLIQUID: () => PROFILE_PNL_HYPERLIQUID,
-  PROFILE_EDIT_TOOL_NAMES: () => PROFILE_EDIT_TOOL_NAMES,
+  LAB_TOOL_NAMES: () => LAB_TOOL_NAMES,
   OPERATION_NOT_FOUND_RULE: () => OPERATION_NOT_FOUND_RULE,
-  LAB_TOOL_NAMES: () => LAB_TOOL_NAMES
+  PROFILE_EDIT_TOOL_NAMES: () => PROFILE_EDIT_TOOL_NAMES,
+  PROFILE_PNL_HYPERLIQUID: () => PROFILE_PNL_HYPERLIQUID,
+  SIGNAL_RECORD_TOOL_NAMES: () => SIGNAL_RECORD_TOOL_NAMES,
+  STAKING_DISCLOSURE: () => STAKING_DISCLOSURE,
+  SWAP_RECEIPT_DESCRIPTION: () => SWAP_RECEIPT_DESCRIPTION,
+  SWAP_SETTLEMENT_REREAD: () => SWAP_SETTLEMENT_REREAD,
+  TOOL_NAMES: () => TOOL_NAMES,
+  VAMP_CANDIDATES_DESCRIPTION: () => VAMP_CANDIDATES_DESCRIPTION,
+  buildRequest: () => buildRequest,
+  operationNotFoundNext: () => operationNotFoundNext,
+  plansMarkdown: () => plansMarkdown,
+  recoveryNext: () => recoveryNext,
+  registerEligibleProfileTool: () => registerEligibleProfileTool,
+  registerToolSubset: () => registerToolSubset,
+  registerTools: () => registerTools,
+  resolveToolAllowlist: () => resolveToolAllowlist,
+  swapBody: () => swapBody
 });
 import { randomUUID as randomUUID3 } from "node:crypto";
 function resolveToolAllowlist(env) {
@@ -23152,9 +23154,9 @@ var init_canonical_json = __esm(() => {
 // src/vault/errors.ts
 var exports_errors = {};
 __export(exports_errors, {
-  isVaultError: () => isVaultError,
+  VAULT_ERROR_CODES: () => VAULT_ERROR_CODES,
   VaultError: () => VaultError,
-  VAULT_ERROR_CODES: () => VAULT_ERROR_CODES
+  isVaultError: () => isVaultError
 });
 function isVaultError(error) {
   return error instanceof VaultError;
@@ -24636,34 +24638,34 @@ var init_sidecar = __esm(() => {
 // src/vault/store.ts
 var exports_store = {};
 __export(exports_store, {
-  writeNewVault: () => writeNewVault,
-  wrapDekForPrf: () => wrapDekForPrf,
-  wrapDekForPassphrase: () => wrapDekForPassphrase,
-  wrapDekForKek: () => wrapDekForKek,
-  withVaultLock: () => withVaultLock,
-  unlockWithPassphrase: () => unlockWithPassphrase,
-  unlockVault: () => unlockVault,
-  serializeVault: () => serializeVault,
-  sealKeyBlob: () => sealKeyBlob,
-  sealIndex: () => sealIndex,
-  reopenWithHeldDek: () => reopenWithHeldDek,
-  readVaultRaw: () => readVaultRaw,
-  ownSecret: () => ownSecret,
-  legacyWalletsPath: () => legacyWalletsPath,
-  inspectConfigDir: () => inspectConfigDir,
-  freshVaultId: () => freshVaultId,
-  freshKeyId: () => freshKeyId,
-  freshEnvelopeId: () => freshEnvelopeId,
-  freshDek: () => freshDek,
-  fileExists: () => fileExists,
-  entriesOf: () => entriesOf,
-  defaultVaultPath: () => defaultVaultPath,
-  decryptRoot: () => decryptRoot,
-  decryptKey: () => decryptKey,
-  commitVault: () => commitVault,
-  closeVault: () => closeVault,
+  CONFIG_DIR_ENV: () => CONFIG_DIR_ENV,
   candleConfigDir: () => candleConfigDir,
-  CONFIG_DIR_ENV: () => CONFIG_DIR_ENV
+  closeVault: () => closeVault,
+  commitVault: () => commitVault,
+  decryptKey: () => decryptKey,
+  decryptRoot: () => decryptRoot,
+  defaultVaultPath: () => defaultVaultPath,
+  entriesOf: () => entriesOf,
+  fileExists: () => fileExists,
+  freshDek: () => freshDek,
+  freshEnvelopeId: () => freshEnvelopeId,
+  freshKeyId: () => freshKeyId,
+  freshVaultId: () => freshVaultId,
+  inspectConfigDir: () => inspectConfigDir,
+  legacyWalletsPath: () => legacyWalletsPath,
+  ownSecret: () => ownSecret,
+  readVaultRaw: () => readVaultRaw,
+  reopenWithHeldDek: () => reopenWithHeldDek,
+  sealIndex: () => sealIndex,
+  sealKeyBlob: () => sealKeyBlob,
+  serializeVault: () => serializeVault,
+  unlockVault: () => unlockVault,
+  unlockWithPassphrase: () => unlockWithPassphrase,
+  withVaultLock: () => withVaultLock,
+  wrapDekForKek: () => wrapDekForKek,
+  wrapDekForPassphrase: () => wrapDekForPassphrase,
+  wrapDekForPrf: () => wrapDekForPrf,
+  writeNewVault: () => writeNewVault
 });
 import { access, chmod as chmod3, constants as constants3, mkdir as mkdir3, readFile as readFile6, stat as stat2 } from "node:fs/promises";
 import { dirname as dirname4, join as join3 } from "node:path";
@@ -25034,15 +25036,15 @@ var init_paths = __esm(() => {
 // src/core/ownership.ts
 var exports_ownership = {};
 __export(exports_ownership, {
-  slotExists: () => slotExists,
-  profileNamesTouched: () => profileNamesTouched,
-  isCoreOwned: () => isCoreOwned,
-  coreOwnedMessage: () => coreOwnedMessage,
-  coreOwnedAllows: () => coreOwnedAllows,
-  ProfileCoreOwnedError: () => ProfileCoreOwnedError,
-  PROFILE_CORE_OWNED: () => PROFILE_CORE_OWNED,
+  CORE_OWNED_INVOCATIONS: () => CORE_OWNED_INVOCATIONS,
   CORE_OWNED_SUGGESTION: () => CORE_OWNED_SUGGESTION,
-  CORE_OWNED_INVOCATIONS: () => CORE_OWNED_INVOCATIONS
+  PROFILE_CORE_OWNED: () => PROFILE_CORE_OWNED,
+  ProfileCoreOwnedError: () => ProfileCoreOwnedError,
+  coreOwnedAllows: () => coreOwnedAllows,
+  coreOwnedMessage: () => coreOwnedMessage,
+  isCoreOwned: () => isCoreOwned,
+  profileNamesTouched: () => profileNamesTouched,
+  slotExists: () => slotExists
 });
 import { stat as stat3 } from "node:fs/promises";
 function coreOwnedMessage(profile) {
@@ -29905,11 +29907,11 @@ var init_swap = __esm(() => {
 // src/commands/agent-positions.ts
 var exports_agent_positions = {};
 __export(exports_agent_positions, {
-  renderOpenOrders: () => renderOpenOrders,
-  perpsFreshness: () => perpsFreshness,
-  agentPositions: () => agentPositions,
+  PROFILE_ID: () => PROFILE_ID,
   SLUG: () => SLUG,
-  PROFILE_ID: () => PROFILE_ID
+  agentPositions: () => agentPositions,
+  perpsFreshness: () => perpsFreshness,
+  renderOpenOrders: () => renderOpenOrders
 });
 function renderOpenOrders(body, now) {
   if (!body.orders.length)
@@ -30600,32 +30602,32 @@ var init_signer_roles = __esm(() => {
 // src/vault/promote-support.ts
 var exports_promote_support = {};
 __export(exports_promote_support, {
-  withToKey: () => withToKey,
-  subjectPhrase: () => subjectPhrase,
-  shortAddress: () => shortAddress2,
-  sameAddress: () => sameAddress2,
-  runRoleCheck: () => runRoleCheck,
-  renderControlledBy: () => renderControlledBy,
-  readControlledBy: () => readControlledBy,
-  promotedEntry: () => promotedEntry,
-  promoteSentence: () => promoteSentence,
-  printPromoteSentence: () => printPromoteSentence,
-  findVaultRoleEntry: () => findVaultRoleEntry,
-  findTransferSource: () => findTransferSource,
-  findEvmVaultRoleEntry: () => findEvmVaultRoleEntry,
-  findEntryByLabelOrAddress: () => findEntryByLabelOrAddress,
-  controlledByJson: () => controlledByJson,
-  confirmPrompt: () => confirmPrompt,
-  confirmPromotion: () => confirmPromotion,
-  assertNotSolanaEntry: () => assertNotSolanaEntry,
-  assertNotPinnedDestination: () => assertNotPinnedDestination,
-  assertNotEvmEntry: () => assertNotEvmEntry,
-  assertInPlacePreconditions: () => assertInPlacePreconditions,
-  assertEvmInPlacePreconditions: () => assertEvmInPlacePreconditions,
-  assertColdVaultDestination: () => assertColdVaultDestination,
-  applyPromotion: () => applyPromotion,
+  CONFIRM_WORD: () => CONFIRM_WORD,
   SENTENCE_PREFIX: () => SENTENCE_PREFIX,
-  CONFIRM_WORD: () => CONFIRM_WORD
+  applyPromotion: () => applyPromotion,
+  assertColdVaultDestination: () => assertColdVaultDestination,
+  assertEvmInPlacePreconditions: () => assertEvmInPlacePreconditions,
+  assertInPlacePreconditions: () => assertInPlacePreconditions,
+  assertNotEvmEntry: () => assertNotEvmEntry,
+  assertNotPinnedDestination: () => assertNotPinnedDestination,
+  assertNotSolanaEntry: () => assertNotSolanaEntry,
+  confirmPromotion: () => confirmPromotion,
+  confirmPrompt: () => confirmPrompt,
+  controlledByJson: () => controlledByJson,
+  findEntryByLabelOrAddress: () => findEntryByLabelOrAddress,
+  findEvmVaultRoleEntry: () => findEvmVaultRoleEntry,
+  findTransferSource: () => findTransferSource,
+  findVaultRoleEntry: () => findVaultRoleEntry,
+  printPromoteSentence: () => printPromoteSentence,
+  promoteSentence: () => promoteSentence,
+  promotedEntry: () => promotedEntry,
+  readControlledBy: () => readControlledBy,
+  renderControlledBy: () => renderControlledBy,
+  runRoleCheck: () => runRoleCheck,
+  sameAddress: () => sameAddress2,
+  shortAddress: () => shortAddress2,
+  subjectPhrase: () => subjectPhrase,
+  withToKey: () => withToKey
 });
 function assertColdVaultDestination(index, destinationLabelOrAddress, opts = {}) {
   const chain2 = opts.chain ?? "solana";
@@ -41177,40 +41179,40 @@ var init_passphrase = __esm(() => {
 // src/commands/vault-support.ts
 var exports_vault_support = {};
 __export(exports_vault_support, {
-  writeVaultFailure: () => writeVaultFailure,
-  writeJson: () => writeJson,
-  wordFor: () => wordFor,
-  vaultPathFor: () => vaultPathFor,
-  vaultAlreadyExists: () => vaultAlreadyExists,
-  usage: () => usage2,
-  unlockInteractively: () => unlockInteractively,
-  typedConfirm: () => typedConfirm,
-  takeRepeatedFlag: () => takeRepeatedFlag,
-  runVaultCommand: () => runVaultCommand,
-  requireVaultRaw: () => requireVaultRaw,
-  requireTty: () => requireTty,
-  refusePromptsWithoutTerminal: () => refusePromptsWithoutTerminal,
-  refuseEnvPassphrase: () => refuseEnvPassphrase,
-  openWithTypedPassphrase: () => openWithTypedPassphrase,
-  nonDefaultVaultFooter: () => nonDefaultVaultFooter,
-  missingVault: () => missingVault,
-  menuSafeText: () => menuSafeText,
-  isNoTerminalRefusal: () => isNoTerminalRefusal,
-  groupAddress: () => groupAddress,
-  findExternalEntry: () => findExternalEntry,
-  factorMenu: () => factorMenu,
-  factorAddPassphraseOnlyReason: () => factorAddPassphraseOnlyReason,
-  factorAddAmong: () => factorAddAmong,
-  describeSend: () => describeSend,
-  describeRole: () => describeRole,
-  describeEntry: () => describeEntry,
-  derivationNotice: () => derivationNotice,
-  confirmSend: () => confirmSend,
-  confirmAddress: () => confirmAddress,
-  assertVaultHelperIdentities: () => assertVaultHelperIdentities,
-  assertNotOlderCopy: () => assertNotOlderCopy,
+  PASSPHRASE_ONLY_PREFIX: () => PASSPHRASE_ONLY_PREFIX,
   askForOwnPassphrase: () => askForOwnPassphrase,
-  PASSPHRASE_ONLY_PREFIX: () => PASSPHRASE_ONLY_PREFIX
+  assertNotOlderCopy: () => assertNotOlderCopy,
+  assertVaultHelperIdentities: () => assertVaultHelperIdentities,
+  confirmAddress: () => confirmAddress,
+  confirmSend: () => confirmSend,
+  derivationNotice: () => derivationNotice,
+  describeEntry: () => describeEntry,
+  describeRole: () => describeRole,
+  describeSend: () => describeSend,
+  factorAddAmong: () => factorAddAmong,
+  factorAddPassphraseOnlyReason: () => factorAddPassphraseOnlyReason,
+  factorMenu: () => factorMenu,
+  findExternalEntry: () => findExternalEntry,
+  groupAddress: () => groupAddress,
+  isNoTerminalRefusal: () => isNoTerminalRefusal,
+  menuSafeText: () => menuSafeText,
+  missingVault: () => missingVault,
+  nonDefaultVaultFooter: () => nonDefaultVaultFooter,
+  openWithTypedPassphrase: () => openWithTypedPassphrase,
+  refuseEnvPassphrase: () => refuseEnvPassphrase,
+  refusePromptsWithoutTerminal: () => refusePromptsWithoutTerminal,
+  requireTty: () => requireTty,
+  requireVaultRaw: () => requireVaultRaw,
+  runVaultCommand: () => runVaultCommand,
+  takeRepeatedFlag: () => takeRepeatedFlag,
+  typedConfirm: () => typedConfirm,
+  unlockInteractively: () => unlockInteractively,
+  usage: () => usage2,
+  vaultAlreadyExists: () => vaultAlreadyExists,
+  vaultPathFor: () => vaultPathFor,
+  wordFor: () => wordFor,
+  writeJson: () => writeJson,
+  writeVaultFailure: () => writeVaultFailure
 });
 import { dirname as dirname9, resolve as resolvePath } from "node:path";
 function refuseEnvPassphrase(ctx) {
@@ -42189,8 +42191,8 @@ var init_reconcile_grant = __esm(() => {
 // src/vault/tee-lookup.ts
 var exports_tee_lookup = {};
 __export(exports_tee_lookup, {
-  vaultOwnsTeeAddress: () => vaultOwnsTeeAddress,
-  findTeeInVault: () => findTeeInVault
+  findTeeInVault: () => findTeeInVault,
+  vaultOwnsTeeAddress: () => vaultOwnsTeeAddress
 });
 async function findTeeInVault(ctx, address2, opts = {}) {
   let path;
@@ -51565,7 +51567,7 @@ var init_protocol3 = __esm(() => {
 });
 
 // ../../node_modules/ajv/dist/compile/codegen/code.js
-var require_code = __commonJS((exports) => {
+var require_code = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.regexpCode = exports.getEsmExportName = exports.getProperty = exports.safeStringify = exports.stringify = exports.strConcat = exports.addCodeArg = exports.str = exports._ = exports.nil = exports._Code = exports.Name = exports.IDENTIFIER = exports._CodeOrName = undefined;
 
@@ -51719,7 +51721,7 @@ var require_code = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/codegen/scope.js
-var require_scope = __commonJS((exports) => {
+var require_scope = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.ValueScope = exports.ValueScopeName = exports.Scope = exports.varKinds = exports.UsedValueState = undefined;
   var code_1 = require_code();
@@ -51865,7 +51867,7 @@ var require_scope = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/codegen/index.js
-var require_codegen = __commonJS((exports) => {
+var require_codegen = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.or = exports.and = exports.not = exports.CodeGen = exports.operators = exports.varKinds = exports.ValueScopeName = exports.ValueScope = exports.Scope = exports.Name = exports.regexpCode = exports.stringify = exports.getProperty = exports.nil = exports.strConcat = exports.str = exports._ = undefined;
   var code_1 = require_code();
@@ -52575,7 +52577,7 @@ var require_codegen = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/util.js
-var require_util = __commonJS((exports) => {
+var require_util = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.checkStrictMode = exports.getErrorPath = exports.Type = exports.useFunc = exports.setEvaluated = exports.evaluatedPropsToName = exports.mergeEvaluated = exports.eachItem = exports.unescapeJsonPointer = exports.escapeJsonPointer = exports.escapeFragment = exports.unescapeFragment = exports.schemaRefOrVal = exports.schemaHasRulesButRef = exports.schemaHasRules = exports.checkUnknownRules = exports.alwaysValidSchema = exports.toHash = undefined;
   var codegen_1 = require_codegen();
@@ -52739,7 +52741,7 @@ var require_util = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/names.js
-var require_names = __commonJS((exports) => {
+var require_names = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var names = {
@@ -52764,7 +52766,7 @@ var require_names = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/errors.js
-var require_errors = __commonJS((exports) => {
+var require_errors = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.extendErrors = exports.resetErrorsCount = exports.reportExtraError = exports.reportError = exports.keyword$DataError = exports.keywordError = undefined;
   var codegen_1 = require_codegen();
@@ -52882,7 +52884,7 @@ var require_errors = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/validate/boolSchema.js
-var require_boolSchema = __commonJS((exports) => {
+var require_boolSchema = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.boolOrEmptySchema = exports.topBoolOrEmptySchema = undefined;
   var errors_1 = require_errors();
@@ -52930,7 +52932,7 @@ var require_boolSchema = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/rules.js
-var require_rules = __commonJS((exports) => {
+var require_rules = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.getRules = exports.isJSONType = undefined;
   var _jsonTypes = ["string", "number", "integer", "boolean", "null", "object", "array"];
@@ -52958,7 +52960,7 @@ var require_rules = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/validate/applicability.js
-var require_applicability = __commonJS((exports) => {
+var require_applicability = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.shouldUseRule = exports.shouldUseGroup = exports.schemaHasRulesForType = undefined;
   function schemaHasRulesForType({ schema, self }, type) {
@@ -52978,7 +52980,7 @@ var require_applicability = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/validate/dataType.js
-var require_dataType = __commonJS((exports) => {
+var require_dataType = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.reportTypeError = exports.checkDataTypes = exports.checkDataType = exports.coerceAndCheckDataType = exports.getJSONTypes = exports.getSchemaTypes = exports.DataType = undefined;
   var rules_1 = require_rules();
@@ -53159,7 +53161,7 @@ var require_dataType = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/validate/defaults.js
-var require_defaults = __commonJS((exports) => {
+var require_defaults = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.assignDefaults = undefined;
   var codegen_1 = require_codegen();
@@ -53193,7 +53195,7 @@ var require_defaults = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/code.js
-var require_code2 = __commonJS((exports) => {
+var require_code2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateUnion = exports.validateArray = exports.usePattern = exports.callValidateCode = exports.schemaProperties = exports.allSchemaProperties = exports.noPropertyInData = exports.propertyInData = exports.isOwnProperty = exports.hasPropFunc = exports.reportMissingProp = exports.checkMissingProp = exports.checkReportMissingProp = undefined;
   var codegen_1 = require_codegen();
@@ -53322,7 +53324,7 @@ var require_code2 = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/validate/keyword.js
-var require_keyword = __commonJS((exports) => {
+var require_keyword = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateKeywordUsage = exports.validSchemaType = exports.funcKeywordCode = exports.macroKeywordCode = undefined;
   var codegen_1 = require_codegen();
@@ -53437,7 +53439,7 @@ var require_keyword = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/validate/subschema.js
-var require_subschema = __commonJS((exports) => {
+var require_subschema = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.extendSubschemaMode = exports.extendSubschemaData = exports.getSubschema = undefined;
   var codegen_1 = require_codegen();
@@ -53517,7 +53519,7 @@ var require_subschema = __commonJS((exports) => {
 });
 
 // ../../node_modules/fast-deep-equal/index.js
-var require_fast_deep_equal = __commonJS((exports, module) => {
+var require_fast_deep_equal = __commonJS(function(exports, module) {
   module.exports = function equal(a, b) {
     if (a === b)
       return true;
@@ -53559,7 +53561,7 @@ var require_fast_deep_equal = __commonJS((exports, module) => {
 });
 
 // ../../node_modules/json-schema-traverse/index.js
-var require_json_schema_traverse = __commonJS((exports, module) => {
+var require_json_schema_traverse = __commonJS(function(exports, module) {
   var traverse = module.exports = function(schema, opts, cb) {
     if (typeof opts == "function") {
       cb = opts;
@@ -53642,7 +53644,7 @@ var require_json_schema_traverse = __commonJS((exports, module) => {
 });
 
 // ../../node_modules/ajv/dist/compile/resolve.js
-var require_resolve = __commonJS((exports) => {
+var require_resolve = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.getSchemaRefs = exports.resolveUrl = exports.normalizeId = exports._getFullPath = exports.getFullPath = exports.inlineRef = undefined;
   var util_1 = require_util();
@@ -53795,7 +53797,7 @@ var require_resolve = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/validate/index.js
-var require_validate = __commonJS((exports) => {
+var require_validate = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.getData = exports.KeywordCxt = exports.validateFunctionCode = undefined;
   var boolSchema_1 = require_boolSchema();
@@ -54300,7 +54302,7 @@ var require_validate = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/runtime/validation_error.js
-var require_validation_error = __commonJS((exports) => {
+var require_validation_error = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
 
   class ValidationError2 extends Error {
@@ -54314,7 +54316,7 @@ var require_validation_error = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/ref_error.js
-var require_ref_error = __commonJS((exports) => {
+var require_ref_error = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var resolve_1 = require_resolve();
 
@@ -54329,7 +54331,7 @@ var require_ref_error = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/compile/index.js
-var require_compile = __commonJS((exports) => {
+var require_compile = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.resolveSchema = exports.getCompilingSchema = exports.resolveRef = exports.compileSchema = exports.SchemaEnv = undefined;
   var codegen_1 = require_codegen();
@@ -54550,7 +54552,7 @@ var require_compile = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/refs/data.json
-var require_data = __commonJS((exports, module) => {
+var require_data = __commonJS(function(exports, module) {
   module.exports = {
     $id: "https://raw.githubusercontent.com/ajv-validator/ajv/master/lib/refs/data.json#",
     description: "Meta-schema for $data reference (JSON AnySchema extension proposal)",
@@ -54567,7 +54569,7 @@ var require_data = __commonJS((exports, module) => {
 });
 
 // ../../node_modules/fast-uri/lib/utils.js
-var require_utils = __commonJS((exports, module) => {
+var require_utils = __commonJS(function(exports, module) {
   var isUUID = RegExp.prototype.test.bind(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu);
   var isIPv4 = RegExp.prototype.test.bind(/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/u);
   var isHexPair = RegExp.prototype.test.bind(/^[\da-f]{2}$/iu);
@@ -54878,7 +54880,7 @@ var require_utils = __commonJS((exports, module) => {
 });
 
 // ../../node_modules/fast-uri/lib/schemes.js
-var require_schemes = __commonJS((exports, module) => {
+var require_schemes = __commonJS(function(exports, module) {
   var { isUUID } = require_utils();
   var URN_REG = /([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-.:;=@]|%[\da-f]{2})+)/iu;
   var supportedSchemeNames = [
@@ -55052,7 +55054,7 @@ var require_schemes = __commonJS((exports, module) => {
 });
 
 // ../../node_modules/fast-uri/index.js
-var require_fast_uri = __commonJS((exports, module) => {
+var require_fast_uri = __commonJS(function(exports, module) {
   var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
   var { SCHEMES, getSchemeHandler } = require_schemes();
   function normalize3(uri, options) {
@@ -55360,7 +55362,7 @@ var require_fast_uri = __commonJS((exports, module) => {
 });
 
 // ../../node_modules/ajv/dist/runtime/uri.js
-var require_uri = __commonJS((exports) => {
+var require_uri = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var uri = require_fast_uri();
   uri.code = 'require("ajv/dist/runtime/uri").default';
@@ -55368,7 +55370,7 @@ var require_uri = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/core.js
-var require_core = __commonJS((exports) => {
+var require_core = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = undefined;
   var validate_1 = require_validate();
@@ -55961,7 +55963,7 @@ var require_core = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/core/id.js
-var require_id = __commonJS((exports) => {
+var require_id = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var def = {
     keyword: "id",
@@ -55973,7 +55975,7 @@ var require_id = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/core/ref.js
-var require_ref = __commonJS((exports) => {
+var require_ref = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.callRef = exports.getValidate = undefined;
   var ref_error_1 = require_ref_error();
@@ -56092,7 +56094,7 @@ var require_ref = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/core/index.js
-var require_core2 = __commonJS((exports) => {
+var require_core2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var id_1 = require_id();
   var ref_1 = require_ref();
@@ -56110,7 +56112,7 @@ var require_core2 = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/validation/limitNumber.js
-var require_limitNumber = __commonJS((exports) => {
+var require_limitNumber = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var ops = codegen_1.operators;
@@ -56139,7 +56141,7 @@ var require_limitNumber = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/validation/multipleOf.js
-var require_multipleOf = __commonJS((exports) => {
+var require_multipleOf = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var error = {
@@ -56164,7 +56166,7 @@ var require_multipleOf = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/runtime/ucs2length.js
-var require_ucs2length = __commonJS((exports) => {
+var require_ucs2length = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   function ucs2length(str) {
     const len = str.length;
@@ -56187,7 +56189,7 @@ var require_ucs2length = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/validation/limitLength.js
-var require_limitLength = __commonJS((exports) => {
+var require_limitLength = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var util_1 = require_util();
@@ -56216,7 +56218,7 @@ var require_limitLength = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/validation/pattern.js
-var require_pattern = __commonJS((exports) => {
+var require_pattern = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
   var util_1 = require_util();
@@ -56250,7 +56252,7 @@ var require_pattern = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/validation/limitProperties.js
-var require_limitProperties = __commonJS((exports) => {
+var require_limitProperties = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var error = {
@@ -56276,7 +56278,7 @@ var require_limitProperties = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/validation/required.js
-var require_required = __commonJS((exports) => {
+var require_required = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
   var codegen_1 = require_codegen();
@@ -56355,7 +56357,7 @@ var require_required = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/validation/limitItems.js
-var require_limitItems = __commonJS((exports) => {
+var require_limitItems = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var error = {
@@ -56381,7 +56383,7 @@ var require_limitItems = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/runtime/equal.js
-var require_equal = __commonJS((exports) => {
+var require_equal = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var equal = require_fast_deep_equal();
   equal.code = 'require("ajv/dist/runtime/equal").default';
@@ -56389,7 +56391,7 @@ var require_equal = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/validation/uniqueItems.js
-var require_uniqueItems = __commonJS((exports) => {
+var require_uniqueItems = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var dataType_1 = require_dataType();
   var codegen_1 = require_codegen();
@@ -56453,7 +56455,7 @@ var require_uniqueItems = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/validation/const.js
-var require_const = __commonJS((exports) => {
+var require_const = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var util_1 = require_util();
@@ -56479,7 +56481,7 @@ var require_const = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/validation/enum.js
-var require_enum = __commonJS((exports) => {
+var require_enum = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var util_1 = require_util();
@@ -56525,7 +56527,7 @@ var require_enum = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/validation/index.js
-var require_validation = __commonJS((exports) => {
+var require_validation = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var limitNumber_1 = require_limitNumber();
   var multipleOf_1 = require_multipleOf();
@@ -56555,7 +56557,7 @@ var require_validation = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/additionalItems.js
-var require_additionalItems = __commonJS((exports) => {
+var require_additionalItems = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateAdditionalItems = undefined;
   var codegen_1 = require_codegen();
@@ -56605,7 +56607,7 @@ var require_additionalItems = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/items.js
-var require_items = __commonJS((exports) => {
+var require_items = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateTuple = undefined;
   var codegen_1 = require_codegen();
@@ -56659,7 +56661,7 @@ var require_items = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/prefixItems.js
-var require_prefixItems = __commonJS((exports) => {
+var require_prefixItems = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var items_1 = require_items();
   var def = {
@@ -56673,7 +56675,7 @@ var require_prefixItems = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/items2020.js
-var require_items2020 = __commonJS((exports) => {
+var require_items2020 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var util_1 = require_util();
@@ -56705,7 +56707,7 @@ var require_items2020 = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/contains.js
-var require_contains = __commonJS((exports) => {
+var require_contains = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var util_1 = require_util();
@@ -56796,7 +56798,7 @@ var require_contains = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/dependencies.js
-var require_dependencies = __commonJS((exports) => {
+var require_dependencies = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.validateSchemaDeps = exports.validatePropertyDeps = exports.error = undefined;
   var codegen_1 = require_codegen();
@@ -56881,7 +56883,7 @@ var require_dependencies = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/propertyNames.js
-var require_propertyNames = __commonJS((exports) => {
+var require_propertyNames = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var util_1 = require_util();
@@ -56921,7 +56923,7 @@ var require_propertyNames = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/additionalProperties.js
-var require_additionalProperties = __commonJS((exports) => {
+var require_additionalProperties = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
   var codegen_1 = require_codegen();
@@ -57024,7 +57026,7 @@ var require_additionalProperties = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/properties.js
-var require_properties = __commonJS((exports) => {
+var require_properties = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var validate_1 = require_validate();
   var code_1 = require_code2();
@@ -57079,7 +57081,7 @@ var require_properties = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/patternProperties.js
-var require_patternProperties = __commonJS((exports) => {
+var require_patternProperties = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
   var codegen_1 = require_codegen();
@@ -57150,7 +57152,7 @@ var require_patternProperties = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/not.js
-var require_not = __commonJS((exports) => {
+var require_not = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var util_1 = require_util();
   var def = {
@@ -57178,7 +57180,7 @@ var require_not = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/anyOf.js
-var require_anyOf = __commonJS((exports) => {
+var require_anyOf = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var code_1 = require_code2();
   var def = {
@@ -57192,7 +57194,7 @@ var require_anyOf = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/oneOf.js
-var require_oneOf = __commonJS((exports) => {
+var require_oneOf = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var util_1 = require_util();
@@ -57247,7 +57249,7 @@ var require_oneOf = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/allOf.js
-var require_allOf = __commonJS((exports) => {
+var require_allOf = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var util_1 = require_util();
   var def = {
@@ -57271,7 +57273,7 @@ var require_allOf = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/if.js
-var require_if = __commonJS((exports) => {
+var require_if = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var util_1 = require_util();
@@ -57337,7 +57339,7 @@ var require_if = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/thenElse.js
-var require_thenElse = __commonJS((exports) => {
+var require_thenElse = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var util_1 = require_util();
   var def = {
@@ -57352,7 +57354,7 @@ var require_thenElse = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/applicator/index.js
-var require_applicator = __commonJS((exports) => {
+var require_applicator = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var additionalItems_1 = require_additionalItems();
   var prefixItems_1 = require_prefixItems();
@@ -57395,7 +57397,7 @@ var require_applicator = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/format/format.js
-var require_format = __commonJS((exports) => {
+var require_format = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var error = {
@@ -57482,7 +57484,7 @@ var require_format = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/format/index.js
-var require_format2 = __commonJS((exports) => {
+var require_format2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var format_1 = require_format();
   var format = [format_1.default];
@@ -57490,7 +57492,7 @@ var require_format2 = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/metadata.js
-var require_metadata = __commonJS((exports) => {
+var require_metadata = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.contentVocabulary = exports.metadataVocabulary = undefined;
   exports.metadataVocabulary = [
@@ -57510,7 +57512,7 @@ var require_metadata = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/draft7.js
-var require_draft7 = __commonJS((exports) => {
+var require_draft7 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var core_1 = require_core2();
   var validation_1 = require_validation();
@@ -57529,7 +57531,7 @@ var require_draft7 = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/discriminator/types.js
-var require_types = __commonJS((exports) => {
+var require_types = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.DiscrError = undefined;
   var DiscrError;
@@ -57540,7 +57542,7 @@ var require_types = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/vocabularies/discriminator/index.js
-var require_discriminator = __commonJS((exports) => {
+var require_discriminator = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var codegen_1 = require_codegen();
   var types_1 = require_types();
@@ -57642,7 +57644,7 @@ var require_discriminator = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv/dist/refs/json-schema-draft-07.json
-var require_json_schema_draft_07 = __commonJS((exports, module) => {
+var require_json_schema_draft_07 = __commonJS(function(exports, module) {
   module.exports = {
     $schema: "http://json-schema.org/draft-07/schema#",
     $id: "http://json-schema.org/draft-07/schema#",
@@ -57797,7 +57799,7 @@ var require_json_schema_draft_07 = __commonJS((exports, module) => {
 });
 
 // ../../node_modules/ajv/dist/ajv.js
-var require_ajv = __commonJS((exports, module) => {
+var require_ajv = __commonJS(function(exports, module) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.MissingRefError = exports.ValidationError = exports.CodeGen = exports.Name = exports.nil = exports.stringify = exports.str = exports._ = exports.KeywordCxt = exports.Ajv = undefined;
   var core_1 = require_core();
@@ -57865,7 +57867,7 @@ var require_ajv = __commonJS((exports, module) => {
 });
 
 // ../../node_modules/ajv-formats/dist/formats.js
-var require_formats = __commonJS((exports) => {
+var require_formats = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.formatNames = exports.fastFormats = exports.fullFormats = undefined;
   function fmtDef(validate, compare) {
@@ -58042,7 +58044,7 @@ var require_formats = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv-formats/dist/limit.js
-var require_limit = __commonJS((exports) => {
+var require_limit = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.formatLimitDefinition = undefined;
   var ajv_1 = require_ajv();
@@ -58111,7 +58113,7 @@ var require_limit = __commonJS((exports) => {
 });
 
 // ../../node_modules/ajv-formats/dist/index.js
-var require_dist = __commonJS((exports, module) => {
+var require_dist = __commonJS(function(exports, module) {
   Object.defineProperty(exports, "__esModule", { value: true });
   var formats_1 = require_formats();
   var limit_1 = require_limit();
@@ -60136,8 +60138,8 @@ var init_toolNameValidation = __esm(() => {
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js
 var exports_mcp = {};
 __export(exports_mcp, {
-  ResourceTemplate: () => ResourceTemplate,
-  McpServer: () => McpServer
+  McpServer: () => McpServer,
+  ResourceTemplate: () => ResourceTemplate
 });
 
 class McpServer {
@@ -60843,7 +60845,7 @@ var init_stdio2 = __esm(() => {
 });
 
 // ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/envelope.js
-var require_envelope = __commonJS((exports) => {
+var require_envelope = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Signature = exports.Envelope = undefined;
   exports.Envelope = {
@@ -60898,7 +60900,7 @@ var require_envelope = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/google/protobuf/timestamp.js
-var require_timestamp = __commonJS((exports) => {
+var require_timestamp = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Timestamp = undefined;
   exports.Timestamp = {
@@ -60925,7 +60927,7 @@ var require_timestamp = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/sigstore_common.js
-var require_sigstore_common = __commonJS((exports) => {
+var require_sigstore_common = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.TimeRange = exports.X509CertificateChain = exports.SubjectAlternativeName = exports.X509Certificate = exports.DistinguishedName = exports.ObjectIdentifierValuePair = exports.ObjectIdentifier = exports.PublicKeyIdentifier = exports.PublicKey = exports.RFC3161SignedTimestamp = exports.LogId = exports.MessageSignature = exports.HashOutput = exports.SubjectAlternativeNameType = exports.PublicKeyDetails = exports.HashAlgorithm = undefined;
   exports.hashAlgorithmFromJSON = hashAlgorithmFromJSON;
@@ -61418,7 +61420,7 @@ var require_sigstore_common = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/sigstore_rekor.js
-var require_sigstore_rekor = __commonJS((exports) => {
+var require_sigstore_rekor = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.TransparencyLogEntry = exports.InclusionPromise = exports.InclusionProof = exports.Checkpoint = exports.KindVersion = undefined;
   var sigstore_common_1 = require_sigstore_common();
@@ -61546,7 +61548,7 @@ var require_sigstore_rekor = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/sigstore_bundle.js
-var require_sigstore_bundle = __commonJS((exports) => {
+var require_sigstore_bundle = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Bundle = exports.VerificationMaterial = exports.TimestampVerificationData = undefined;
   var envelope_1 = require_envelope();
@@ -61625,7 +61627,7 @@ var require_sigstore_bundle = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/sigstore_trustroot.js
-var require_sigstore_trustroot = __commonJS((exports) => {
+var require_sigstore_trustroot = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.ClientTrustConfig = exports.ServiceConfiguration = exports.Service = exports.SigningConfig = exports.TrustedRoot = exports.CertificateAuthority = exports.TransparencyLogInstance = exports.ServiceSelector = undefined;
   exports.serviceSelectorFromJSON = serviceSelectorFromJSON;
@@ -61874,7 +61876,7 @@ var require_sigstore_trustroot = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/sigstore_verification.js
-var require_sigstore_verification = __commonJS((exports) => {
+var require_sigstore_verification = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Input = exports.Artifact = exports.ArtifactVerificationOptions_ObserverTimestampOptions = exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions = exports.ArtifactVerificationOptions_TimestampAuthorityOptions = exports.ArtifactVerificationOptions_CtlogOptions = exports.ArtifactVerificationOptions_TlogOptions = exports.ArtifactVerificationOptions = exports.PublicKeyIdentities = exports.CertificateIdentities = exports.CertificateIdentity = undefined;
   var sigstore_bundle_1 = require_sigstore_bundle();
@@ -62119,7 +62121,7 @@ var require_sigstore_verification = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/protobuf-specs/dist/index.js
-var require_dist2 = __commonJS((exports) => {
+var require_dist2 = __commonJS(function(exports) {
   var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
     if (k2 === undefined)
       k2 = k;
@@ -62150,7 +62152,7 @@ var require_dist2 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/bundle/dist/bundle.js
-var require_bundle = __commonJS((exports) => {
+var require_bundle = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.BUNDLE_V03_MEDIA_TYPE = exports.BUNDLE_V03_LEGACY_MEDIA_TYPE = exports.BUNDLE_V02_MEDIA_TYPE = exports.BUNDLE_V01_MEDIA_TYPE = undefined;
   exports.isBundleWithCertificateChain = isBundleWithCertificateChain;
@@ -62176,7 +62178,7 @@ var require_bundle = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/bundle/dist/build.js
-var require_build = __commonJS((exports) => {
+var require_build = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.toMessageSignatureBundle = toMessageSignatureBundle;
   exports.toDSSEBundle = toDSSEBundle;
@@ -62255,7 +62257,7 @@ var require_build = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/bundle/dist/error.js
-var require_error = __commonJS((exports) => {
+var require_error = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.ValidationError = undefined;
 
@@ -62270,7 +62272,7 @@ var require_error = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/bundle/dist/validate.js
-var require_validate2 = __commonJS((exports) => {
+var require_validate2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.assertBundle = assertBundle;
   exports.assertBundleV01 = assertBundleV01;
@@ -62429,7 +62431,7 @@ var require_validate2 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/bundle/dist/serialized.js
-var require_serialized = __commonJS((exports) => {
+var require_serialized = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.envelopeToJSON = exports.envelopeFromJSON = exports.bundleToJSON = exports.bundleFromJSON = undefined;
   var protobuf_specs_1 = require_dist2();
@@ -62466,7 +62468,7 @@ var require_serialized = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/bundle/dist/index.js
-var require_dist3 = __commonJS((exports) => {
+var require_dist3 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.isBundleV01 = exports.assertBundleV02 = exports.assertBundleV01 = exports.assertBundleLatest = exports.assertBundle = exports.envelopeToJSON = exports.envelopeFromJSON = exports.bundleToJSON = exports.bundleFromJSON = exports.ValidationError = exports.isBundleWithPublicKey = exports.isBundleWithMessageSignature = exports.isBundleWithDsseEnvelope = exports.isBundleWithCertificateChain = exports.BUNDLE_V03_MEDIA_TYPE = exports.BUNDLE_V03_LEGACY_MEDIA_TYPE = exports.BUNDLE_V02_MEDIA_TYPE = exports.BUNDLE_V01_MEDIA_TYPE = exports.toMessageSignatureBundle = exports.toDSSEBundle = undefined;
   var build_1 = require_build();
@@ -62537,7 +62539,7 @@ var require_dist3 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/stream.js
-var require_stream = __commonJS((exports) => {
+var require_stream = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.ByteStream = undefined;
 
@@ -62640,7 +62642,7 @@ var require_stream = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/asn1/error.js
-var require_error2 = __commonJS((exports) => {
+var require_error2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.ASN1TypeError = exports.ASN1ParseError = undefined;
 
@@ -62654,7 +62656,7 @@ var require_error2 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/asn1/length.js
-var require_length = __commonJS((exports) => {
+var require_length = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.decodeLength = decodeLength;
   exports.encodeLength = encodeLength;
@@ -62699,7 +62701,7 @@ var require_length = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/asn1/parse.js
-var require_parse = __commonJS((exports) => {
+var require_parse = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.parseInteger = parseInteger;
   exports.parseStringASCII = parseStringASCII;
@@ -62796,7 +62798,7 @@ var require_parse = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/asn1/tag.js
-var require_tag = __commonJS((exports) => {
+var require_tag = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.ASN1Tag = undefined;
   var error_1 = require_error2();
@@ -62870,7 +62872,7 @@ var require_tag = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/asn1/obj.js
-var require_obj = __commonJS((exports) => {
+var require_obj = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.ASN1Obj = undefined;
   var stream_1 = require_stream();
@@ -62987,7 +62989,7 @@ var require_obj = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/asn1/index.js
-var require_asn1 = __commonJS((exports) => {
+var require_asn1 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.ASN1Obj = undefined;
   var obj_1 = require_obj();
@@ -62997,7 +62999,7 @@ var require_asn1 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/crypto.js
-var require_crypto = __commonJS((exports) => {
+var require_crypto = __commonJS(function(exports) {
   var __importDefault = exports && exports.__importDefault || function(mod3) {
     return mod3 && mod3.__esModule ? mod3 : { default: mod3 };
   };
@@ -63046,7 +63048,7 @@ var require_crypto = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/dsse.js
-var require_dsse = __commonJS((exports) => {
+var require_dsse = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.preAuthEncoding = preAuthEncoding;
   var PAE_PREFIX = "DSSEv1";
@@ -63062,7 +63064,7 @@ var require_dsse = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/encoding.js
-var require_encoding = __commonJS((exports) => {
+var require_encoding = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.base64Encode = base64Encode;
   exports.base64Decode = base64Decode;
@@ -63077,7 +63079,7 @@ var require_encoding = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/json.js
-var require_json = __commonJS((exports) => {
+var require_json = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.canonicalize = canonicalize;
   function canonicalize(object7) {
@@ -63114,7 +63116,7 @@ var require_json = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/pem.js
-var require_pem = __commonJS((exports) => {
+var require_pem = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.toDER = toDER;
   exports.fromDER = fromDER;
@@ -63141,7 +63143,7 @@ var require_pem = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/oid.js
-var require_oid = __commonJS((exports) => {
+var require_oid = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.SHA2_HASH_ALGOS = exports.RSA_SIGNATURE_ALGOS = exports.ECDSA_SIGNATURE_ALGOS = undefined;
   exports.ECDSA_SIGNATURE_ALGOS = {
@@ -63164,7 +63166,7 @@ var require_oid = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/rfc3161/error.js
-var require_error3 = __commonJS((exports) => {
+var require_error3 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.RFC3161TimestampVerificationError = undefined;
 
@@ -63174,7 +63176,7 @@ var require_error3 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/rfc3161/tstinfo.js
-var require_tstinfo = __commonJS((exports) => {
+var require_tstinfo = __commonJS(function(exports) {
   var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
     if (k2 === undefined)
       k2 = k;
@@ -63260,7 +63262,7 @@ var require_tstinfo = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/rfc3161/timestamp.js
-var require_timestamp2 = __commonJS((exports) => {
+var require_timestamp2 = __commonJS(function(exports) {
   var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
     if (k2 === undefined)
       k2 = k;
@@ -63440,7 +63442,7 @@ var require_timestamp2 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/rfc3161/index.js
-var require_rfc3161 = __commonJS((exports) => {
+var require_rfc3161 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.RFC3161Timestamp = undefined;
   var timestamp_1 = require_timestamp2();
@@ -63450,7 +63452,7 @@ var require_rfc3161 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/x509/sct.js
-var require_sct = __commonJS((exports) => {
+var require_sct = __commonJS(function(exports) {
   var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
     if (k2 === undefined)
       k2 = k;
@@ -63582,7 +63584,7 @@ var require_sct = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/x509/ext.js
-var require_ext = __commonJS((exports) => {
+var require_ext = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.X509SCTExtension = exports.X509SubjectKeyIDExtension = exports.X509AuthorityKeyIDExtension = exports.X509SubjectAlternativeNameExtension = exports.X509KeyUsageExtension = exports.X509BasicConstraintsExtension = exports.X509Extension = undefined;
   var stream_1 = require_stream();
@@ -63712,7 +63714,7 @@ var require_ext = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/x509/cert.js
-var require_cert = __commonJS((exports) => {
+var require_cert = __commonJS(function(exports) {
   var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
     if (k2 === undefined)
       k2 = k;
@@ -63914,7 +63916,7 @@ var require_cert = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/x509/index.js
-var require_x509 = __commonJS((exports) => {
+var require_x509 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.X509SCTExtension = exports.X509Certificate = exports.EXTENSION_OID_SCT = undefined;
   var cert_1 = require_cert();
@@ -63931,7 +63933,7 @@ var require_x509 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/core/dist/index.js
-var require_dist4 = __commonJS((exports) => {
+var require_dist4 = __commonJS(function(exports) {
   var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
     if (k2 === undefined)
       k2 = k;
@@ -64008,7 +64010,7 @@ var require_dist4 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/bundle/dsse.js
-var require_dsse2 = __commonJS((exports) => {
+var require_dsse2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.DSSESignatureContent = undefined;
   var core_1 = require_dist4();
@@ -64041,7 +64043,7 @@ var require_dsse2 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/bundle/message.js
-var require_message = __commonJS((exports) => {
+var require_message = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.MessageSignatureContent = undefined;
   var core_1 = require_dist4();
@@ -64083,7 +64085,7 @@ var require_message = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/bundle/index.js
-var require_bundle2 = __commonJS((exports) => {
+var require_bundle2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.toSignedEntity = toSignedEntity;
   exports.signatureContent = signatureContent;
@@ -64144,7 +64146,7 @@ var require_bundle2 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/error.js
-var require_error4 = __commonJS((exports) => {
+var require_error4 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.PolicyError = exports.VerificationError = undefined;
 
@@ -64169,7 +64171,7 @@ var require_error4 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/trust/filter.js
-var require_filter = __commonJS((exports) => {
+var require_filter = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.filterCertAuthorities = filterCertAuthorities;
   exports.filterTLogAuthorities = filterTLogAuthorities;
@@ -64189,7 +64191,7 @@ var require_filter = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/trust/index.js
-var require_trust = __commonJS((exports) => {
+var require_trust = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.filterTLogAuthorities = exports.filterCertAuthorities = undefined;
   exports.toTrustMaterial = toTrustMaterial;
@@ -64259,7 +64261,7 @@ var require_trust = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/key/certificate.js
-var require_certificate = __commonJS((exports) => {
+var require_certificate = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.CertificateChainVerifier = undefined;
   exports.verifyCertificateChain = verifyCertificateChain;
@@ -64432,7 +64434,7 @@ var require_certificate = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/key/sct.js
-var require_sct2 = __commonJS((exports) => {
+var require_sct2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.verifySCTs = verifySCTs;
   var core_1 = require_dist4();
@@ -64479,7 +64481,7 @@ var require_sct2 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/key/index.js
-var require_key = __commonJS((exports) => {
+var require_key = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.verifyPublicKey = verifyPublicKey;
   exports.verifyCertificate = verifyCertificate;
@@ -64539,7 +64541,7 @@ var require_key = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/policy.js
-var require_policy = __commonJS((exports) => {
+var require_policy = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.verifySubjectAlternativeName = verifySubjectAlternativeName;
   exports.verifyExtensions = verifyExtensions;
@@ -64585,7 +64587,7 @@ var require_policy = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/timestamp/tsa.js
-var require_tsa = __commonJS((exports) => {
+var require_tsa = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.verifyRFC3161Timestamp = verifyRFC3161Timestamp;
   var core_1 = require_dist4();
@@ -64638,7 +64640,7 @@ var require_tsa = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/timestamp/index.js
-var require_timestamp3 = __commonJS((exports) => {
+var require_timestamp3 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.getTSATimestamp = getTSATimestamp;
   exports.getTLogTimestamp = getTLogTimestamp;
@@ -64664,7 +64666,7 @@ var require_timestamp3 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/rekor/v2/verifier.js
-var require_verifier = __commonJS((exports) => {
+var require_verifier = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Signature = exports.Verifier = exports.PublicKey = undefined;
   var sigstore_common_1 = require_sigstore_common();
@@ -64730,7 +64732,7 @@ var require_verifier = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/rekor/v2/dsse.js
-var require_dsse3 = __commonJS((exports) => {
+var require_dsse3 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.DSSELogEntryV002 = exports.DSSERequestV002 = undefined;
   var envelope_1 = require_envelope();
@@ -64778,7 +64780,7 @@ var require_dsse3 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/rekor/v2/hashedrekord.js
-var require_hashedrekord = __commonJS((exports) => {
+var require_hashedrekord = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.HashedRekordLogEntryV002 = exports.HashedRekordRequestV002 = undefined;
   var sigstore_common_1 = require_sigstore_common();
@@ -64831,7 +64833,7 @@ var require_hashedrekord = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/rekor/v2/entry.js
-var require_entry = __commonJS((exports) => {
+var require_entry = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.CreateEntryRequest = exports.Spec = exports.Entry = undefined;
   var dsse_1 = require_dsse3();
@@ -64899,7 +64901,7 @@ var require_entry = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/protobuf-specs/dist/rekor/v2/index.js
-var require_v2 = __commonJS((exports) => {
+var require_v2 = __commonJS(function(exports) {
   var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
     if (k2 === undefined)
       k2 = k;
@@ -64928,7 +64930,7 @@ var require_v2 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/tlog/dsse.js
-var require_dsse4 = __commonJS((exports) => {
+var require_dsse4 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.DSSE_API_VERSION_V1 = undefined;
   exports.verifyDSSETLogBody = verifyDSSETLogBody;
@@ -65009,7 +65011,7 @@ var require_dsse4 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/tlog/hashedrekord.js
-var require_hashedrekord2 = __commonJS((exports) => {
+var require_hashedrekord2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.HASHEDREKORD_API_VERSION_V1 = undefined;
   exports.verifyHashedRekordTLogBody = verifyHashedRekordTLogBody;
@@ -65080,7 +65082,7 @@ var require_hashedrekord2 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/tlog/intoto.js
-var require_intoto = __commonJS((exports) => {
+var require_intoto = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.verifyIntotoTLogBody = verifyIntotoTLogBody;
   var error_1 = require_error4();
@@ -65123,7 +65125,7 @@ var require_intoto = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/tlog/checkpoint.js
-var require_checkpoint = __commonJS((exports) => {
+var require_checkpoint = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.LogCheckpoint = undefined;
   exports.verifyCheckpoint = verifyCheckpoint;
@@ -65238,7 +65240,7 @@ var require_checkpoint = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/tlog/merkle.js
-var require_merkle = __commonJS((exports) => {
+var require_merkle = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.verifyMerkleInclusion = verifyMerkleInclusion;
   var core_1 = require_dist4();
@@ -65319,7 +65321,7 @@ var require_merkle = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/tlog/set.js
-var require_set = __commonJS((exports) => {
+var require_set = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.verifyTLogSET = verifyTLogSET;
   var core_1 = require_dist4();
@@ -65355,7 +65357,7 @@ var require_set = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/tlog/index.js
-var require_tlog = __commonJS((exports) => {
+var require_tlog = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.verifyTLogBody = verifyTLogBody;
   exports.verifyTLogInclusion = verifyTLogInclusion;
@@ -65436,7 +65438,7 @@ var require_tlog = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/verifier.js
-var require_verifier2 = __commonJS((exports) => {
+var require_verifier2 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Verifier = undefined;
   var util_1 = __require("util");
@@ -65575,7 +65577,7 @@ var require_verifier2 = __commonJS((exports) => {
 });
 
 // ../../node_modules/@sigstore/verify/dist/index.js
-var require_dist5 = __commonJS((exports) => {
+var require_dist5 = __commonJS(function(exports) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.Verifier = exports.toTrustMaterial = exports.VerificationError = exports.PolicyError = exports.toSignedEntity = undefined;
   var bundle_1 = require_bundle2();
@@ -69488,68 +69490,68 @@ var init_core = __esm(() => {
 // ../../node_modules/@modelcontextprotocol/sdk/node_modules/zod/v4/core/util.js
 var exports_util = {};
 __export(exports_util, {
-  unwrapMessage: () => unwrapMessage,
-  uint8ArrayToHex: () => uint8ArrayToHex,
-  uint8ArrayToBase64url: () => uint8ArrayToBase64url,
-  uint8ArrayToBase64: () => uint8ArrayToBase64,
-  stringifyPrimitive: () => stringifyPrimitive,
-  slugify: () => slugify,
-  shallowClone: () => shallowClone,
-  safeExtend: () => safeExtend,
-  required: () => required,
-  randomString: () => randomString,
-  propertyKeyTypes: () => propertyKeyTypes,
-  promiseAllObject: () => promiseAllObject,
-  primitiveTypes: () => primitiveTypes,
-  prefixIssues: () => prefixIssues,
-  pick: () => pick,
-  partial: () => partial,
-  parsedType: () => parsedType,
-  optionalKeys: () => optionalKeys,
-  omit: () => omit,
-  objectClone: () => objectClone,
-  numKeys: () => numKeys,
-  nullish: () => nullish,
-  normalizeParams: () => normalizeParams,
-  mergeDefs: () => mergeDefs,
-  merge: () => merge,
-  jsonStringifyReplacer: () => jsonStringifyReplacer,
-  joinValues: () => joinValues,
-  issue: () => issue,
-  isPlainObject: () => isPlainObject2,
-  isObject: () => isObject11,
-  hexToUint8Array: () => hexToUint8Array,
-  getSizableOrigin: () => getSizableOrigin,
-  getParsedType: () => getParsedType3,
-  getLengthableOrigin: () => getLengthableOrigin,
-  getEnumValues: () => getEnumValues,
-  getElementAtPath: () => getElementAtPath,
-  floatSafeRemainder: () => floatSafeRemainder3,
-  finalizeIssue: () => finalizeIssue,
-  extend: () => extend,
-  escapeRegex: () => escapeRegex,
-  esc: () => esc,
-  defineLazy: () => defineLazy,
-  createTransparentProxy: () => createTransparentProxy,
-  cloneDef: () => cloneDef,
-  clone: () => clone,
-  cleanRegex: () => cleanRegex,
-  cleanEnum: () => cleanEnum,
-  captureStackTrace: () => captureStackTrace,
-  cached: () => cached,
-  base64urlToUint8Array: () => base64urlToUint8Array,
-  base64ToUint8Array: () => base64ToUint8Array,
-  assignProp: () => assignProp,
-  assertNotEqual: () => assertNotEqual,
-  assertNever: () => assertNever,
-  assertIs: () => assertIs,
-  assertEqual: () => assertEqual,
-  assert: () => assert,
-  allowsEval: () => allowsEval,
-  aborted: () => aborted,
-  NUMBER_FORMAT_RANGES: () => NUMBER_FORMAT_RANGES,
+  BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES,
   Class: () => Class,
-  BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES
+  NUMBER_FORMAT_RANGES: () => NUMBER_FORMAT_RANGES,
+  aborted: () => aborted,
+  allowsEval: () => allowsEval,
+  assert: () => assert,
+  assertEqual: () => assertEqual,
+  assertIs: () => assertIs,
+  assertNever: () => assertNever,
+  assertNotEqual: () => assertNotEqual,
+  assignProp: () => assignProp,
+  base64ToUint8Array: () => base64ToUint8Array,
+  base64urlToUint8Array: () => base64urlToUint8Array,
+  cached: () => cached,
+  captureStackTrace: () => captureStackTrace,
+  cleanEnum: () => cleanEnum,
+  cleanRegex: () => cleanRegex,
+  clone: () => clone,
+  cloneDef: () => cloneDef,
+  createTransparentProxy: () => createTransparentProxy,
+  defineLazy: () => defineLazy,
+  esc: () => esc,
+  escapeRegex: () => escapeRegex,
+  extend: () => extend,
+  finalizeIssue: () => finalizeIssue,
+  floatSafeRemainder: () => floatSafeRemainder3,
+  getElementAtPath: () => getElementAtPath,
+  getEnumValues: () => getEnumValues,
+  getLengthableOrigin: () => getLengthableOrigin,
+  getParsedType: () => getParsedType3,
+  getSizableOrigin: () => getSizableOrigin,
+  hexToUint8Array: () => hexToUint8Array,
+  isObject: () => isObject11,
+  isPlainObject: () => isPlainObject2,
+  issue: () => issue,
+  joinValues: () => joinValues,
+  jsonStringifyReplacer: () => jsonStringifyReplacer,
+  merge: () => merge,
+  mergeDefs: () => mergeDefs,
+  normalizeParams: () => normalizeParams,
+  nullish: () => nullish,
+  numKeys: () => numKeys,
+  objectClone: () => objectClone,
+  omit: () => omit,
+  optionalKeys: () => optionalKeys,
+  parsedType: () => parsedType,
+  partial: () => partial,
+  pick: () => pick,
+  prefixIssues: () => prefixIssues,
+  primitiveTypes: () => primitiveTypes,
+  promiseAllObject: () => promiseAllObject,
+  propertyKeyTypes: () => propertyKeyTypes,
+  randomString: () => randomString,
+  required: () => required,
+  safeExtend: () => safeExtend,
+  shallowClone: () => shallowClone,
+  slugify: () => slugify,
+  stringifyPrimitive: () => stringifyPrimitive,
+  uint8ArrayToBase64: () => uint8ArrayToBase64,
+  uint8ArrayToBase64url: () => uint8ArrayToBase64url,
+  uint8ArrayToHex: () => uint8ArrayToHex,
+  unwrapMessage: () => unwrapMessage
 });
 function assertEqual(val) {
   return val;
@@ -73952,14 +73954,14 @@ var init_checks3 = __esm(() => {
 // ../../node_modules/@modelcontextprotocol/sdk/node_modules/zod/v4/classic/iso.js
 var exports_iso2 = {};
 __export(exports_iso2, {
-  time: () => time2,
-  duration: () => duration3,
-  datetime: () => datetime2,
-  date: () => date3,
-  ZodISOTime: () => ZodISOTime,
-  ZodISODuration: () => ZodISODuration,
+  ZodISODate: () => ZodISODate,
   ZodISODateTime: () => ZodISODateTime,
-  ZodISODate: () => ZodISODate
+  ZodISODuration: () => ZodISODuration,
+  ZodISOTime: () => ZodISOTime,
+  date: () => date3,
+  datetime: () => datetime2,
+  duration: () => duration3,
+  time: () => time2
 });
 function datetime2(params) {
   return _isoDateTime(ZodISODateTime, params);
@@ -77830,8 +77832,8 @@ var init_stdio4 = __esm(() => {
 // ../mcp/src/server.ts
 var exports_server = {};
 __export(exports_server, {
-  runStdioServer: () => runStdioServer,
-  createCandleMcpServer: () => createCandleMcpServer
+  createCandleMcpServer: () => createCandleMcpServer,
+  runStdioServer: () => runStdioServer
 });
 function createCandleMcpServer(env = process.env, resolved) {
   const server = new McpServer2({ name: "candle-mcp", version: SERVER_VERSION }, { instructions: INSTRUCTIONS });
@@ -80390,7 +80392,7 @@ var LAUNCH_RULES_FLAGS = [
   "--allowlist-window",
   "--dev-buy-max"
 ];
-var U64_MAX = 0xffff_ffff_ffff_ffffn;
+var U64_MAX = 0xffffffffffffffffn;
 var UNITS = { s: 1, m: 60, h: 3600, d: 86400 };
 var MAX_ALLOWLIST_FILE_BYTES = 1e6;
 var rulesField = (key) => {
@@ -125020,13 +125022,13 @@ if (isMainModule) {
   });
 }
 export {
-  run2 as run,
-  routesToCommand,
-  realSpawnHelper,
-  buildRealDeps,
-  ROUTED_SUBCOMMANDS,
-  ROUTED_COMMANDS,
-  NEVER_GUARDED,
+  ALIASES,
   HELPER_WORKING_DIRECTORY,
-  ALIASES
+  NEVER_GUARDED,
+  ROUTED_COMMANDS,
+  ROUTED_SUBCOMMANDS,
+  buildRealDeps,
+  realSpawnHelper,
+  routesToCommand,
+  run2 as run
 };

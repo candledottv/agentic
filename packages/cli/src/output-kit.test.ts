@@ -653,7 +653,23 @@ describe("errors as message plus fix", () => {
 
 describe("display width", () => {
   test("the node fallback matches Bun for CJK, combining marks and the kit's symbols", () => {
-    const samples = ["hello", "日本語日本語", "e\u0301", "cafe\u0301", "か\u3099", "ｱ", "ア", "Ａ", "…", "–", "✓", "⭐"]
+    const samples = [
+      "hello",
+      "日本語日本語",
+      "e\u0301",
+      "cafe\u0301",
+      "か\u3099",
+      "カ\u3099",
+      "a\u3099",
+      "\u3099",
+      "ｱ",
+      "ア",
+      "Ａ",
+      "…",
+      "–",
+      "✓",
+      "⭐",
+    ]
     for (const sample of samples) expect(estimateDisplayWidth(sample)).toBe(terminalColumns(sample))
   })
 })

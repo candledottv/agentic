@@ -35,7 +35,10 @@ const DRY_RUN_PASS = {
 }
 
 const dirs: string[] = []
+// Bun 1.4 fails a test run on a FileHandle left for the garbage collector, so close each journal.
+const journals: Journal[] = []
 afterEach(async () => {
+  for (const journal of journals.splice(0)) await journal.close()
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true })
 })
 
@@ -59,6 +62,7 @@ async function setup(
     profile: "staging",
     now: clock.now,
   })
+  journals.push(journal)
   const unlocks: string[] = []
   const trading = await TradingState.open({
     settingsPath: join(dir, "settings.json"),
