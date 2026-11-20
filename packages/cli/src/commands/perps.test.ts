@@ -815,3 +815,53 @@ describe("BE-3755 builder-dex orders: terms before anything is signed", () => {
     expect(f.stdout.text).not.toContain("warning line")
   })
 })
+
+describe("BE-3996: --hide on perps orders", () => {
+  const unsigned = (f: { calls: { path: string; host: string }[] }) =>
+    f.calls.some((c) => c.path.endsWith("/sign") || c.host === "api.hyperliquid.xyz")
+
+  test("open --hide sends hide: true, and an echoed build is signed and posted", async () => {
+    const f = await fixture({ build: buildFor(orderAction(), { hide: true }) })
+    expect(await run([...OPEN, "--hide"], f.deps)).toBe(0)
+    expect(f.calls[1]?.body).toEqual({
+      walletId: "wallet",
+      coin: "BTC",
+      side: "long",
+      size: "0.01",
+      hide: true,
+      type: "market",
+    })
+    expect(f.calls.at(-1)?.path).toBe("/exchange")
+  })
+
+  test("without --hide the body carries no hide key", async () => {
+    const f = await fixture()
+    expect(await run(OPEN, f.deps)).toBe(0)
+    expect(f.calls[1]?.body).not.toHaveProperty("hide")
+  })
+
+  test("a build without the hide echo is refused with nothing signed or posted", async () => {
+    const f = await fixture()
+    expect(await run([...OPEN, "--hide"], f.deps)).toBe(1)
+    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ ok: false, code: "HIDE_NOT_CONFIRMED" })
+    expect(unsigned(f)).toBe(false)
+  })
+
+  test("close --hide and modify --hide send hide and refuse a missing echo", async () => {
+    const close = await fixture()
+    expect(await run(["perps", "close", "BTC", "--size", "0.5", "--hide", "--yes", "--json"], close.deps)).toBe(1)
+    expect(close.calls[1]?.path).toBe("/api/v1/agent/perps/close")
+    expect(close.calls[1]?.body).toMatchObject({ hide: true })
+    expect(JSON.parse(close.stdout.text.trim())).toMatchObject({ code: "HIDE_NOT_CONFIRMED" })
+    expect(unsigned(close)).toBe(false)
+
+    const modify = await fixture()
+    expect(
+      await run(["perps", "modify", "--cloid", CLOID, "--price", "60000", "--hide", "--yes", "--json"], modify.deps),
+    ).toBe(1)
+    expect(modify.calls[1]?.path).toBe("/api/v1/agent/perps/modify")
+    expect(modify.calls[1]?.body).toMatchObject({ hide: true })
+    expect(JSON.parse(modify.stdout.text.trim())).toMatchObject({ code: "HIDE_NOT_CONFIRMED" })
+    expect(unsigned(modify)).toBe(false)
+  })
+})

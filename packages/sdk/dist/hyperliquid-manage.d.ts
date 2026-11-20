@@ -126,6 +126,11 @@ export interface PerpsTpslParams {
     /** Which tracked leg to change or remove when more than one matches. */
     targetTp?: string;
     targetSl?: string;
+    /**
+     * Keep newly attached protection's fills out of the public activity stream (BE-3769).
+     * A hidden attach must echo `hide: true` before the client signs it.
+     */
+    hide?: boolean;
 }
 /** Why a TP/SL request cannot be planned, before anything is read, or null. */
 export declare function perpsTpslParamsProblem(p: PerpsTpslParams): string | null;

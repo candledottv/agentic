@@ -71,6 +71,7 @@ import { notice } from "../presentation"
 import { writeUsageFailure } from "../render"
 import { solanaSpendProblem } from "../solana-verify"
 import {
+  assertHideEchoed,
   BASES,
   CANCELLED_EXIT,
   completeTradingWallet,
@@ -421,6 +422,9 @@ export async function runPerpsWrite(
       { exitCode: 3, details: { clientId, cloid: clientId, exchangeBody: null } },
     )
   }
+  // BE-3996: `--hide` fails closed. An API that predates hide would place the order publicly, so a
+  // build without the `hide: true` echo is refused before anything is signed or submitted.
+  assertHideEchoed(build, opts.body.hide === true, "perps build")
   build.preview = {
     ...(build.preview as Json | undefined),
     builderTrust: {
@@ -693,7 +697,7 @@ export async function perpsSetup(args: string[], ctx: CommandContext): Promise<n
 // ── open ─────────────────────────────────────────────────────────────────────────────────────
 
 const OPEN_USAGE =
-  "Usage: candle perps open <coin> <long|short> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--tp <px>] [--sl <px>] [--client-id <0x+32 hex>] [--wallet <tee|embedded>] [--yes]"
+  "Usage: candle perps open <coin> <long|short> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--tp <px>] [--sl <px>] [--client-id <0x+32 hex>] [--hide] [--wallet <tee|embedded>] [--yes]"
 
 /** `--client-id`: a cloid the caller chose, lowercased; null when malformed. */
 function clientIdFlag(value: string | undefined): string | undefined | null {
@@ -707,7 +711,7 @@ const CLIENT_ID_USAGE = "--client-id must be 0x followed by 32 hex digits."
 export async function perpsOpen(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
     valueFlags: ["--wallet", "--price", "--tif", "--slippage-bps", "--tp", "--sl", "--client-id"],
-    booleanFlags: ["--yes", "--no-submit", "--sign-only"],
+    booleanFlags: ["--yes", "--no-submit", "--sign-only", "--hide"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [coin, side, size] = parsed.positionals
@@ -732,6 +736,7 @@ export async function perpsOpen(args: string[], ctx: CommandContext): Promise<nu
     side,
     size,
     ...(clientId !== undefined ? { clientId } : {}),
+    ...(parsed.booleans.has("--hide") ? { hide: true } : {}),
     type: values["--price"] === undefined ? "market" : "limit",
     ...(values["--price"] !== undefined ? { price: values["--price"] } : {}),
     ...(tif !== undefined && values["--price"] !== undefined ? { tif } : {}),
@@ -751,14 +756,14 @@ export async function perpsOpen(args: string[], ctx: CommandContext): Promise<nu
 export async function perpsClose(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
     valueFlags: ["--wallet", "--size", "--pct", "--slippage-bps", "--client-id"],
-    booleanFlags: ["--yes", "--no-submit", "--sign-only"],
+    booleanFlags: ["--yes", "--no-submit", "--sign-only", "--hide"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [coin] = parsed.positionals
   if (parsed.positionals.length !== 1 || !coin)
     return usage(
       ctx,
-      "Usage: candle perps close <coin> [--size <n> | --pct <1-100>] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--wallet <tee|embedded>] [--yes]",
+      "Usage: candle perps close <coin> [--size <n> | --pct <1-100>] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--hide] [--wallet <tee|embedded>] [--yes]",
     )
   const size = parsed.values["--size"]
   if (size !== undefined && !DEC_RE.test(size)) return usage(ctx, "--size must be a plain decimal.")
@@ -774,6 +779,7 @@ export async function perpsClose(args: string[], ctx: CommandContext): Promise<n
   const body: Json = {
     coin,
     ...(clientId !== undefined ? { clientId } : {}),
+    ...(parsed.booleans.has("--hide") ? { hide: true } : {}),
     ...(size !== undefined ? { size } : {}),
     ...(pct !== undefined ? { pct } : {}),
     ...(slippageBps !== undefined ? { slippageBps } : {}),

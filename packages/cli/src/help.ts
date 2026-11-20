@@ -635,6 +635,11 @@ export const HELP: Record<string, Topic> = {
           "open and close: your own order id. Retrying the same command with the same id returns the original order instead of placing another, and signs nothing; the same id with a different order is refused. It deduplicates, it does not resume a build you stopped with --no-submit. Use a new id for a new order",
       },
       {
+        invocation: "--hide",
+        description:
+          "open, close, modify and tpsl: keep this order's fills out of Candle's public activity stream. Sent only when set. Fails closed: if the build does not confirm it is hidden, nothing is signed or submitted and the command exits 1. A modify keeps a hidden order hidden. An older candle refuses the flag as unknown.",
+      },
+      {
         invocation: "--start-time <ms> / --end-time <ms>",
         description: "fills and funding: the window in epoch milliseconds (default: the 7 days before now)",
       },

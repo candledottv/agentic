@@ -206,7 +206,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.35";
+var CLI_VERSION = "0.13.36";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
@@ -7826,6 +7826,46 @@ function verifyOwnTransferBuild(build, expect) {
   return null;
 }
 
+// ../mcp/src/hide.ts
+function isHideFlag(value) {
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+function hideField(value) {
+  return isHideFlag(value) ? { hide: true } : {};
+}
+function hideEchoed(body) {
+  return typeof body === "object" && body !== null && body.hide === true;
+}
+function hideEchoedText(text) {
+  try {
+    return hideEchoed(JSON.parse(text));
+  } catch {
+    return false;
+  }
+}
+function hideNotConfirmedMessage(what) {
+  return `${HIDE_NOT_CONFIRMED}: ${what} asked for hide, but the API did not confirm it. Its server may predate hide, ` + "so the order may have been placed publicly. Read the order back before sending another.";
+}
+function hideUnsupportedByDryRunMessage(what) {
+  return `${HIDE_NOT_CONFIRMED}: ${what} asked for hide, but the API's dry run did not confirm it. ` + "Its server has not enabled hide yet. The dry run published nothing and no launch was sent; " + "retry without hide, or after the API enables it.";
+}
+function missingHideEcho(asked, text, what) {
+  if (!asked)
+    return;
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = undefined;
+  }
+  return hideEchoed(body) ? undefined : hideNotConfirmedMessage(what);
+}
+var HIDE_NOT_CONFIRMED = "HIDE_NOT_CONFIRMED", hideSchema;
+var init_hide = __esm(() => {
+  init_zod();
+  hideSchema = exports_external.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, exports_external.boolean().optional().describe("Keep this order out of the public activity stream. Sent only when true. The API confirms it; " + "a result without that confirmation is an error, because an API that does not know `hide` " + "would place the order publicly. Hidden orders still count in this key's own record. " + "A refusal means the API has not enabled hide yet: nothing was placed."));
+});
+
 // ../mcp/src/hyperliquid-manage.ts
 function errorCode2(err) {
   const code = err?.code;
@@ -7841,6 +7881,11 @@ async function runStep(io, step, warnings, path, body, intent) {
   } catch (err) {
     step.status = "rejected";
     step.detail = `${errorCode2(err)}: ${errorText(err)}`;
+    return false;
+  }
+  if (body.hide === true && build.hide !== true) {
+    step.status = "rejected";
+    step.detail = "HIDE_NOT_CONFIRMED: the API did not echo hide: true. This step was not signed.";
     return false;
   }
   if (build.preview && typeof build.preview === "object" && !Array.isArray(build.preview)) {
@@ -7947,6 +7992,8 @@ function perpsTpslParamsProblem(p) {
   ])
     if (value !== undefined && (typeof value !== "string" || !DECIMAL_RE.test(value) || /^0+(\.0+)?$/.test(value)))
       return `${field} must be a positive decimal`;
+  if (p.hide !== undefined && typeof p.hide !== "boolean")
+    return "hide must be true or false";
   if (p.takeProfit !== undefined && p.removeTp)
     return "cannot set and remove the take-profit together";
   if (p.stopLoss !== undefined && p.removeSl)
@@ -8107,6 +8154,7 @@ async function runPerpsTpsl(io, params) {
         coin,
         operation: "attach",
         leg: plan.leg,
+        ...params.hide === true ? { hide: true } : {},
         triggerPx: plan.triggerPx,
         workflowId,
         workflowStep: plan.attach.step
@@ -9686,9 +9734,14 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     }
     if (tool === "candle_perps_reduce_only")
       return await executeReduceOnly(args, cfg, fetch2);
-    const { wallet: _w, submit: _s, ...rest } = args;
+    const { wallet: _w, submit: _s, hide: hideArg, ...rest } = args;
+    const hide = isHideFlag(hideArg) && ["candle_perps_open", "candle_perps_close", "candle_perps_modify", "candle_perps_tpsl"].includes(tool);
     let clientId2 = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined;
-    let fields2 = { ...rest, ...clientId2 !== undefined ? { clientId: clientId2 } : {} };
+    let fields2 = {
+      ...rest,
+      ...clientId2 !== undefined ? { clientId: clientId2 } : {},
+      ...hide ? { hide: true } : {}
+    };
     let path = PATHS[tool];
     let method = path.split("/").at(-1);
     if (tool === "candle_perps_close") {
@@ -9834,6 +9887,8 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         throw error;
       throw new Refusal(fail("PERPS_MAYBE_LANDED", "The build answer was lost. Retry the same clientId; read orders and reconcile before continuing.", { clientId: clientId2, cloid: clientId2, exchangeBody: null }));
     }
+    if (hide && !hideEchoed(build))
+      return fail("HIDE_NOT_CONFIRMED", hideNotConfirmedMessage(tool), { clientId: clientId2 ?? null });
     build.preview = {
       ...build.preview,
       builderTrust: {
@@ -10145,6 +10200,7 @@ var PERPS_RISK_TOOL_NAMES, PERPS_TOOL_NAMES, isRiskTool = (tool) => PERPS_RISK_T
 }), perpsShapes, PATHS, Refusal, HYPERLIQUID_RELAY_CHAIN_ID = 1337, HYPERLIQUID_RELAY_USDC = "0x00000000000000000000000000000000", DEPOSIT_ASSETS, perpsDepositShape;
 var init_perps = __esm(() => {
   init_zod();
+  init_hide();
   init_hyperliquid();
   init_hyperliquid_manage();
   init_perps_history();
@@ -10191,6 +10247,7 @@ var init_perps = __esm(() => {
       takeProfit: decimal3.optional().describe("Reduce-only take-profit trigger price"),
       stopLoss: decimal3.optional().describe("Reduce-only stop-loss trigger price"),
       clientId,
+      hide: hideSchema,
       wallet: wallet2,
       submit
     },
@@ -10200,6 +10257,7 @@ var init_perps = __esm(() => {
       pct: exports_external.string().regex(/^(0|[1-9][0-9]{0,2})(\.[0-9]{1,4})?$/).optional().describe("Instead of size: a percentage of the position (above 0, at most 100, at most 4 decimals), rounded down to the market's size step; a zero result is refused"),
       slippageBps: exports_external.number().int().min(1).optional(),
       clientId,
+      hide: hideSchema,
       wallet: wallet2,
       submit
     },
@@ -10227,6 +10285,7 @@ var init_perps = __esm(() => {
       price: decimal3.optional().describe("New limit price; the order's own when omitted"),
       size: decimal3.optional().describe("New size; the order's own when omitted"),
       slippageBps: exports_external.number().int().min(1).optional(),
+      hide: hideSchema,
       wallet: wallet2,
       submit
     },
@@ -10246,6 +10305,7 @@ var init_perps = __esm(() => {
       removeSl: exports_external.boolean().optional().describe("Remove the stop-loss Candle built"),
       targetTp: exports_external.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Which take-profit, when several match"),
       targetSl: exports_external.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Which stop-loss, when several match"),
+      hide: hideSchema,
       wallet: wallet2,
       submit: submit.describe("false: build and check only the first step (cancel for a replacement), returning steps[].preview.terms and fee warnings without signing or submitting")
     },
@@ -10711,7 +10771,7 @@ var init_chain_registry = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.40";
+var SERVER_VERSION = "0.10.41";
 
 // ../mcp/src/client.ts
 function isLoopbackHost2(hostname) {
@@ -11026,46 +11086,6 @@ var init_convert = __esm(() => {
     usdg: 6
   };
   DECIMAL_RE2 = /^\d+(\.\d+)?$/;
-});
-
-// ../mcp/src/hide.ts
-function isHideFlag(value) {
-  return value === true || value === "true" || value === 1 || value === "1";
-}
-function hideField(value) {
-  return isHideFlag(value) ? { hide: true } : {};
-}
-function hideEchoed(body) {
-  return typeof body === "object" && body !== null && body.hide === true;
-}
-function hideEchoedText(text) {
-  try {
-    return hideEchoed(JSON.parse(text));
-  } catch {
-    return false;
-  }
-}
-function hideNotConfirmedMessage(what) {
-  return `${HIDE_NOT_CONFIRMED}: ${what} asked for hide, but the API did not confirm it. Its server may predate hide, ` + "so the order may have been placed publicly. Read the order back before sending another.";
-}
-function hideUnsupportedByDryRunMessage(what) {
-  return `${HIDE_NOT_CONFIRMED}: ${what} asked for hide, but the API's dry run did not confirm it. ` + "Its server has not enabled hide yet. The dry run published nothing and no launch was sent; " + "retry without hide, or after the API enables it.";
-}
-function missingHideEcho(asked, text, what) {
-  if (!asked)
-    return;
-  let body;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    body = undefined;
-  }
-  return hideEchoed(body) ? undefined : hideNotConfirmedMessage(what);
-}
-var HIDE_NOT_CONFIRMED = "HIDE_NOT_CONFIRMED", hideSchema;
-var init_hide = __esm(() => {
-  init_zod();
-  hideSchema = exports_external.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, exports_external.boolean().optional().describe("Keep this order out of the public activity stream. Sent only when true. The API confirms it; " + "a result without that confirmation is an error, because an API that does not know `hide` " + "would place the order publicly. Hidden orders still count in this key's own record. " + "A refusal means the API has not enabled hide yet: nothing was placed."));
 });
 
 // ../mcp/src/image.ts
@@ -81093,6 +81113,10 @@ var HELP = {
         description: "open and close: your own order id. Retrying the same command with the same id returns the original order instead of placing another, and signs nothing; the same id with a different order is refused. It deduplicates, it does not resume a build you stopped with --no-submit. Use a new id for a new order"
       },
       {
+        invocation: "--hide",
+        description: "open, close, modify and tpsl: keep this order's fills out of Candle's public activity stream. Sent only when set. Fails closed: if the build does not confirm it is hidden, nothing is signed or submitted and the command exits 1. A modify keeps a hidden order hidden. An older candle refuses the flag as unknown."
+      },
+      {
         invocation: "--start-time <ms> / --end-time <ms>",
         description: "fills and funding: the window in epoch milliseconds (default: the 7 days before now)"
       },
@@ -104073,6 +104097,7 @@ async function runPerpsWrite(ctx, opts) {
       throw error;
     throw new TradingError("PERPS_MAYBE_LANDED", "The build answer was lost. Retry the same client id; read candle perps orders or POST /perps/reconcile before continuing.", { exitCode: 3, details: { clientId: clientId2, cloid: clientId2, exchangeBody: null } });
   }
+  assertHideEchoed(build, opts.body.hide === true, "perps build");
   build.preview = {
     ...build.preview,
     builderTrust: {
@@ -104276,7 +104301,7 @@ async function perpsSetup(args, ctx) {
     return tradingFailure(ctx, error);
   }
 }
-var OPEN_USAGE = "Usage: candle perps open <coin> <long|short> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--tp <px>] [--sl <px>] [--client-id <0x+32 hex>] [--wallet <tee|embedded>] [--yes]";
+var OPEN_USAGE = "Usage: candle perps open <coin> <long|short> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--tp <px>] [--sl <px>] [--client-id <0x+32 hex>] [--hide] [--wallet <tee|embedded>] [--yes]";
 function clientIdFlag(value) {
   if (value === undefined)
     return;
@@ -104287,7 +104312,7 @@ var CLIENT_ID_USAGE = "--client-id must be 0x followed by 32 hex digits.";
 async function perpsOpen(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--wallet", "--price", "--tif", "--slippage-bps", "--tp", "--sl", "--client-id"],
-    booleanFlags: ["--yes", "--no-submit", "--sign-only"]
+    booleanFlags: ["--yes", "--no-submit", "--sign-only", "--hide"]
   });
   if ("error" in parsed)
     return usage8(ctx, parsed.error);
@@ -104320,6 +104345,7 @@ async function perpsOpen(args, ctx) {
     side,
     size,
     ...clientId2 !== undefined ? { clientId: clientId2 } : {},
+    ...parsed.booleans.has("--hide") ? { hide: true } : {},
     type: values["--price"] === undefined ? "market" : "limit",
     ...values["--price"] !== undefined ? { price: values["--price"] } : {},
     ...tif !== undefined && values["--price"] !== undefined ? { tif } : {},
@@ -104336,13 +104362,13 @@ async function perpsOpen(args, ctx) {
 async function perpsClose(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--wallet", "--size", "--pct", "--slippage-bps", "--client-id"],
-    booleanFlags: ["--yes", "--no-submit", "--sign-only"]
+    booleanFlags: ["--yes", "--no-submit", "--sign-only", "--hide"]
   });
   if ("error" in parsed)
     return usage8(ctx, parsed.error);
   const [coin] = parsed.positionals;
   if (parsed.positionals.length !== 1 || !coin)
-    return usage8(ctx, "Usage: candle perps close <coin> [--size <n> | --pct <1-100>] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--wallet <tee|embedded>] [--yes]");
+    return usage8(ctx, "Usage: candle perps close <coin> [--size <n> | --pct <1-100>] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--hide] [--wallet <tee|embedded>] [--yes]");
   const size = parsed.values["--size"];
   if (size !== undefined && !DEC_RE3.test(size))
     return usage8(ctx, "--size must be a plain decimal.");
@@ -104360,6 +104386,7 @@ async function perpsClose(args, ctx) {
   const body = {
     coin,
     ...clientId2 !== undefined ? { clientId: clientId2 } : {},
+    ...parsed.booleans.has("--hide") ? { hide: true } : {},
     ...size !== undefined ? { size } : {},
     ...pct4 !== undefined ? { pct: pct4 } : {},
     ...slippageBps !== undefined ? { slippageBps } : {}
@@ -104922,6 +104949,11 @@ async function runStep2(io, step, warnings, path, body, intent) {
     step.detail = `${errorCode3(err)}: ${errorText2(err)}`;
     return false;
   }
+  if (body.hide === true && build.hide !== true) {
+    step.status = "rejected";
+    step.detail = "HIDE_NOT_CONFIRMED: the API did not echo hide: true. This step was not signed.";
+    return false;
+  }
   if (build.preview && typeof build.preview === "object" && !Array.isArray(build.preview)) {
     step.preview = build.preview;
     const warning = step.preview.terms?.feeWarning;
@@ -105028,6 +105060,8 @@ function perpsTpslParamsProblem2(p) {
   ])
     if (value !== undefined && (typeof value !== "string" || !DECIMAL_RE3.test(value) || /^0+(\.0+)?$/.test(value)))
       return `${field} must be a positive decimal`;
+  if (p.hide !== undefined && typeof p.hide !== "boolean")
+    return "hide must be true or false";
   if (p.takeProfit !== undefined && p.removeTp)
     return "cannot set and remove the take-profit together";
   if (p.stopLoss !== undefined && p.removeSl)
@@ -105188,6 +105222,7 @@ async function runPerpsTpsl2(io, params) {
         coin,
         operation: "attach",
         leg: plan.leg,
+        ...params.hide === true ? { hide: true } : {},
         triggerPx: plan.triggerPx,
         workflowId,
         workflowStep: plan.attach.step
@@ -105373,11 +105408,11 @@ function usage9(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
-var MODIFY_USAGE = "Usage: candle perps modify --cloid <0x+32 hex> [--price <px>] [--size <n>] [--slippage-bps <n>] [--wallet <tee>] [--yes]";
+var MODIFY_USAGE = "Usage: candle perps modify --cloid <0x+32 hex> [--price <px>] [--size <n>] [--slippage-bps <n>] [--hide] [--wallet <tee>] [--yes]";
 async function perpsModify(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--wallet", "--cloid", "--price", "--size", "--slippage-bps"],
-    booleanFlags: WRITE_BOOLEANS
+    booleanFlags: [...WRITE_BOOLEANS, "--hide"]
   });
   if ("error" in parsed)
     return usage9(ctx, parsed.error);
@@ -105397,7 +105432,8 @@ async function perpsModify(args, ctx) {
     cloid,
     ...values["--price"] !== undefined ? { price: values["--price"] } : {},
     ...values["--size"] !== undefined ? { size: values["--size"] } : {},
-    ...slippageBps !== undefined ? { slippageBps } : {}
+    ...slippageBps !== undefined ? { slippageBps } : {},
+    ...parsed.booleans.has("--hide") ? { hide: true } : {}
   };
   try {
     return await runPerpsWrite(ctx, {
@@ -105581,11 +105617,11 @@ function workflowFailure(ctx, error) {
     }));
   return tradingFailure(ctx, error);
 }
-var TPSL_USAGE = "Usage: candle perps tpsl <coin> [--take-profit <px>] [--stop-loss <px>] [--remove-tp] [--remove-sl] [--target-tp <cloid>] [--target-sl <cloid>] [--wallet <tee>] [--yes]";
+var TPSL_USAGE = "Usage: candle perps tpsl <coin> [--take-profit <px>] [--stop-loss <px>] [--remove-tp] [--remove-sl] [--target-tp <cloid>] [--target-sl <cloid>] [--hide] [--wallet <tee>] [--yes]";
 async function perpsTpsl(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--wallet", "--take-profit", "--stop-loss", "--target-tp", "--target-sl"],
-    booleanFlags: [...WRITE_BOOLEANS, "--remove-tp", "--remove-sl"]
+    booleanFlags: [...WRITE_BOOLEANS, "--remove-tp", "--remove-sl", "--hide"]
   });
   if ("error" in parsed)
     return usage9(ctx, parsed.error);
@@ -105599,6 +105635,7 @@ async function perpsTpsl(args, ctx) {
     ...values["--stop-loss"] !== undefined ? { stopLoss: values["--stop-loss"] } : {},
     ...booleans.has("--remove-tp") ? { removeTp: true } : {},
     ...booleans.has("--remove-sl") ? { removeSl: true } : {},
+    ...booleans.has("--hide") ? { hide: true } : {},
     ...values["--target-tp"] !== undefined ? { targetTp: values["--target-tp"].toLowerCase() } : {},
     ...values["--target-sl"] !== undefined ? { targetSl: values["--target-sl"].toLowerCase() } : {}
   };

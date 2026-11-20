@@ -101,7 +101,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.40";
+var SERVER_VERSION = "0.10.41";
 
 // src/client.ts
 var DEFAULT_API_URL = "https://api.alpha.candle.tv";
@@ -237,7 +237,7 @@ var HOLDER_EXIT_DISCLOSURE = "On a Hood market, holderExit says where a holder s
 // src/perps-transfer.ts
 import { createPrivateKey as createPrivateKey2, sign as sign2 } from "node:crypto";
 import { readFile as readFile2 } from "node:fs/promises";
-import { z as z3 } from "zod";
+import { z as z4 } from "zod";
 
 // src/hyperliquid.ts
 import { keccak_256 } from "@noble/hashes/sha3";
@@ -2117,7 +2117,45 @@ function verifyOwnTransferBuild(build, expect) {
 // src/perps.ts
 import { createPrivateKey, randomBytes, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { z as z2 } from "zod";
+import { z as z3 } from "zod";
+
+// src/hide.ts
+import { z } from "zod";
+var HIDE_NOT_CONFIRMED = "HIDE_NOT_CONFIRMED";
+function isHideFlag(value) {
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+function hideField(value) {
+  return isHideFlag(value) ? { hide: true } : {};
+}
+var hideSchema = z.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, z.boolean().optional().describe("Keep this order out of the public activity stream. Sent only when true. The API confirms it; " + "a result without that confirmation is an error, because an API that does not know `hide` " + "would place the order publicly. Hidden orders still count in this key's own record. " + "A refusal means the API has not enabled hide yet: nothing was placed."));
+function hideEchoed(body) {
+  return typeof body === "object" && body !== null && body.hide === true;
+}
+function hideEchoedText(text) {
+  try {
+    return hideEchoed(JSON.parse(text));
+  } catch {
+    return false;
+  }
+}
+function hideNotConfirmedMessage(what) {
+  return `${HIDE_NOT_CONFIRMED}: ${what} asked for hide, but the API did not confirm it. Its server may predate hide, ` + "so the order may have been placed publicly. Read the order back before sending another.";
+}
+function hideUnsupportedByDryRunMessage(what) {
+  return `${HIDE_NOT_CONFIRMED}: ${what} asked for hide, but the API's dry run did not confirm it. ` + "Its server has not enabled hide yet. The dry run published nothing and no launch was sent; " + "retry without hide, or after the API enables it.";
+}
+function missingHideEcho(asked, text, what) {
+  if (!asked)
+    return;
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = undefined;
+  }
+  return hideEchoed(body) ? undefined : hideNotConfirmedMessage(what);
+}
 
 // src/hyperliquid-manage.ts
 var PERPS_FLATTEN_MAX_STEPS = 100;
@@ -2145,6 +2183,11 @@ async function runStep(io, step, warnings, path, body, intent) {
   } catch (err) {
     step.status = "rejected";
     step.detail = `${errorCode(err)}: ${errorText(err)}`;
+    return false;
+  }
+  if (body.hide === true && build.hide !== true) {
+    step.status = "rejected";
+    step.detail = "HIDE_NOT_CONFIRMED: the API did not echo hide: true. This step was not signed.";
     return false;
   }
   if (build.preview && typeof build.preview === "object" && !Array.isArray(build.preview)) {
@@ -2253,6 +2296,8 @@ function perpsTpslParamsProblem(p) {
   ])
     if (value !== undefined && (typeof value !== "string" || !DECIMAL_RE.test(value) || /^0+(\.0+)?$/.test(value)))
       return `${field} must be a positive decimal`;
+  if (p.hide !== undefined && typeof p.hide !== "boolean")
+    return "hide must be true or false";
   if (p.takeProfit !== undefined && p.removeTp)
     return "cannot set and remove the take-profit together";
   if (p.stopLoss !== undefined && p.removeSl)
@@ -2413,6 +2458,7 @@ async function runPerpsTpsl(io, params) {
         coin,
         operation: "attach",
         leg: plan.leg,
+        ...params.hide === true ? { hide: true } : {},
         triggerPx: plan.triggerPx,
         workflowId,
         workflowStep: plan.attach.step
@@ -2867,7 +2913,7 @@ async function readPerpsHistoryPage(req) {
 }
 
 // src/perps-risk.ts
-import { z } from "zod";
+import { z as z2 } from "zod";
 
 // src/hyperliquid-risk.ts
 var HYPERLIQUID_RISK_INFO_URLS = {
@@ -3740,12 +3786,12 @@ function isParsedClearinghouse(value) {
 }
 
 // src/perps-risk.ts
-var wallet = z.string().optional().describe("The EVM TEE wallet by id, address or label. Omit when the key has exactly one.");
-var bps = (what) => z.number().int().nullable().optional().describe(`${what}, in bps; null clears it`);
+var wallet = z2.string().optional().describe("The EVM TEE wallet by id, address or label. Omit when the key has exactly one.");
+var bps = (what) => z2.number().int().nullable().optional().describe(`${what}, in bps; null clears it`);
 var perpsRiskShapes = {
   candle_perps_account: {
     wallet,
-    since: z.string().optional().describe("The recent window: a duration back from now (30m, 24h, 7d) or an ISO time; default 24h, at most 30 days")
+    since: z2.string().optional().describe("The recent window: a duration back from now (30m, 24h, 7d) or an ISO time; default 24h, at most 30 days")
   },
   candle_perps_risk: { wallet },
   candle_perps_thresholds: {},
@@ -3755,7 +3801,7 @@ var perpsRiskShapes = {
     warnMarginRatioBps: bps("Warn when the cross margin ratio is above this (default 6000, 0.6)"),
     criticalMarginRatioBps: bps("Critical when above this (default 8000, 0.8)"),
     clearBandBps: bps("How far past a threshold a watched level must move to clear (default 200)"),
-    clear: z.boolean().optional().describe("true clears every stored threshold (refused when that would loosen)")
+    clear: z2.boolean().optional().describe("true clears every stored threshold (refused when that would loosen)")
   }
 };
 var network = (env) => env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet";
@@ -3902,48 +3948,50 @@ var PERPS_TOOL_NAMES = [
   ...PERPS_RISK_TOOL_NAMES
 ];
 var isRiskTool = (tool) => PERPS_RISK_TOOL_NAMES.includes(tool);
-var decimal3 = z2.string().regex(/^(0|[1-9][0-9]*)(\.[0-9]+)?$/, "a plain decimal string");
-var wallet2 = z2.string().optional().describe("The EVM TEE wallet by id, address or label, or embedded. Defaults to the only TEE, then embedded when permitted.");
-var submit = z2.boolean().optional().describe("false: build and check without venue submission. Embedded builds already carry the server signature. Default true.");
-var clientId = z2.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Optional client order id (0x + 32 hex) used as the order's cloid. Retrying with the same id and request returns " + "the original operation (replayed: true); embedded returns its stored signature and resumes submission. Another request under that id is refused (PERPS_CLIENT_ID_CONFLICT). Embedded open/close generate an id when omitted. Use a new id for a new order.");
-var epochMs = z2.number().int().min(0);
+var decimal3 = z3.string().regex(/^(0|[1-9][0-9]*)(\.[0-9]+)?$/, "a plain decimal string");
+var wallet2 = z3.string().optional().describe("The EVM TEE wallet by id, address or label, or embedded. Defaults to the only TEE, then embedded when permitted.");
+var submit = z3.boolean().optional().describe("false: build and check without venue submission. Embedded builds already carry the server signature. Default true.");
+var clientId = z3.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Optional client order id (0x + 32 hex) used as the order's cloid. Retrying with the same id and request returns " + "the original operation (replayed: true); embedded returns its stored signature and resumes submission. Another request under that id is refused (PERPS_CLIENT_ID_CONFLICT). Embedded open/close generate an id when omitted. Use a new id for a new order.");
+var epochMs = z3.number().int().min(0);
 var history = (max) => ({
   wallet: wallet2,
   startTime: epochMs.optional().describe("Inclusive epoch milliseconds. Default: 7 days before endTime."),
   endTime: epochMs.optional().describe("Inclusive epoch milliseconds. Default: now, fixed into the cursor."),
-  limit: z2.number().int().min(1).max(max).optional().describe(`Rows per page (default 100, at most ${max}).`),
-  cursor: z2.string().min(1).max(200000).optional().describe("nextCursor from the previous page. The window and limit must not change.")
+  limit: z3.number().int().min(1).max(max).optional().describe(`Rows per page (default 100, at most ${max}).`),
+  cursor: z3.string().min(1).max(200000).optional().describe("nextCursor from the previous page. The window and limit must not change.")
 });
 var perpsShapes = {
   candle_perps_setup: { wallet: wallet2, submit },
   candle_perps_open: {
-    coin: z2.string().describe("A market on Hyperliquid's main perp exchange, e.g. BTC"),
-    side: z2.enum(["long", "short"]),
+    coin: z3.string().describe("A market on Hyperliquid's main perp exchange, e.g. BTC"),
+    side: z3.enum(["long", "short"]),
     size: decimal3.describe('Size in the coin, decimal (e.g. "0.01")'),
     price: decimal3.optional().describe("Limit price. Omit for a market order (IOC within slippageBps of the mid)."),
-    tif: z2.enum(["Gtc", "Alo", "Ioc"]).optional().describe("With price: time in force (default Gtc)"),
-    slippageBps: z2.number().int().min(1).optional(),
+    tif: z3.enum(["Gtc", "Alo", "Ioc"]).optional().describe("With price: time in force (default Gtc)"),
+    slippageBps: z3.number().int().min(1).optional(),
     takeProfit: decimal3.optional().describe("Reduce-only take-profit trigger price"),
     stopLoss: decimal3.optional().describe("Reduce-only stop-loss trigger price"),
     clientId,
+    hide: hideSchema,
     wallet: wallet2,
     submit
   },
   candle_perps_close: {
-    coin: z2.string(),
+    coin: z3.string(),
     size: decimal3.optional().describe("Part of the position to close; the whole position when omitted"),
-    pct: z2.string().regex(/^(0|[1-9][0-9]{0,2})(\.[0-9]{1,4})?$/).optional().describe("Instead of size: a percentage of the position (above 0, at most 100, at most 4 decimals), rounded down to the market's size step; a zero result is refused"),
-    slippageBps: z2.number().int().min(1).optional(),
+    pct: z3.string().regex(/^(0|[1-9][0-9]{0,2})(\.[0-9]{1,4})?$/).optional().describe("Instead of size: a percentage of the position (above 0, at most 100, at most 4 decimals), rounded down to the market's size step; a zero result is refused"),
+    slippageBps: z3.number().int().min(1).optional(),
     clientId,
+    hide: hideSchema,
     wallet: wallet2,
     submit
   },
   candle_perps_cancel: {
-    cloid: z2.string().regex(/^0x[0-9a-fA-F]{32}$/).describe("The cloid of an order Candle built (an open, or one of its take-profit / stop-loss legs)"),
+    cloid: z3.string().regex(/^0x[0-9a-fA-F]{32}$/).describe("The cloid of an order Candle built (an open, or one of its take-profit / stop-loss legs)"),
     wallet: wallet2,
     submit
   },
-  candle_perps_orders: { wallet: wallet2, limit: z2.number().int().min(1).max(200).optional() },
+  candle_perps_orders: { wallet: wallet2, limit: z3.number().int().min(1).max(200).optional() },
   candle_perps_positions: { wallet: wallet2 },
   candle_perps_activity: {
     wallet: wallet2.describe("The EVM TEE wallet by id, address or label. Its resting orders across the default and every builder perp dex, and withdrawals in flight.")
@@ -3951,48 +3999,50 @@ var perpsShapes = {
   candle_perps_fills: history(PERPS_HISTORY_MAX_LIMIT.fills),
   candle_perps_funding: history(PERPS_HISTORY_MAX_LIMIT.funding),
   candle_perps_leverage: {
-    coin: z2.string(),
-    leverage: z2.number().int().min(1),
-    mode: z2.enum(["cross", "isolated"]).optional(),
+    coin: z3.string(),
+    leverage: z3.number().int().min(1),
+    mode: z3.enum(["cross", "isolated"]).optional(),
     wallet: wallet2,
     submit
   },
   candle_perps_modify: {
-    cloid: z2.string().regex(/^0x[0-9a-fA-F]{32}$/).describe("The cloid of a resting order Candle built (not a take-profit / stop-loss leg)"),
+    cloid: z3.string().regex(/^0x[0-9a-fA-F]{32}$/).describe("The cloid of a resting order Candle built (not a take-profit / stop-loss leg)"),
     price: decimal3.optional().describe("New limit price; the order's own when omitted"),
     size: decimal3.optional().describe("New size; the order's own when omitted"),
-    slippageBps: z2.number().int().min(1).optional(),
+    slippageBps: z3.number().int().min(1).optional(),
+    hide: hideSchema,
     wallet: wallet2,
     submit
   },
   candle_perps_margin: {
-    coin: z2.string(),
-    amount: z2.string().regex(/^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$/).optional().describe("Add this much USD of isolated margin to an isolated position (positive; never removes)"),
-    mode: z2.enum(["cross", "isolated"]).optional().describe("Instead of amount: set the coin's margin mode (needs no position and no resting order in it)"),
-    leverage: z2.number().int().min(1).optional().describe("With mode: the leverage; the current one when omitted"),
+    coin: z3.string(),
+    amount: z3.string().regex(/^(0|[1-9][0-9]*)(\.[0-9]{1,6})?$/).optional().describe("Add this much USD of isolated margin to an isolated position (positive; never removes)"),
+    mode: z3.enum(["cross", "isolated"]).optional().describe("Instead of amount: set the coin's margin mode (needs no position and no resting order in it)"),
+    leverage: z3.number().int().min(1).optional().describe("With mode: the leverage; the current one when omitted"),
     wallet: wallet2,
     submit
   },
   candle_perps_tpsl: {
-    coin: z2.string(),
+    coin: z3.string(),
     takeProfit: decimal3.optional().describe("Attach or move the take-profit to this trigger price"),
     stopLoss: decimal3.optional().describe("Attach or move the stop-loss to this trigger price"),
-    removeTp: z2.boolean().optional().describe("Remove the take-profit Candle built"),
-    removeSl: z2.boolean().optional().describe("Remove the stop-loss Candle built"),
-    targetTp: z2.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Which take-profit, when several match"),
-    targetSl: z2.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Which stop-loss, when several match"),
+    removeTp: z3.boolean().optional().describe("Remove the take-profit Candle built"),
+    removeSl: z3.boolean().optional().describe("Remove the stop-loss Candle built"),
+    targetTp: z3.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Which take-profit, when several match"),
+    targetSl: z3.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Which stop-loss, when several match"),
+    hide: hideSchema,
     wallet: wallet2,
     submit: submit.describe("false: build and check only the first step (cancel for a replacement), returning steps[].preview.terms and fee warnings without signing or submitting")
   },
   candle_perps_schedule_cancel: {
-    seconds: z2.number().int().min(5).optional().describe("Set the timer this many seconds from now (at least 5)"),
-    clear: z2.boolean().optional().describe("true: clear the timer instead"),
+    seconds: z3.number().int().min(5).optional().describe("Set the timer this many seconds from now (at least 5)"),
+    clear: z3.boolean().optional().describe("true: clear the timer instead"),
     wallet: wallet2,
     submit
   },
   candle_perps_flatten: { wallet: wallet2, submit },
   candle_perps_reduce_only: {
-    on: z2.boolean().optional().describe("Omit to read. true turns this key's reduce-only on. false is refused: only the owner turns it off")
+    on: z3.boolean().optional().describe("Omit to read. true turns this key's reduce-only on. false is refused: only the owner turns it off")
   }
 };
 var PATHS = {
@@ -4131,9 +4181,14 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     }
     if (tool === "candle_perps_reduce_only")
       return await executeReduceOnly(args, cfg, fetch2);
-    const { wallet: _w, submit: _s, ...rest } = args;
+    const { wallet: _w, submit: _s, hide: hideArg, ...rest } = args;
+    const hide = isHideFlag(hideArg) && ["candle_perps_open", "candle_perps_close", "candle_perps_modify", "candle_perps_tpsl"].includes(tool);
     let clientId2 = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined;
-    let fields = { ...rest, ...clientId2 !== undefined ? { clientId: clientId2 } : {} };
+    let fields = {
+      ...rest,
+      ...clientId2 !== undefined ? { clientId: clientId2 } : {},
+      ...hide ? { hide: true } : {}
+    };
     let path = PATHS[tool];
     let method = path.split("/").at(-1);
     if (tool === "candle_perps_close") {
@@ -4279,6 +4334,8 @@ async function executePerps(tool, args, cfg, env, fetch2) {
         throw error;
       throw new Refusal(fail("PERPS_MAYBE_LANDED", "The build answer was lost. Retry the same clientId; read orders and reconcile before continuing.", { clientId: clientId2, cloid: clientId2, exchangeBody: null }));
     }
+    if (hide && !hideEchoed(build))
+      return fail("HIDE_NOT_CONFIRMED", hideNotConfirmedMessage(tool), { clientId: clientId2 ?? null });
     build.preview = {
       ...build.preview,
       builderTrust: {
@@ -4411,12 +4468,12 @@ var DEPOSIT_ASSETS = {
   USDG: { chain: "evm", decimals: 6 }
 };
 var perpsDepositShape = {
-  asset: z2.enum(["SOL", "USDC", "ETH", "USDG"]).describe("What to deposit. SOL or USDC pay from the key's Solana TEE wallet; ETH or USDG from its Hood one."),
+  asset: z3.enum(["SOL", "USDC", "ETH", "USDG"]).describe("What to deposit. SOL or USDC pay from the key's Solana TEE wallet; ETH or USDG from its Hood one."),
   amount: decimal3.describe('Amount of the asset, decimal (e.g. "25")'),
-  wallet: z2.string().optional().describe("The paying TEE wallet by id, address or label. Omit when the key has exactly one on that chain."),
-  perpsWallet: z2.string().optional().describe("From Solana only: the EVM TEE wallet whose Hyperliquid account receives it. Omit when the key has one."),
-  clientDepositId: z2.string().regex(/^[A-Za-z0-9._:-]{1,128}$/).optional().describe("Idempotency id; the same id answers the deposit it already built. Default: a new one."),
-  maxSlippageBps: z2.number().int().min(1).max(1000).optional().describe("Relay slippage (default 100)"),
+  wallet: z3.string().optional().describe("The paying TEE wallet by id, address or label. Omit when the key has exactly one on that chain."),
+  perpsWallet: z3.string().optional().describe("From Solana only: the EVM TEE wallet whose Hyperliquid account receives it. Omit when the key has one."),
+  clientDepositId: z3.string().regex(/^[A-Za-z0-9._:-]{1,128}$/).optional().describe("Idempotency id; the same id answers the deposit it already built. Default: a new one."),
+  maxSlippageBps: z3.number().int().min(1).max(1000).optional().describe("Relay slippage (default 100)"),
   submit
 };
 function rawUnits(amount, decimals) {
@@ -4601,20 +4658,20 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
 
 // src/perps-transfer.ts
 var perpsTransferShape = {
-  clientTransferId: z3.string().regex(/^[A-Za-z0-9._:-]{1,128}$/),
-  mode: z3.enum(["toDex", "fromDex"]),
-  dex: z3.string().regex(/^[A-Za-z0-9]{1,16}$/).optional(),
-  amountUsdc: z3.string().regex(/^(0|[1-9][0-9]{0,11})(\.[0-9]{1,6})?$/).optional(),
-  all: z3.boolean().optional(),
-  wallet: z3.string().optional(),
-  submit: z3.boolean().optional()
+  clientTransferId: z4.string().regex(/^[A-Za-z0-9._:-]{1,128}$/),
+  mode: z4.enum(["toDex", "fromDex"]),
+  dex: z4.string().regex(/^[A-Za-z0-9]{1,16}$/).optional(),
+  amountUsdc: z4.string().regex(/^(0|[1-9][0-9]{0,11})(\.[0-9]{1,6})?$/).optional(),
+  all: z4.boolean().optional(),
+  wallet: z4.string().optional(),
+  submit: z4.boolean().optional()
 };
 async function executePerpsTransfer(args, cfg, env, fetch2) {
   if (!cfg.apiKey)
     return fail("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required.");
   if (args.mode === "toSpot" || args.mode === "fromSpot")
     return fail("MCP_VALIDATION", "Perps to spot transfers (toSpot, fromSpot) are not available in this release.");
-  const parsed = z3.object(perpsTransferShape).strict().safeParse(args);
+  const parsed = z4.object(perpsTransferShape).strict().safeParse(args);
   if (!parsed.success)
     return fail("MCP_VALIDATION", "Invalid transfer input; no destination is accepted.");
   const a = parsed.data;
@@ -4705,7 +4762,7 @@ import { randomUUID as randomUUID3 } from "node:crypto";
 import { z as z13 } from "zod";
 
 // src/chain-registry.ts
-import { z as z4 } from "zod";
+import { z as z5 } from "zod";
 
 // src/chains/registry.json
 var registry_default = [
@@ -4987,13 +5044,13 @@ function chainDescriptionText() {
 function chainSchema(description) {
   const slugs = enabledChainSlugs();
   const listed = chainDescriptionText();
-  return z4.enum(slugs, {
+  return z5.enum(slugs, {
     errorMap: () => ({ message: `chain must be one of ${listed}` })
   }).describe(description ?? `"${listed}"`);
 }
 
 // src/cluster-read.ts
-import { z as z5 } from "zod";
+import { z as z6 } from "zod";
 
 // src/token-clusters.ts
 var CLUSTER_REASONS = [
@@ -5112,8 +5169,8 @@ function updateAvailable() {
 // src/cluster-read.ts
 var CLUSTER_READ_TIMEOUT_MS = 12000;
 var tokenClustersShape = {
-  mint: z5.string().min(1).describe("Solana token mint"),
-  chain: z5.enum(["solana", "hood"]).optional().describe('Default "solana". Hood is not covered and returns reason unsupported_chain')
+  mint: z6.string().min(1).describe("Solana token mint"),
+  chain: z6.enum(["solana", "hood"]).optional().describe('Default "solana". Hood is not covered and returns reason unsupported_chain')
 };
 var CLUSTER_READ_DESCRIPTION = "Optional third-party cluster analysis for a Solana token: groups of linked wallets and the share of supply " + "they hold. No key needed. Always returns a result, never an error. status 'available' carries label, caveat, " + "fetchedAt, expiresAt and analysis { clusterSupplyPct, clusters[{ supplyPct, addresses, tags }] }. status " + "'unavailable' carries reason and message 'Cluster analysis not available for this token', with retryAt when a " + "retry time is known; most tokens are unavailable, and unavailable is not zero clustered supply or a clean bill " + "of health. These are third-party estimates: exchange, pool and service wallets may be grouped together, and " + "the figures do not establish common ownership, insider conduct or wrongdoing. Report the caveat with any " + "figure. Keep them separate from candle_token_forensics; never combine the two into one score.";
 async function readTokenClusters(args, cfg, doFetch) {
@@ -5172,44 +5229,6 @@ function percentOfBalance(balanceRaw, percent) {
     throw new Error(`${percent}% of the balance ${balanceRaw} floors to zero raw units; nothing to sell`);
   }
   return result.toString();
-}
-
-// src/hide.ts
-import { z as z6 } from "zod";
-var HIDE_NOT_CONFIRMED = "HIDE_NOT_CONFIRMED";
-function isHideFlag(value) {
-  return value === true || value === "true" || value === 1 || value === "1";
-}
-function hideField(value) {
-  return isHideFlag(value) ? { hide: true } : {};
-}
-var hideSchema = z6.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, z6.boolean().optional().describe("Keep this order out of the public activity stream. Sent only when true. The API confirms it; " + "a result without that confirmation is an error, because an API that does not know `hide` " + "would place the order publicly. Hidden orders still count in this key's own record. " + "A refusal means the API has not enabled hide yet: nothing was placed."));
-function hideEchoed(body) {
-  return typeof body === "object" && body !== null && body.hide === true;
-}
-function hideEchoedText(text) {
-  try {
-    return hideEchoed(JSON.parse(text));
-  } catch {
-    return false;
-  }
-}
-function hideNotConfirmedMessage(what) {
-  return `${HIDE_NOT_CONFIRMED}: ${what} asked for hide, but the API did not confirm it. Its server may predate hide, ` + "so the order may have been placed publicly. Read the order back before sending another.";
-}
-function hideUnsupportedByDryRunMessage(what) {
-  return `${HIDE_NOT_CONFIRMED}: ${what} asked for hide, but the API's dry run did not confirm it. ` + "Its server has not enabled hide yet. The dry run published nothing and no launch was sent; " + "retry without hide, or after the API enables it.";
-}
-function missingHideEcho(asked, text, what) {
-  if (!asked)
-    return;
-  let body;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    body = undefined;
-  }
-  return hideEchoed(body) ? undefined : hideNotConfirmedMessage(what);
 }
 
 // src/image.ts

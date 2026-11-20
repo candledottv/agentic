@@ -22,6 +22,7 @@ export function tpslTermsFixture(opts: {
   signature: string
   leg: "tp" | "sl"
   replace?: boolean
+  echoHide?: boolean
 }) {
   const coin = "xyz:TSLA"
   const oldCloid = `0x${"4".repeat(32)}`
@@ -89,6 +90,7 @@ export function tpslTermsFixture(opts: {
         nonce,
         action,
         typedData: hyperliquidL1TypedData(hyperliquidActionHash(action, nonce), "mainnet"),
+        ...(!cancel && opts.echoHide ? { hide: true } : {}),
         preview: { coin, terms: TPSL_TERMS, builderFeeTenthsBps: 100 },
       }
     }

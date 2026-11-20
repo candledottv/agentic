@@ -11,7 +11,7 @@ import {
   hyperliquidL1TypedData,
 } from "./hyperliquid"
 import type { FetchLike } from "./orchestrate"
-import { executePerps } from "./perps"
+import { executePerps, perpsShapes } from "./perps"
 import { registerToolSubset } from "./tools"
 import { TPSL_TERMS, tpslTermsFixture } from "./tpsl-terms.fixture"
 
@@ -196,6 +196,39 @@ describe("MCP builder TP/SL disclosures", () => {
       }
     }
   }
+})
+
+test.each(["replacement", "removal"] as const)("MCP TP/SL hide accepts a plain cancel for %s", async (operation) => {
+  const f = tpslTermsFixture({
+    walletId: "wallet",
+    address: ADDRESS,
+    builder: BUILDER,
+    signature: SIGNATURE,
+    leg: "tp",
+    replace: true,
+    echoHide: true,
+  })
+  const fetcher: FetchLike = async (url, init) => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify(f.route(url, init?.body ? JSON.parse(String(init.body)) : undefined)),
+  })
+  const change = operation === "replacement" ? { takeProfit: f.triggerPx } : { removeTp: true }
+  const result = await executePerps(
+    "candle_perps_tpsl",
+    { coin: "xyz:TSLA", ...change, hide: true },
+    cfg,
+    env(),
+    fetcher,
+  )
+  expect(result.isError).toBeUndefined()
+  expect(JSON.parse(result.text)).toMatchObject({ complete: true })
+  const builds = f.calls.filter((call) => call.url.endsWith("/perps/tpsl"))
+  expect(builds[0]?.body).toMatchObject({ operation: "cancel" })
+  expect(builds[0]?.body).not.toHaveProperty("hide")
+  expect(builds).toHaveLength(operation === "replacement" ? 2 : 1)
+  if (operation === "replacement") expect(builds[1]?.body).toMatchObject({ operation: "attach", hide: true })
+  expect(f.events.filter((event) => event === "sign")).toHaveLength(builds.length)
 })
 
 describe("the release builder pin", () => {
@@ -804,4 +837,41 @@ test("BE-3408: a lost embedded build answer retains the generated retry id", asy
     exchangeBody: null,
   })
   expect(clientId).toMatch(/^0x[0-9a-f]{32}$/)
+})
+
+describe("BE-3996: hide on perps orders", () => {
+  test("open sends hide: true only when asked; an echoed build is signed and submitted", async () => {
+    const f = fake({ build: { ...build(order()), hide: true } })
+    const result = await executePerps("candle_perps_open", { ...OPEN, hide: true }, cfg, env(), f.fetch)
+    expect(result.isError).toBeUndefined()
+    expect(f.calls[1]?.body).toEqual({ walletId: "wallet", ...OPEN, hide: true, type: "market" })
+    expect(f.calls.at(-1)?.url).toBe("https://api.hyperliquid.xyz/exchange")
+
+    for (const hide of [false, "false", undefined]) {
+      const plain = fake()
+      await executePerps("candle_perps_open", { ...OPEN, hide }, cfg, env(), plain.fetch)
+      expect(plain.calls[1]?.body).not.toHaveProperty("hide")
+    }
+  })
+
+  test("a build without the hide echo is refused before the relay, for open, close and modify", async () => {
+    const cases: [string, Record<string, unknown>][] = [
+      ["candle_perps_open", OPEN],
+      ["candle_perps_close", { coin: "BTC", size: "0.5" }],
+      ["candle_perps_modify", { cloid: `0x${"1".repeat(32)}`, price: "60000" }],
+    ]
+    for (const [tool, args] of cases) {
+      const f = fake()
+      const result = await executePerps(tool as never, { ...args, hide: true }, cfg, env(), f.fetch)
+      expect(result.isError).toBe(true)
+      expect(JSON.parse(result.text).error.code).toBe("HIDE_NOT_CONFIRMED")
+      expect(f.calls.some((c) => c.url.endsWith("/sign") || c.url.endsWith("/exchange"))).toBe(false)
+    }
+  })
+
+  test("the open, close, modify and tpsl tool shapes accept hide", () => {
+    for (const tool of ["candle_perps_open", "candle_perps_close", "candle_perps_modify", "candle_perps_tpsl"] as const)
+      expect(perpsShapes[tool]).toHaveProperty("hide")
+    expect(perpsShapes.candle_perps_cancel).not.toHaveProperty("hide")
+  })
 })

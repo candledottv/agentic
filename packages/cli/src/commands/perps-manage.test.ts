@@ -357,6 +357,45 @@ describe("plans", () => {
     })
   })
 
+  test.each(["replacement", "removal"] as const)("tpsl --hide accepts a plain cancel for %s", async (operation) => {
+    const oldOrder = {
+      coin: "BTC",
+      oid: 77,
+      cloid: CLOID,
+      side: "A",
+      sz: "0.5",
+      limitPx: "61750",
+      triggerPx: "65000",
+      reduceOnly: true,
+      isTrigger: true,
+      orderType: "Take Profit Market",
+    }
+    const f = await fixture({
+      venue: { positions: [{ coin: "BTC", szi: "0.5" }], orders: [oldOrder] },
+      build: (path, body) => {
+        if (body === undefined) return { coin: "BTC", tracked: [{ ...oldOrder, leg: "tp" }], unowned: [] }
+        if (body.operation === "cancel") return stamp({ type: "cancel", cancels: [{ a: 0, o: oldOrder.oid }] })
+        return { ...tpslBuild(path, body), hide: true }
+      },
+      exchange: (action) => {
+        if (action.type === "cancel") {
+          f.venue.orders = []
+          return Response.json({ status: "ok", response: { type: "cancel", data: { statuses: ["success"] } } })
+        }
+        return Response.json({ status: "ok", response: { type: "order", data: { statuses: ["waitingForTrigger"] } } })
+      },
+    })
+    const change = operation === "replacement" ? ["--take-profit", "66000"] : ["--remove-tp"]
+    expect(await run(["perps", "tpsl", "BTC", ...change, "--hide", "--yes", "--json"], f.deps)).toBe(0)
+    const builds = f.candle().filter((call) => call.method === "POST" && call.path.endsWith("/perps/tpsl"))
+    expect(builds[0]?.body).toMatchObject({ operation: "cancel", targetCloid: CLOID })
+    expect(builds[0]?.body).not.toHaveProperty("hide")
+    expect(builds).toHaveLength(operation === "replacement" ? 2 : 1)
+    if (operation === "replacement") expect(builds[1]?.body).toMatchObject({ operation: "attach", hide: true })
+    expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ complete: true })
+    expect(f.candle().filter((call) => call.path.endsWith("/sign"))).toHaveLength(builds.length)
+  })
+
   test("BE-3755: tpsl shows the build's dex terms and the above-2x fee warning before signing, --yes included", async () => {
     const terms = {
       dex: "xyz",

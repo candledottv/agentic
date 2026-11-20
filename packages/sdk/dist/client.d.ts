@@ -2765,6 +2765,12 @@ export interface PerpsOpenParams extends PerpsWalletRef {
      * submits, so a build-only first call stays unsubmitted. Use a new id for a genuinely new order.
      */
     clientId?: string;
+    /**
+     * BE-3996 (BE-3769): keep this order's fills out of the public activity stream. Sent as
+     * `hide: true` only when true. Fail closed: the build must echo `hide: true`, else
+     * `CandleApiError` `HIDE_NOT_CONFIRMED` and nothing is signed or submitted.
+     */
+    hide?: boolean;
 }
 export interface PerpsCloseParams extends PerpsWalletRef {
     coin: string;
@@ -2780,6 +2786,12 @@ export interface PerpsCloseParams extends PerpsWalletRef {
     slippageBps?: number;
     /** Optional client order id, as on `PerpsOpenParams.clientId`. */
     clientId?: string;
+    /**
+     * BE-3996 (BE-3769): keep this order's fills out of the public activity stream. Sent as
+     * `hide: true` only when true. Fail closed: the build must echo `hide: true`, else
+     * `CandleApiError` `HIDE_NOT_CONFIRMED` and nothing is signed or submitted.
+     */
+    hide?: boolean;
 }
 export interface PerpsCancelParams extends PerpsWalletRef {
     /** The cloid of an order Candle built (an open, or one of its take-profit / stop-loss legs). */
@@ -2790,6 +2802,12 @@ export interface PerpsModifyParams extends PerpsWalletRef {
     price?: string;
     size?: string;
     slippageBps?: number;
+    /**
+     * BE-3996 (BE-3769): keep this order's fills (a hidden target stays hidden whatever this says) out of the public activity stream. Sent as
+     * `hide: true` only when true. Fail closed: the build must echo `hide: true`, else
+     * `CandleApiError` `HIDE_NOT_CONFIRMED` and nothing is signed or submitted.
+     */
+    hide?: boolean;
 }
 export interface PerpsLeverageParams extends PerpsWalletRef {
     coin: string;
@@ -5269,7 +5287,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.29";
+export declare const SDK_VERSION = "0.6.30";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

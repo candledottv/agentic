@@ -821,3 +821,56 @@ describe("BE-3408 embedded rail", () => {
     }
   })
 })
+
+describe("BE-3996: hide on perps orders", () => {
+  test("open sends hide: true only when asked, and an echoed build is signed and submitted", async () => {
+    const build = { ...orderBuild(), hide: true }
+    const { client: c, calls } = await client([
+      json(200, build),
+      market(),
+      json(200, { success: true, signature: SIGNATURE }),
+      json(200, { status: "ok", response: { type: "order", data: { statuses: [{ filled: { oid: 1 } }] } } }),
+    ])
+    const result = await c.perpsOpen({ ...OPEN, hide: true })
+    expect(calls[0]?.body).toEqual({ walletId: WALLET, coin: "BTC", side: "long", size: "0.01", hide: true })
+    expect(result).toMatchObject({ submitted: true })
+  })
+
+  test("hide: false and an omitted hide leave the body without the key", async () => {
+    for (const hide of [false, undefined]) {
+      const { client: c, calls } = await client([json(200, orderBuild()), market()])
+      await c.perpsOpen({ ...OPEN, hide, submit: false })
+      expect(calls[0]?.body).not.toHaveProperty("hide")
+    }
+  })
+
+  test("a build without the hide echo is refused before the venue read, the relay or the exchange", async () => {
+    const { client: c, calls } = await client([json(200, orderBuild())])
+    await expect(c.perpsOpen({ ...OPEN, hide: true })).rejects.toMatchObject({ code: "HIDE_NOT_CONFIRMED" })
+    expect(calls).toHaveLength(1)
+  })
+
+  test("close and modify send hide and refuse a missing echo the same way", async () => {
+    const close = await client([json(200, orderBuild())])
+    await expect(close.client.perpsClose({ ...OPEN, hide: true })).rejects.toMatchObject({
+      code: "HIDE_NOT_CONFIRMED",
+    })
+    expect(close.calls[0]?.url).toBe("https://api.test/api/v1/agent/perps/close")
+    expect(close.calls[0]?.body).toMatchObject({ hide: true })
+    expect(close.calls).toHaveLength(1)
+
+    const modify = await client([json(200, orderBuild())])
+    await expect(
+      modify.client.perpsModify({ walletId: WALLET, cloid: `0x${"1".repeat(32)}`, price: "60000", hide: true }),
+    ).rejects.toMatchObject({ code: "HIDE_NOT_CONFIRMED" })
+    expect(modify.calls[0]?.url).toBe("https://api.test/api/v1/agent/perps/modify")
+    expect(modify.calls[0]?.body).toMatchObject({ hide: true })
+    expect(modify.calls).toHaveLength(1)
+  })
+
+  test("an unreadable hide is a validation error before any request", async () => {
+    const { client: c, calls } = await client([])
+    await expect(c.perpsOpen({ ...OPEN, hide: "maybe" as never })).rejects.toMatchObject({ code: "VALIDATION_FAILED" })
+    expect(calls).toHaveLength(0)
+  })
+})

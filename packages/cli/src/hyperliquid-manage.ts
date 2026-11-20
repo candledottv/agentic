@@ -155,6 +155,12 @@ async function runStep(
     step.detail = `${errorCode(err)}: ${errorText(err)}`
     return false
   }
+  if (body.hide === true && build.hide !== true) {
+    // An API that predates hide (or has it off) would place this order publicly: sign nothing.
+    step.status = "rejected"
+    step.detail = "HIDE_NOT_CONFIRMED: the API did not echo hide: true. This step was not signed."
+    return false
+  }
   if (build.preview && typeof build.preview === "object" && !Array.isArray(build.preview)) {
     step.preview = build.preview as PerpsWorkflowPreview
     const warning = step.preview.terms?.feeWarning
@@ -263,6 +269,11 @@ export interface PerpsTpslParams {
   /** Which tracked leg to change or remove when more than one matches. */
   targetTp?: string
   targetSl?: string
+  /**
+   * Keep newly attached protection's fills out of the public activity stream (BE-3769).
+   * A hidden attach must echo `hide: true` before the client signs it.
+   */
+  hide?: boolean
 }
 
 const DECIMAL_RE = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/
@@ -278,6 +289,7 @@ export function perpsTpslParamsProblem(p: PerpsTpslParams): string | null {
   ] as const)
     if (value !== undefined && (typeof value !== "string" || !DECIMAL_RE.test(value) || /^0+(\.0+)?$/.test(value)))
       return `${field} must be a positive decimal`
+  if (p.hide !== undefined && typeof p.hide !== "boolean") return "hide must be true or false"
   if (p.takeProfit !== undefined && p.removeTp) return "cannot set and remove the take-profit together"
   if (p.stopLoss !== undefined && p.removeSl) return "cannot set and remove the stop-loss together"
   if (p.takeProfit === undefined && p.stopLoss === undefined && !p.removeTp && !p.removeSl)
@@ -496,6 +508,7 @@ export async function runPerpsTpsl(io: PerpsWorkflowIo, params: PerpsTpslParams)
           coin,
           operation: "attach",
           leg: plan.leg,
+          ...(params.hide === true ? { hide: true } : {}),
           triggerPx: plan.triggerPx,
           workflowId,
           workflowStep: plan.attach.step,

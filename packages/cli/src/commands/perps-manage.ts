@@ -62,7 +62,7 @@ function usage(ctx: CommandContext, line: string): number {
 // ── modify ───────────────────────────────────────────────────────────────────────────────────
 
 const MODIFY_USAGE =
-  "Usage: candle perps modify --cloid <0x+32 hex> [--price <px>] [--size <n>] [--slippage-bps <n>] [--wallet <tee>] [--yes]"
+  "Usage: candle perps modify --cloid <0x+32 hex> [--price <px>] [--size <n>] [--slippage-bps <n>] [--hide] [--wallet <tee>] [--yes]"
 
 /**
  * Change a resting order Candle built: its price, its size, or both. The replacement keeps the
@@ -72,7 +72,7 @@ const MODIFY_USAGE =
 export async function perpsModify(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
     valueFlags: ["--wallet", "--cloid", "--price", "--size", "--slippage-bps"],
-    booleanFlags: WRITE_BOOLEANS,
+    booleanFlags: [...WRITE_BOOLEANS, "--hide"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const { values } = parsed
@@ -91,6 +91,7 @@ export async function perpsModify(args: string[], ctx: CommandContext): Promise<
     ...(values["--price"] !== undefined ? { price: values["--price"] } : {}),
     ...(values["--size"] !== undefined ? { size: values["--size"] } : {}),
     ...(slippageBps !== undefined ? { slippageBps } : {}),
+    ...(parsed.booleans.has("--hide") ? { hide: true } : {}),
   }
   try {
     return await runPerpsWrite(ctx, {
@@ -315,7 +316,7 @@ function workflowFailure(ctx: CommandContext, error: unknown): number {
 }
 
 const TPSL_USAGE =
-  "Usage: candle perps tpsl <coin> [--take-profit <px>] [--stop-loss <px>] [--remove-tp] [--remove-sl] [--target-tp <cloid>] [--target-sl <cloid>] [--wallet <tee>] [--yes]"
+  "Usage: candle perps tpsl <coin> [--take-profit <px>] [--stop-loss <px>] [--remove-tp] [--remove-sl] [--target-tp <cloid>] [--target-sl <cloid>] [--hide] [--wallet <tee>] [--yes]"
 
 /**
  * Attach, change or remove the position's take-profit and stop-loss. Each leg is a reducing market
@@ -327,7 +328,7 @@ const TPSL_USAGE =
 export async function perpsTpsl(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
     valueFlags: ["--wallet", "--take-profit", "--stop-loss", "--target-tp", "--target-sl"],
-    booleanFlags: [...WRITE_BOOLEANS, "--remove-tp", "--remove-sl"],
+    booleanFlags: [...WRITE_BOOLEANS, "--remove-tp", "--remove-sl", "--hide"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [coin] = parsed.positionals
@@ -339,6 +340,7 @@ export async function perpsTpsl(args: string[], ctx: CommandContext): Promise<nu
     ...(values["--stop-loss"] !== undefined ? { stopLoss: values["--stop-loss"] } : {}),
     ...(booleans.has("--remove-tp") ? { removeTp: true } : {}),
     ...(booleans.has("--remove-sl") ? { removeSl: true } : {}),
+    ...(booleans.has("--hide") ? { hide: true } : {}),
     ...(values["--target-tp"] !== undefined ? { targetTp: values["--target-tp"].toLowerCase() } : {}),
     ...(values["--target-sl"] !== undefined ? { targetSl: values["--target-sl"].toLowerCase() } : {}),
   }

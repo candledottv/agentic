@@ -28,6 +28,7 @@ import { createPrivateKey, randomBytes, sign } from "node:crypto"
 import { readFile } from "node:fs/promises"
 import { z } from "zod"
 import type { RequestConfig } from "./client"
+import { hideEchoed, hideNotConfirmedMessage, hideSchema, isHideFlag } from "./hide"
 import {
   HYPERLIQUID_EXCHANGE_URLS,
   HYPERLIQUID_STANDARD_ACCOUNT_MODES,
@@ -139,6 +140,7 @@ export const perpsShapes = {
     takeProfit: decimal.optional().describe("Reduce-only take-profit trigger price"),
     stopLoss: decimal.optional().describe("Reduce-only stop-loss trigger price"),
     clientId,
+    hide: hideSchema,
     wallet,
     submit,
   },
@@ -154,6 +156,7 @@ export const perpsShapes = {
       ),
     slippageBps: z.number().int().min(1).optional(),
     clientId,
+    hide: hideSchema,
     wallet,
     submit,
   },
@@ -189,6 +192,7 @@ export const perpsShapes = {
     price: decimal.optional().describe("New limit price; the order's own when omitted"),
     size: decimal.optional().describe("New size; the order's own when omitted"),
     slippageBps: z.number().int().min(1).optional(),
+    hide: hideSchema,
     wallet,
     submit,
   },
@@ -223,6 +227,7 @@ export const perpsShapes = {
       .regex(/^0x[0-9a-fA-F]{32}$/)
       .optional()
       .describe("Which stop-loss, when several match"),
+    hide: hideSchema,
     wallet,
     submit: submit.describe(
       "false: build and check only the first step (cancel for a replacement), returning steps[].preview.terms and fee warnings without signing or submitting",
@@ -430,9 +435,17 @@ export async function executePerps(
 
     // A write. Inputs are checked first, then the signer, both before any build, so a request that
     // cannot be signed stamps nothing.
-    const { wallet: _w, submit: _s, ...rest } = args
+    const { wallet: _w, submit: _s, hide: hideArg, ...rest } = args
+    // BE-3996: sent as `hide: true` only when asked, so no other body carries the word.
+    const hide =
+      isHideFlag(hideArg) &&
+      ["candle_perps_open", "candle_perps_close", "candle_perps_modify", "candle_perps_tpsl"].includes(tool)
     let clientId = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined
-    let fields: Record<string, unknown> = { ...rest, ...(clientId !== undefined ? { clientId } : {}) }
+    let fields: Record<string, unknown> = {
+      ...rest,
+      ...(clientId !== undefined ? { clientId } : {}),
+      ...(hide ? { hide: true } : {}),
+    }
     let path = PATHS[tool]
     let method = path.split("/").at(-1) as PerpsIntentMethod
     if (tool === "candle_perps_close") {
@@ -597,6 +610,10 @@ export async function executePerps(
         ),
       )
     }
+    // BE-3996: `hide` fails closed. An API that predates it would place the order publicly, so a
+    // build without the `hide: true` echo is refused before anything is signed or submitted.
+    if (hide && !hideEchoed(build))
+      return fail("HIDE_NOT_CONFIRMED", hideNotConfirmedMessage(tool), { clientId: clientId ?? null })
     build.preview = {
       ...(build.preview as Record<string, unknown> | undefined),
       builderTrust: {

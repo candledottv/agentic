@@ -2934,6 +2934,12 @@ export interface PerpsOpenParams extends PerpsWalletRef {
    * submits, so a build-only first call stays unsubmitted. Use a new id for a genuinely new order.
    */
   clientId?: string
+  /**
+   * BE-3996 (BE-3769): keep this order's fills out of the public activity stream. Sent as
+   * `hide: true` only when true. Fail closed: the build must echo `hide: true`, else
+   * `CandleApiError` `HIDE_NOT_CONFIRMED` and nothing is signed or submitted.
+   */
+  hide?: boolean
 }
 
 export interface PerpsCloseParams extends PerpsWalletRef {
@@ -2950,6 +2956,12 @@ export interface PerpsCloseParams extends PerpsWalletRef {
   slippageBps?: number
   /** Optional client order id, as on `PerpsOpenParams.clientId`. */
   clientId?: string
+  /**
+   * BE-3996 (BE-3769): keep this order's fills out of the public activity stream. Sent as
+   * `hide: true` only when true. Fail closed: the build must echo `hide: true`, else
+   * `CandleApiError` `HIDE_NOT_CONFIRMED` and nothing is signed or submitted.
+   */
+  hide?: boolean
 }
 
 export interface PerpsCancelParams extends PerpsWalletRef {
@@ -2962,6 +2974,12 @@ export interface PerpsModifyParams extends PerpsWalletRef {
   price?: string
   size?: string
   slippageBps?: number
+  /**
+   * BE-3996 (BE-3769): keep this order's fills (a hidden target stays hidden whatever this says) out of the public activity stream. Sent as
+   * `hide: true` only when true. Fail closed: the build must echo `hide: true`, else
+   * `CandleApiError` `HIDE_NOT_CONFIRMED` and nothing is signed or submitted.
+   */
+  hide?: boolean
 }
 
 export interface PerpsLeverageParams extends PerpsWalletRef {
@@ -7135,19 +7153,22 @@ export class CandleClient {
   async perpsOpen(params: PerpsOpenParams): Promise<PerpsActionResult | PerpsReplayResult> {
     this.requireKey("perpsOpen()")
     this.perpsBuilder()
-    const { walletId, privyWalletId: _p, submit: _s, ...order } = params
+    const { walletId, privyWalletId: _p, submit: _s, hide, ...order } = params
+    const hidden = hideRequested(hide)
     const clientId = perpsClientId(
       params.clientId ?? (params.walletId === "embedded" ? `0x${crypto.randomUUID().replaceAll("-", "")}` : undefined),
     )
     const build = await this.requestJson<PerpsBuild | PerpsReplay>("POST", "/api/v1/agent/perps/open", {
       walletId,
       ...order,
+      ...hideField(hidden),
       ...(clientId !== undefined ? { clientId } : {}),
     }).catch((error: unknown) => {
       if (walletId === "embedded" && (!(error instanceof CandleApiError) || error.status >= 500))
         throw new PerpsMaybeLanded(clientId ?? null, clientId ?? null, null)
       throw error
     })
+    assertHideEchoed(hidden, build, "perpsOpen()")
     const replay =
       walletId === "embedded" && "signature" in build && build.signature
         ? null
@@ -7164,19 +7185,22 @@ export class CandleClient {
     if (params.pct !== undefined && params.size !== undefined)
       throw new Error("perpsClose(): give a size or a pct, not both")
     this.perpsBuilder()
-    const { walletId, privyWalletId: _p, submit: _s, ...close } = params
+    const { walletId, privyWalletId: _p, submit: _s, hide, ...close } = params
+    const hidden = hideRequested(hide)
     const clientId = perpsClientId(
       params.clientId ?? (params.walletId === "embedded" ? `0x${crypto.randomUUID().replaceAll("-", "")}` : undefined),
     )
     const build = await this.requestJson<PerpsBuild | PerpsReplay>("POST", "/api/v1/agent/perps/close", {
       walletId,
       ...close,
+      ...hideField(hidden),
       ...(clientId !== undefined ? { clientId } : {}),
     }).catch((error: unknown) => {
       if (walletId === "embedded" && (!(error instanceof CandleApiError) || error.status >= 500))
         throw new PerpsMaybeLanded(clientId ?? null, clientId ?? null, null)
       throw error
     })
+    assertHideEchoed(hidden, build, "perpsClose()")
     const replay =
       walletId === "embedded" && "signature" in build && build.signature
         ? null
@@ -7200,8 +7224,14 @@ export class CandleClient {
   async perpsModify(params: PerpsModifyParams): Promise<PerpsActionResult> {
     this.requireKey("perpsModify()")
     this.perpsBuilder()
-    const { walletId, privyWalletId: _p, submit: _s, ...modify } = params
-    const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/modify", { walletId, ...modify })
+    const { walletId, privyWalletId: _p, submit: _s, hide, ...modify } = params
+    const hidden = hideRequested(hide)
+    const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/modify", {
+      walletId,
+      ...modify,
+      ...hideField(hidden),
+    })
+    assertHideEchoed(hidden, build, "perpsModify()")
     return this.perpsComplete(build, params, "modify")
   }
 
@@ -7870,8 +7900,11 @@ export class CandleClient {
     options: { reviewBuild?: PerpsBuildReview } = {},
   ): Promise<PerpsWorkflowResult> {
     this.requireKey("perpsTpsl()")
-    const { walletId, privyWalletId: _p, submit: _s, ...tpsl } = params
-    return runPerpsTpsl(await this.perpsWorkflowIo(params, options.reviewBuild), tpsl)
+    const { walletId, privyWalletId: _p, submit: _s, hide, ...tpsl } = params
+    return runPerpsTpsl(await this.perpsWorkflowIo(params, options.reviewBuild), {
+      ...tpsl,
+      ...(hideRequested(hide) ? { hide: true } : {}),
+    })
   }
 
   /**
@@ -8499,7 +8532,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.29"
+export const SDK_VERSION = "0.6.30"
 
 let sdkUpdateWarned = false
 

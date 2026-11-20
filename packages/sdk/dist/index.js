@@ -2627,6 +2627,11 @@ async function runStep(io, step, warnings, path, body, intent) {
     step.detail = `${errorCode(err)}: ${errorText(err)}`;
     return false;
   }
+  if (body.hide === true && build.hide !== true) {
+    step.status = "rejected";
+    step.detail = "HIDE_NOT_CONFIRMED: the API did not echo hide: true. This step was not signed.";
+    return false;
+  }
   if (build.preview && typeof build.preview === "object" && !Array.isArray(build.preview)) {
     step.preview = build.preview;
     const warning = step.preview.terms?.feeWarning;
@@ -2733,6 +2738,8 @@ function perpsTpslParamsProblem(p) {
   ])
     if (value !== undefined && (typeof value !== "string" || !DECIMAL_RE.test(value) || /^0+(\.0+)?$/.test(value)))
       return `${field} must be a positive decimal`;
+  if (p.hide !== undefined && typeof p.hide !== "boolean")
+    return "hide must be true or false";
   if (p.takeProfit !== undefined && p.removeTp)
     return "cannot set and remove the take-profit together";
   if (p.stopLoss !== undefined && p.removeSl)
@@ -2893,6 +2900,7 @@ async function runPerpsTpsl(io, params) {
         coin,
         operation: "attach",
         leg: plan.leg,
+        ...params.hide === true ? { hide: true } : {},
         triggerPx: plan.triggerPx,
         workflowId,
         workflowStep: plan.attach.step
@@ -7551,17 +7559,20 @@ class CandleClient {
   async perpsOpen(params) {
     this.requireKey("perpsOpen()");
     this.perpsBuilder();
-    const { walletId, privyWalletId: _p, submit: _s, ...order } = params;
+    const { walletId, privyWalletId: _p, submit: _s, hide, ...order } = params;
+    const hidden = hideRequested(hide);
     const clientId = perpsClientId(params.clientId ?? (params.walletId === "embedded" ? `0x${crypto.randomUUID().replaceAll("-", "")}` : undefined));
     const build = await this.requestJson("POST", "/api/v1/agent/perps/open", {
       walletId,
       ...order,
+      ...hideField(hidden),
       ...clientId !== undefined ? { clientId } : {}
     }).catch((error) => {
       if (walletId === "embedded" && (!(error instanceof CandleApiError) || error.status >= 500))
         throw new PerpsMaybeLanded(clientId ?? null, clientId ?? null, null);
       throw error;
     });
+    assertHideEchoed(hidden, build, "perpsOpen()");
     const replay = walletId === "embedded" && "signature" in build && build.signature ? null : perpsReplayOf(build, walletId, clientId);
     if (replay)
       return replay;
@@ -7572,17 +7583,20 @@ class CandleClient {
     if (params.pct !== undefined && params.size !== undefined)
       throw new Error("perpsClose(): give a size or a pct, not both");
     this.perpsBuilder();
-    const { walletId, privyWalletId: _p, submit: _s, ...close } = params;
+    const { walletId, privyWalletId: _p, submit: _s, hide, ...close } = params;
+    const hidden = hideRequested(hide);
     const clientId = perpsClientId(params.clientId ?? (params.walletId === "embedded" ? `0x${crypto.randomUUID().replaceAll("-", "")}` : undefined));
     const build = await this.requestJson("POST", "/api/v1/agent/perps/close", {
       walletId,
       ...close,
+      ...hideField(hidden),
       ...clientId !== undefined ? { clientId } : {}
     }).catch((error) => {
       if (walletId === "embedded" && (!(error instanceof CandleApiError) || error.status >= 500))
         throw new PerpsMaybeLanded(clientId ?? null, clientId ?? null, null);
       throw error;
     });
+    assertHideEchoed(hidden, build, "perpsClose()");
     const replay = walletId === "embedded" && "signature" in build && build.signature ? null : perpsReplayOf(build, walletId, clientId);
     if (replay)
       return replay;
@@ -7600,8 +7614,14 @@ class CandleClient {
   async perpsModify(params) {
     this.requireKey("perpsModify()");
     this.perpsBuilder();
-    const { walletId, privyWalletId: _p, submit: _s, ...modify } = params;
-    const build = await this.requestJson("POST", "/api/v1/agent/perps/modify", { walletId, ...modify });
+    const { walletId, privyWalletId: _p, submit: _s, hide, ...modify } = params;
+    const hidden = hideRequested(hide);
+    const build = await this.requestJson("POST", "/api/v1/agent/perps/modify", {
+      walletId,
+      ...modify,
+      ...hideField(hidden)
+    });
+    assertHideEchoed(hidden, build, "perpsModify()");
     return this.perpsComplete(build, params, "modify");
   }
   async perpsLeverage(params) {
@@ -8043,8 +8063,11 @@ class CandleClient {
   }
   async perpsTpsl(params, options = {}) {
     this.requireKey("perpsTpsl()");
-    const { walletId, privyWalletId: _p, submit: _s, ...tpsl } = params;
-    return runPerpsTpsl(await this.perpsWorkflowIo(params, options.reviewBuild), tpsl);
+    const { walletId, privyWalletId: _p, submit: _s, hide, ...tpsl } = params;
+    return runPerpsTpsl(await this.perpsWorkflowIo(params, options.reviewBuild), {
+      ...tpsl,
+      ...hideRequested(hide) ? { hide: true } : {}
+    });
   }
   async perpsFlatten(params) {
     this.requireKey("perpsFlatten()");
@@ -8496,7 +8519,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.29";
+var SDK_VERSION = "0.6.30";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

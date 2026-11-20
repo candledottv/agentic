@@ -600,6 +600,13 @@ or rebroadcasts. A failed or abandoned build needs a new id after checking the o
 Keep the CLI's `operations` directory with its configuration; deleting it removes the local
 record of an attempt whose request may not have reached the server.
 
+### Hiding Hyperliquid perps orders
+
+In releases that include BE-3996 (#4033), add `--hide` to `candle perps open`, `close`, `modify`
+or `tpsl` to keep that order's fills out of Candle's public activity stream. With `tpsl` the flag
+applies to newly attached protection. The CLI exits 1 with `HIDE_NOT_CONFIRMED` before signing a
+hidden order build if the API does not echo `hide: true`.
+
 ### Hyperliquid per-key PnL
 
 `candle pnl --profile <name>` / SDK `getProfilePnl(keyPrefix)` / MCP `candle_get_profile_pnl`

@@ -313,6 +313,12 @@ them.
 
 The API echoes `hide: true`. A successful response without that echo throws `CandleApiError` with code `HIDE_NOT_CONFIRMED`, before signing wherever the caller signs (linked swap, self launch, atomic build). With the embedded wallet the build is the executed order, so there the error says the order may have been placed publicly. The API rejects `hide` while it is switched off on the server, and currently refuses it on swaps, so `swap()` with `hide` fails until the API supports it. A hidden launch removes Candle's identity layer, but the creator wallet is public on chain.
 
+In SDK releases that include BE-3996 (#4033), pass `hide: true` to `perpsOpen()`, `perpsClose()`,
+`perpsModify()` or `perpsTpsl()` to keep the order's fills out of Candle's public activity stream.
+For TP/SL this applies to newly attached protection. The SDK refuses to sign a hidden order
+build if the API does not echo `hide: true`. A TP/SL plan reports `HIDE_NOT_CONFIRMED` on the
+rejected attach step.
+
 ## Retrying a write that failed or timed out
 
 Six methods send an idempotency id, and generate one (`"sdk-" + crypto.randomUUID()`) when you

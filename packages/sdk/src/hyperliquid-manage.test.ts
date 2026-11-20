@@ -268,11 +268,58 @@ function leg(
 }
 
 describe("TP/SL plans", () => {
+  test("hidden replacement accepts a plain cancel build followed by a hidden attach build", async () => {
+    const w = world()
+    w.positions.set("BTC", "0.5")
+    leg(w, "BTC", "sl", "55000")
+    const echo: PerpsWorkflowIo = {
+      ...w.io,
+      build: async (path, body) => {
+        const build = await w.io.build(path, body)
+        return body.operation === "attach" ? { ...build, hide: true } : build
+      },
+    }
+    const result = await runPerpsTpsl(echo, { coin: "BTC", stopLoss: "56000", hide: true })
+    expect(result.complete).toBe(true)
+    expect(result.steps.map(({ kind, status }) => [kind, status])).toEqual([
+      ["cancel", "confirmed"],
+      ["attach", "confirmed"],
+    ])
+    expect(w.builds[0]?.body).not.toHaveProperty("hide")
+    expect(w.builds[1]?.body).toMatchObject({ operation: "attach", hide: true })
+    expect(w.orders.map((o) => o.triggerPx)).toEqual(["56000"])
+  })
+
+  test("removal with hide completes with only a plain cancel build", async () => {
+    const w = world()
+    w.positions.set("BTC", "0.5")
+    leg(w, "BTC", "sl", "55000")
+    const result = await runPerpsTpsl(w.io, { coin: "BTC", removeSl: true, hide: true })
+    expect(result.complete).toBe(true)
+    expect(result.steps).toEqual([expect.objectContaining({ kind: "cancel", status: "confirmed" })])
+    expect(w.builds).toHaveLength(1)
+    expect(w.builds[0]?.body).not.toHaveProperty("hide")
+    expect(w.orders).toHaveLength(0)
+  })
+
+  test("a replacement rejects the attach without a hide echo after the cancel succeeds", async () => {
+    const w = world()
+    w.positions.set("BTC", "0.5")
+    leg(w, "BTC", "tp", "67000")
+    const result = await runPerpsTpsl(w.io, { coin: "BTC", takeProfit: "66000", hide: true })
+    expect(result.complete).toBe(false)
+    expect(result.steps.map((s) => s.status)).toEqual(["confirmed", "rejected"])
+    expect(result.steps[1]?.detail).toContain("HIDE_NOT_CONFIRMED")
+    expect(w.submitted).toHaveLength(1)
+    expect(w.orders).toHaveLength(0)
+  })
+
   test("attach a new take-profit: one positionTpsl leg, sized to the position", async () => {
     const w = world()
     w.positions.set("BTC", "0.5")
     const result = await runPerpsTpsl(w.io, { coin: "BTC", takeProfit: "66000" })
     expect(result.complete).toBe(true)
+    expect(w.builds[0]?.body).not.toHaveProperty("hide")
     expect(result.steps.map((s) => [s.kind, s.status])).toEqual([["attach", "confirmed"]])
     expect(w.orders).toHaveLength(1)
     expect(w.orders[0]).toMatchObject({ coin: "BTC", sz: "0.5", triggerPx: "66000", orderType: "Take Profit Market" })
@@ -309,8 +356,9 @@ describe("TP/SL plans", () => {
     w.positions.set("BTC", "0.5")
     leg(w, "BTC", "tp", "66000")
     w.fault(1, { kind: "ackButStays" })
-    const result = await runPerpsTpsl(w.io, { coin: "BTC", takeProfit: "67000" })
+    const result = await runPerpsTpsl(w.io, { coin: "BTC", takeProfit: "67000", hide: true })
     expect(result.steps.map((s) => s.status)).toEqual(["unknown", "planned"])
+    expect(w.builds).toHaveLength(1)
     expect(w.submitted).toHaveLength(1)
   })
 

@@ -450,6 +450,13 @@ calls with multi-field zod input shapes coexist in one file, which this package'
 always will. `1.22.0` predates that rewrite and type-checks cleanly with the exact same tool
 code. Re-check this pin when bumping the SDK.
 
+### Hiding Hyperliquid perps orders
+
+In local MCP releases that include BE-3996 (#4033), pass `hide: true` to `candle_perps_open`,
+`candle_perps_close`, `candle_perps_modify` or `candle_perps_tpsl` to keep the order's fills out of
+Candle's public activity stream. For TP/SL this applies to newly attached protection. The client
+reports `HIDE_NOT_CONFIRMED` before signing a hidden order build if the API does not echo `hide: true`.
+
 ### Hyperliquid per-key PnL
 
 `candle pnl --profile <name>` / SDK `getProfilePnl(keyPrefix)` / MCP `candle_get_profile_pnl`
