@@ -32,7 +32,7 @@ import {
 } from "../hood-legs"
 import { writeFields } from "../human-output"
 import { BundleReadError, readLaunchBundle } from "../launch-bundle"
-import { launchCheck } from "../launch-check"
+import { launchCheck, pinnedQuoteEconomics } from "../launch-check"
 import { LAUNCH_DEFINITION } from "../launch-definition"
 import { checkLaunchSignature } from "../launch-landed"
 import { LAUNCH_IMAGE_FLAG, LAUNCH_USAGE, launchFieldProblem, launchFlagFields } from "../launch-options"
@@ -111,6 +111,9 @@ export const LAUNCH_ARG_SPEC: ArgSpec = {
   ],
   pathFlags: ["--image", "--banner", "--allowlist"],
 }
+
+/** A base58 Solana address: the shape of a new quote on Solana. */
+const SOLANA_MINT = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/
 
 /** The launch quote assets by chain, as the server's launch matrix lists them. */
 const QUOTE_CHAIN: Record<string, TradeChain> = LAUNCH_DEFINITION.quoteChains
@@ -261,6 +264,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     return 2
   }
   const selectedQuote = flags["--quote"]?.trim()
+  let newQuoteMint: string | undefined
   if (selectedQuote !== undefined) flags["--quote"] = selectedQuote
   if (selectedQuote !== undefined) {
     if (!selectedQuote.trim() || selectedQuote.length > 120) {
@@ -276,6 +280,19 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         (p.chain === "hood" && p.address.toLowerCase() === selectedQuote.toLowerCase()),
     )
     if (pair) flags["--quote-asset"] = pair.id
+    // BE-3633: a Solana mint that is not a fixed pair is a new quote. The server admits and sizes
+    // it (`--check` shows the same answer); the mint is sent as the quote asset, case intact.
+    else if (SOLANA_MINT.test(selectedQuote)) {
+      if (flags["--buy"]?.trim() && !/^0+(\.0+)?$/.test(flags["--buy"])) {
+        writeUsageFailure(
+          ctx.deps,
+          "--buy is not available on a launch against a new quote yet: launch first, then buy the token with candle swap. Nothing was built.",
+          ctx.json,
+        )
+        return 2
+      }
+      newQuoteMint = selectedQuote
+    }
   }
   if (flags["--quote-asset"]) flags["--quote-asset"] = flags["--quote-asset"].toLowerCase()
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID()}`
@@ -300,6 +317,8 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     writeUsageFailure(ctx.deps, `${curveProblem} ${USAGE}`, ctx.json)
     return 2
   }
+  // BE-3633: set after the listed-pair enum check above, and never lowercased: a mint is case sensitive.
+  if (newQuoteMint !== undefined) flags["--quote-asset"] = newQuoteMint
   // BE-1283: the image is a file on this machine or a hosted URL, exactly one of the two.
   if (flags["--image"] !== undefined && flags["--image-url"] !== undefined) {
     writeUsageFailure(
@@ -371,7 +390,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         ctx,
         new TradingError(
           "QUOTE_LAUNCH_UNAVAILABLE",
-          "New-quote launch execution is not enabled. Run candle launch --quote <symbol|address> --check to inspect admission and economics; nothing was uploaded or built.",
+          "Launching against this quote is not enabled: only a Solana token mint or a listed pair can launch today. Run candle launch --quote <symbol|address> --check to inspect admission and economics; nothing was uploaded or built.",
         ),
       )
     // BE-2519: the fee wallet is Solana only, as the API's parseFeeWallet refuses it on Hood.
@@ -414,6 +433,16 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       }
     }
     const key = await tradingKey(ctx)
+    // BE-3633: a launch against a new quote pins the economics its check shows, read now, before any
+    // upload, build or id claim. The check's lines print so the person sees what is pinned.
+    if (!check && newQuoteMint !== undefined) {
+      const pinned = await pinnedQuoteEconomics(ctx, key, newQuoteMint, {
+        mode: flags["--mode"],
+        stakerAllocationBps: flags["--staker-allocation-bps"],
+      })
+      ctx.deps.stderr.write(`${pinned.lines.join("\n")}\n`)
+      newQuoteDigests.set(flags, pinned.digest)
+    }
     // BE-2139 (surfaces item B): the one preflight call, before any upload, build or id claim.
     if (check)
       return await launchCheck(ctx, key, flags["--wallet"], hinted, feeWallet, {
@@ -740,6 +769,9 @@ function launchMetadataFields(flags: Record<string, string>): Json {
 }
 
 /** The fields the three bodies share: the token, the image, and the curve it launches on. */
+/** The pinned digest per launch invocation, keyed by its flags object (a flag value cannot carry it: it is not user input). */
+const newQuoteDigests = new WeakMap<Record<string, string>, string>()
+
 function launchFields(args: LaunchBodyArgs): Json {
   const { flags } = args
   return {
@@ -750,6 +782,8 @@ function launchFields(args: LaunchBodyArgs): Json {
     ...(args.bannerChecked ? { bannerChecked: true } : args.bannerUrl ? { bannerUrl: args.bannerUrl } : {}),
     ...(flags["--description"] ? { description: flags["--description"] } : {}),
     ...(flags["--mode"] ? { mode: flags["--mode"] } : {}),
+    // BE-3633: a new quote's launch pins the economics its check showed (set once, before any upload).
+    ...(newQuoteDigests.get(flags) ? { economicsDigest: newQuoteDigests.get(flags) } : {}),
     ...launchCurveFields(flags),
     ...launchMetadataFields(flags),
     // Solana graduation choices; a Hood launch refuses these flags before any body is built.
@@ -1403,6 +1437,7 @@ async function embeddedLaunch(
     ...(flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {}),
     ...(flags["--dex-version"] ? { dexVersion: flags["--dex-version"] } : {}),
     ...(flags["--mode"] ? { mode: flags["--mode"] } : {}),
+    ...(newQuoteDigests.get(flags) ? { economicsDigest: newQuoteDigests.get(flags) } : {}),
     ...launchCurveFields(flags),
     ...launchMetadataFields(flags),
     ...poolRequestFields(flags),

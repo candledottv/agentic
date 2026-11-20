@@ -274,3 +274,38 @@ export async function launchCheck(
   else ctx.deps.stdout.write(`${lines.join("\n")}\n`)
   return works ? 0 : 1
 }
+
+/**
+ * BE-3633: the digest a new-quote launch pins. One preflight read of the same check `--check`
+ * prints, run before anything is uploaded or built; the launch body carries the digest back, so the
+ * server deploys the economics shown here or refuses (`QUOTE_ECONOMICS_CHANGED`). A refused or
+ * incomplete check stops the launch with its own lines.
+ */
+export async function pinnedQuoteEconomics(
+  ctx: CommandContext,
+  key: string,
+  quote: string,
+  selection: { mode?: string; stakerAllocationBps?: string },
+): Promise<{ digest: string; lines: string[] }> {
+  const query = new URLSearchParams({ quote, chain: "solana" })
+  if (selection.mode) query.set("mode", selection.mode)
+  if (selection.stakerAllocationBps) query.set("stakerAllocationBps", selection.stakerAllocationBps)
+  const answer = checkSchema.parse(await request(ctx, key, `/api/v1/launch/preflight?${query}`))
+  const checked = answer.quote
+  if (!checked || checked.requested !== quote)
+    throw new TradingError(
+      "QUOTE_CHECK_UNAVAILABLE",
+      "This server did not check the requested quote. Update the server before retrying; nothing was uploaded or built.",
+    )
+  if (!checked.ok || !checked.economics || checked.address !== quote || checked.economics.kind !== "derived")
+    throw new TradingError(
+      "QUOTE_REFUSED",
+      `${launchQuoteLines(checked).join("\n")}\nThe quote check refused this launch. Nothing was uploaded or built.`,
+    )
+  if (!checked.executionEnabled)
+    throw new TradingError(
+      "QUOTE_LAUNCH_UNAVAILABLE",
+      "This server admitted the quote but does not launch against it. Nothing was uploaded or built.",
+    )
+  return { digest: checked.economics.economicsDigest.toLowerCase(), lines: launchQuoteLines(checked) }
+}

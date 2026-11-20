@@ -7,6 +7,8 @@ import { humanText } from "../human-output.test-support"
 import { run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
 
+const DIGEST = `0x${"ab".repeat(32)}`
+const REFUSED_MINT = "So11111111111111111111111111111111111111113"
 const EMBEDDED = "11111111111111111111111111111111"
 const EVM = "0x1111111111111111111111111111111111111111"
 const folders: string[] = []
@@ -77,6 +79,51 @@ async function fixture(
         return sent
           ? Response.json({ success: true, job: { status: "submitted", clientLaunchId: "launch-1" } })
           : Response.json({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, { status: 404 })
+      if (path === "/api/v1/launch/preflight") {
+        // BE-3633: the check a new-quote launch pins. Echoes the requested mint; a test can refuse it.
+        const quote = url.searchParams.get("quote") ?? ""
+        const refuse = url.searchParams.get("quote") === REFUSED_MINT
+        return Response.json({
+          success: true,
+          key: {
+            keyPrefix: "cndl_test",
+            scopes: ["launch:write"],
+            tier: "max",
+            selfLaunch: true,
+            embeddedWalletPermission: "allowed",
+          },
+          switches: { headlessLaunch: true, agentTrading: true, teeLaunchBuys: false },
+          wallets: [],
+          quote: {
+            requested: quote,
+            ok: !refuse,
+            chain: "solana",
+            address: quote,
+            symbol: "BONK",
+            decimals: 6,
+            classification: "ordinary",
+            checks: [
+              refuse
+                ? { check: "liquidity", status: "refuse", code: "QUOTE_TOO_THIN", message: "thin" }
+                : { check: "liquidity", status: "pass", message: "ok" },
+            ],
+            ...(refuse
+              ? {}
+              : {
+                  economics: {
+                    kind: "derived",
+                    economicsDigest: DIGEST,
+                    thresholdRaw: "1000000000",
+                    startFdv: 1,
+                    bondingFdv: 2,
+                    curve: { sqrtStartPrice: "1" },
+                  },
+                }),
+            disclosure: null,
+            executionEnabled: true,
+          },
+        })
+      }
       if (path === "/api/v1/launch/headless/dry-run") {
         if (opts.error) return Response.json({ error: opts.error }, { status: 403 })
         return Response.json({
@@ -336,6 +383,35 @@ describe("embedded launch through headless, with an optional first buy", () => {
       expect(f.operations()).toEqual([])
       expect(json(f.stdout.text)).toMatchObject(extra.length ? { dryRun: true } : { status: "cancelled" })
     }
+  })
+
+  test("BE-3633: --quote <mint> sends the mint, case intact, as the quote asset of the launch", async () => {
+    const NEW_MINT = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+    const f = await fixture()
+    const code = await run([...launchArgs, "--quote", NEW_MINT, "--dry-run"], f.deps)
+    if (code !== 0) throw new Error(f.stdout.text + f.stderr.text)
+    expect(code).toBe(0)
+    const sent = f.calls.find((call) => call.path === "/api/v1/launch/headless/dry-run")?.body
+    // The check's digest is pinned in the body, read before anything was uploaded or built.
+    expect(sent).toMatchObject({ chain: "solana", quoteAsset: NEW_MINT, economicsDigest: DIGEST })
+    expect(f.paths().indexOf("/api/v1/launch/preflight")).toBeLessThan(
+      f.paths().indexOf("/api/v1/launch/headless/dry-run"),
+    )
+    expect(f.paths()).not.toContain("/api/v1/launch/headless")
+  })
+
+  test("BE-3633: a refused quote check stops the launch before any upload, build or id claim", async () => {
+    const f = await fixture()
+    expect(await run([...launchArgs, "--quote", REFUSED_MINT, "--dry-run"], f.deps)).toBe(1)
+    expect(f.paths()).not.toContain("/api/v1/launch/headless/dry-run")
+    expect(f.paths()).not.toContain("/api/v1/launch/headless")
+  })
+
+  test("BE-3633: a first buy against a new quote is refused before any request", async () => {
+    const NEW_MINT = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+    const f = await fixture()
+    expect(await run([...launchArgs, "--quote", NEW_MINT, "--buy", "0.1"], f.deps)).toBe(2)
+    expect(f.calls.filter((call) => call.path.startsWith("/api/v1/launch"))).toEqual([])
   })
 
   test("BE-2668: --dry-run with --image checks the file and uploads nothing", async () => {

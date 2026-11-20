@@ -208,7 +208,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.39";
+var CLI_VERSION = "0.13.40";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
@@ -97832,6 +97832,24 @@ async function launchCheck2(ctx, key, walletFlag, requestedChain, feeWallet = un
 `);
   return works ? 0 : 1;
 }
+async function pinnedQuoteEconomics(ctx, key, quote, selection) {
+  const query3 = new URLSearchParams({ quote, chain: "solana" });
+  if (selection.mode)
+    query3.set("mode", selection.mode);
+  if (selection.stakerAllocationBps)
+    query3.set("stakerAllocationBps", selection.stakerAllocationBps);
+  const answer2 = checkSchema.parse(await request(ctx, key, `/api/v1/launch/preflight?${query3}`));
+  const checked = answer2.quote;
+  if (!checked || checked.requested !== quote)
+    throw new TradingError("QUOTE_CHECK_UNAVAILABLE", "This server did not check the requested quote. Update the server before retrying; nothing was uploaded or built.");
+  if (!checked.ok || !checked.economics || checked.address !== quote || checked.economics.kind !== "derived")
+    throw new TradingError("QUOTE_REFUSED", `${launchQuoteLines(checked).join(`
+`)}
+The quote check refused this launch. Nothing was uploaded or built.`);
+  if (!checked.executionEnabled)
+    throw new TradingError("QUOTE_LAUNCH_UNAVAILABLE", "This server admitted the quote but does not launch against it. Nothing was uploaded or built.");
+  return { digest: checked.economics.economicsDigest.toLowerCase(), lines: launchQuoteLines(checked) };
+}
 
 // src/launch-landed.ts
 var LAUNCH_SIGNATURE_READS = 6;
@@ -97923,6 +97941,7 @@ var LAUNCH_ARG_SPEC = {
   ],
   pathFlags: ["--image", "--banner", "--allowlist"]
 };
+var SOLANA_MINT = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var QUOTE_CHAIN = LAUNCH_DEFINITION2.quoteChains;
 var HOOD_LAUNCH_LEGS = ["createCurve"];
 var HOOD_LAUNCH_BUY_LEGS = ["createCurve", "feeTransfer", "trade"];
@@ -98021,6 +98040,7 @@ async function launch(args, ctx) {
     return 2;
   }
   const selectedQuote = flags["--quote"]?.trim();
+  let newQuoteMint;
   if (selectedQuote !== undefined)
     flags["--quote"] = selectedQuote;
   if (selectedQuote !== undefined) {
@@ -98031,6 +98051,13 @@ async function launch(args, ctx) {
     const pair = LAUNCH_DEFINITION2.quoteSelection.fixedPairs.find((p) => p.id === selectedQuote.toLowerCase() || p.address === selectedQuote || p.chain === "hood" && p.address.toLowerCase() === selectedQuote.toLowerCase());
     if (pair)
       flags["--quote-asset"] = pair.id;
+    else if (SOLANA_MINT.test(selectedQuote)) {
+      if (flags["--buy"]?.trim() && !/^0+(\.0+)?$/.test(flags["--buy"])) {
+        writeUsageFailure(ctx.deps, "--buy is not available on a launch against a new quote yet: launch first, then buy the token with candle swap. Nothing was built.", ctx.json);
+        return 2;
+      }
+      newQuoteMint = selectedQuote;
+    }
   }
   if (flags["--quote-asset"])
     flags["--quote-asset"] = flags["--quote-asset"].toLowerCase();
@@ -98054,6 +98081,8 @@ async function launch(args, ctx) {
     writeUsageFailure(ctx.deps, `${curveProblem} ${USAGE13}`, ctx.json);
     return 2;
   }
+  if (newQuoteMint !== undefined)
+    flags["--quote-asset"] = newQuoteMint;
   if (flags["--image"] !== undefined && flags["--image-url"] !== undefined) {
     writeUsageFailure(ctx.deps, `Pass --image <path> or --image-url <https-url>, not both: a launch has one image. ${USAGE13}`, ctx.json);
     return 2;
@@ -98093,7 +98122,7 @@ async function launch(args, ctx) {
       launchBuyRaw(flags["--buy"], 18);
     const hinted = flagChain(flags);
     if (selectedQuote !== undefined && !check2 && !flags["--quote-asset"])
-      return tradingFailure(ctx, new TradingError("QUOTE_LAUNCH_UNAVAILABLE", "New-quote launch execution is not enabled. Run candle launch --quote <symbol|address> --check to inspect admission and economics; nothing was uploaded or built."));
+      return tradingFailure(ctx, new TradingError("QUOTE_LAUNCH_UNAVAILABLE", "Launching against this quote is not enabled: only a Solana token mint or a listed pair can launch today. Run candle launch --quote <symbol|address> --check to inspect admission and economics; nothing was uploaded or built."));
     if (hinted === "hood" && feeWalletGiven(flags)) {
       writeUsageFailure(ctx.deps, `--fee-wallet is Solana only; a Hood launch cannot take it. ${USAGE13}`, ctx.json);
       return 2;
@@ -98130,6 +98159,16 @@ async function launch(args, ctx) {
       }
     }
     const key = await tradingKey(ctx);
+    if (!check2 && newQuoteMint !== undefined) {
+      const pinned = await pinnedQuoteEconomics(ctx, key, newQuoteMint, {
+        mode: flags["--mode"],
+        stakerAllocationBps: flags["--staker-allocation-bps"]
+      });
+      ctx.deps.stderr.write(`${pinned.lines.join(`
+`)}
+`);
+      newQuoteDigests.set(flags, pinned.digest);
+    }
     if (check2)
       return await launchCheck2(ctx, key, flags["--wallet"], hinted, feeWallet, {
         quote: selectedQuote,
@@ -98356,6 +98395,7 @@ function launchMetadataFields(flags) {
     ...flags["--visibility"] !== undefined ? { visibility: flags["--visibility"] } : {}
   };
 }
+var newQuoteDigests = new WeakMap;
 function launchFields(args) {
   const { flags } = args;
   return {
@@ -98366,6 +98406,7 @@ function launchFields(args) {
     ...args.bannerChecked ? { bannerChecked: true } : args.bannerUrl ? { bannerUrl: args.bannerUrl } : {},
     ...flags["--description"] ? { description: flags["--description"] } : {},
     ...flags["--mode"] ? { mode: flags["--mode"] } : {},
+    ...newQuoteDigests.get(flags) ? { economicsDigest: newQuoteDigests.get(flags) } : {},
     ...launchCurveFields(flags),
     ...launchMetadataFields(flags),
     ...poolRequestFields(flags),
@@ -98747,6 +98788,7 @@ async function embeddedLaunch(ctx, key, args) {
     ...flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {},
     ...flags["--dex-version"] ? { dexVersion: flags["--dex-version"] } : {},
     ...flags["--mode"] ? { mode: flags["--mode"] } : {},
+    ...newQuoteDigests.get(flags) ? { economicsDigest: newQuoteDigests.get(flags) } : {},
     ...launchCurveFields(flags),
     ...launchMetadataFields(flags),
     ...poolRequestFields(flags),
