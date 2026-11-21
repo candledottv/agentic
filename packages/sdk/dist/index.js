@@ -2536,6 +2536,161 @@ async function verifyPerpsBuildAgainstVenue(build, opts) {
   }
   return verifyPerpsBuild(build, { ...verify, ...evidence });
 }
+var HYPERLIQUID_SPOT_ASSET_OFFSET = 1e4;
+function hyperliquidSpotAsset(a) {
+  return typeof a === "number" && Number.isSafeInteger(a) && a >= 1e4 && a < 1e5;
+}
+function hyperliquidSpotPair(answer, market) {
+  if (!Array.isArray(answer) || !answer[0] || typeof answer[0] !== "object" || !Array.isArray(answer[1]))
+    return null;
+  const meta = answer[0];
+  if (!Array.isArray(meta.universe) || !Array.isArray(meta.tokens))
+    return null;
+  const tokens = new Map;
+  for (const t of meta.tokens)
+    if (typeof t?.name === "string" && Number.isSafeInteger(t.index))
+      tokens.set(t.index, t.name);
+  const pairs = [];
+  for (const p of meta.universe) {
+    if (typeof p?.name !== "string" || !Number.isSafeInteger(p.index) || !Array.isArray(p.tokens))
+      continue;
+    const [b, q] = p.tokens;
+    const base = tokens.get(b);
+    const quote = tokens.get(q);
+    if (base === undefined || quote === undefined)
+      continue;
+    const ctx = answer[1].find((c) => c?.coin === p.name);
+    pairs.push({
+      name: p.name,
+      index: p.index,
+      base,
+      quote,
+      quoteToken: q,
+      midPx: typeof ctx?.midPx === "string" ? ctx.midPx : null
+    });
+  }
+  if (/^@(0|[1-9][0-9]{0,5})$/.test(market))
+    return pairs.find((p) => p.index === Number(market.slice(1))) ?? null;
+  const venue = pairs.find((p) => p.name === market);
+  if (venue)
+    return venue;
+  const exact = pairs.filter((p) => `${p.base}/${p.quote}` === market);
+  if (exact.length === 1)
+    return exact[0] ?? null;
+  if (exact.length > 1)
+    return null;
+  const folded = pairs.filter((p) => `${p.base}/${p.quote}`.toLowerCase() === market.toLowerCase());
+  return folded.length === 1 ? folded[0] ?? null : null;
+}
+async function verifySpotBuildAgainstVenue(build, opts) {
+  try {
+    const network = opts.network ?? "mainnet";
+    const p = opts.intent.params;
+    if (!EVM_ADDRESS_RE.test(opts.builder) || opts.builder.toLowerCase() === ZERO_ADDRESS)
+      return { ok: false, reason: "no valid Candle builder address to check against" };
+    if (build.network !== undefined && build.network !== network)
+      return { ok: false, reason: `the build is for ${build.network}, this client trades ${network}` };
+    if (build.address && build.address.toLowerCase() !== opts.address.toLowerCase())
+      return { ok: false, reason: "the build is for a different wallet" };
+    if (!Number.isSafeInteger(build.nonce) || build.nonce <= 0)
+      return { ok: false, reason: "invalid nonce" };
+    const action = build.action;
+    const typed = build.typedData;
+    if (!action || typeof action !== "object")
+      return { ok: false, reason: "no action" };
+    if (!typed || typeof typed !== "object" || typed.primary_type !== "Agent")
+      return { ok: false, reason: "a spot build must be an L1 Agent signature" };
+    if ("vaultAddress" in action)
+      return { ok: false, reason: "the action names a vault" };
+    const shape = actionShapeProblem(action);
+    if (shape)
+      return { ok: false, reason: shape };
+    if (opts.intent.method === "spotOrder") {
+      if (action.type !== "order")
+        return { ok: false, reason: "action type does not match the requested method" };
+      const orders = action.orders;
+      if (!Array.isArray(orders) || orders.length !== 1 || action.grouping !== "na")
+        return { ok: false, reason: "a spot order is exactly one order with no grouping" };
+      const o = orders[0];
+      if (!o || typeof o !== "object" || !hyperliquidSpotAsset(o.a))
+        return { ok: false, reason: "order asset is not a Hyperliquid spot market" };
+      const isBuy = p.side === "buy";
+      if (p.side !== "buy" && p.side !== "sell")
+        return { ok: false, reason: "side must be buy or sell" };
+      if (opts.keyReduceOnly === true && isBuy)
+        return { ok: false, reason: "this key is reduce-only and a buy is not reducing" };
+      if (o.b !== isBuy || o.r !== false || decimal2(o.s) === null || decimal2(o.s) !== decimal2(p.size))
+        return { ok: false, reason: "order side, size or reduce-only flag does not match the request" };
+      const tif = o.t?.limit?.tif;
+      const marketOrder = (p.type ?? (p.price === undefined ? "market" : "limit")) === "market";
+      if (tif !== (marketOrder ? "Ioc" : p.tif ?? "Gtc"))
+        return { ok: false, reason: "order time in force does not match the request" };
+      if (p.price != null && decimal2(o.p) !== decimal2(p.price))
+        return { ok: false, reason: "order price does not match the request" };
+      if ((decimal2(o.p) ?? 0n) <= 0n)
+        return { ok: false, reason: "invalid order price" };
+      if (p.clientId != null) {
+        const clientId = typeof p.clientId === "string" ? p.clientId.toLowerCase() : null;
+        if (clientId === null || !HYPERLIQUID_CLOID_RE.test(clientId) || o.c !== clientId)
+          return { ok: false, reason: "the order does not carry the requested client order id" };
+      }
+      if (o.c !== undefined && (typeof o.c !== "string" || !HYPERLIQUID_CLOID_RE.test(o.c)))
+        return { ok: false, reason: "invalid client order id" };
+      if (isBuy && "builder" in action && action.builder !== undefined)
+        return { ok: false, reason: "a spot buy carries no builder fee on Hyperliquid, so no builder field" };
+      const builderRefusal = checkBuilderField(action, opts.builder);
+      if (builderRefusal)
+        return { ok: false, reason: builderRefusal };
+      if (typeof p.market !== "string")
+        return { ok: false, reason: "no market in the request" };
+      const pair = hyperliquidSpotPair(await infoRead(opts.fetcher, network, { type: "spotMetaAndAssetCtxs" }), p.market);
+      if (!pair)
+        return { ok: false, reason: "Hyperliquid lists no such spot pair" };
+      if (pair.quoteToken !== 0)
+        return { ok: false, reason: "the pair is not quoted in USDC" };
+      if (o.a !== HYPERLIQUID_SPOT_ASSET_OFFSET + pair.index)
+        return { ok: false, reason: "order asset is not the requested pair's on Hyperliquid" };
+      if (marketOrder) {
+        const mid = decimal2(pair.midPx);
+        const slippage = typeof p.slippageBps === "number" ? p.slippageBps : 100;
+        if (mid === null || mid <= 0n)
+          return { ok: false, reason: "Hyperliquid shows no mid price for the pair" };
+        if (!withinBps(decimal2(o.p) ?? 0n, mid, isBuy, slippage + HYPERLIQUID_MID_DRIFT_BPS))
+          return { ok: false, reason: "order price is outside its slippage of Hyperliquid's mid" };
+      }
+    } else {
+      if (action.type !== "cancel")
+        return { ok: false, reason: "action type does not match the requested method" };
+      const cancels = action.cancels;
+      if (!Array.isArray(cancels) || cancels.length !== 1 || !hyperliquidSpotAsset(cancels[0]?.a))
+        return { ok: false, reason: "invalid spot cancel asset" };
+      if ("builder" in action)
+        return { ok: false, reason: "a cancel action carries no builder" };
+      const status = await infoRead(opts.fetcher, network, {
+        type: "orderStatus",
+        user: opts.address.toLowerCase(),
+        oid: p.cloid
+      });
+      const resting = status?.order?.order;
+      if (!resting || typeof resting.coin !== "string" || !Number.isSafeInteger(resting.oid))
+        return { ok: false, reason: "Hyperliquid shows no order with this cloid on this wallet" };
+      const pair = hyperliquidSpotPair(await infoRead(opts.fetcher, network, { type: "spotMetaAndAssetCtxs" }), resting.coin);
+      if (!pair || pair.name !== resting.coin)
+        return { ok: false, reason: "the order is not on a Hyperliquid spot pair" };
+      if (cancels[0]?.a !== HYPERLIQUID_SPOT_ASSET_OFFSET + pair.index || cancels[0]?.o !== resting.oid)
+        return { ok: false, reason: "the cancel does not name the order Hyperliquid shows for this request" };
+    }
+    const expected = hyperliquidL1TypedData(hyperliquidActionHash(action, build.nonce), network);
+    if (!sameValue(typed, expected))
+      return { ok: false, reason: "the typed data does not commit to this action and nonce" };
+    return { ok: true, kind: "l1" };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `could not check it against Hyperliquid: ${err instanceof Error ? err.message : "read failed"}`
+    };
+  }
+}
 function hyperliquidExchangeOutcome(exchange) {
   if (!exchange || typeof exchange !== "object")
     return { status: "unknown", error: "Hyperliquid returned no answer" };
@@ -6054,6 +6209,10 @@ ${lines.join(`
 function historyTime(value) {
   return value instanceof Date ? String(value.getTime()) : String(value);
 }
+function refuseEmbeddedSpot(walletId, method) {
+  if (walletId === "embedded")
+    throw new Error(`${method}: Hyperliquid spot signs only from the key's EVM TEE wallet; the embedded wallet is not offered for spot. Nothing was requested.`);
+}
 async function openPerpsStreamSocket(url, options, injected) {
   if (injected)
     return new injected(url, options);
@@ -7697,6 +7856,53 @@ class CandleClient {
       params.set("limit", String(opts.limit));
     return this.requestJson("GET", `/api/v1/agent/perps/orders?${params}`);
   }
+  async perpsSpotMarkets(opts = {}) {
+    this.requireKey("perpsSpotMarkets()");
+    const params = new URLSearchParams;
+    if (opts.limit !== undefined)
+      params.set("limit", String(opts.limit));
+    if (opts.all === true)
+      params.set("all", "true");
+    const query = params.toString();
+    return this.requestJson("GET", `/api/v1/agent/perps/spot/markets${query ? `?${query}` : ""}`);
+  }
+  async perpsSpotBalances(walletId) {
+    this.requireKey("perpsSpotBalances()");
+    refuseEmbeddedSpot(walletId, "perpsSpotBalances()");
+    return this.requestJson("GET", `/api/v1/agent/perps/spot/balances?${new URLSearchParams({ walletId })}`);
+  }
+  async perpsSpotOrder(params) {
+    this.requireKey("perpsSpotOrder()");
+    refuseEmbeddedSpot(params.walletId, "perpsSpotOrder()");
+    if (params.side !== "buy" && params.side !== "sell")
+      throw new Error("perpsSpotOrder(): side must be buy or sell");
+    this.perpsBuilder();
+    const { walletId, privyWalletId: _p, submit: _s, ...order } = params;
+    const clientId = perpsClientId(params.clientId);
+    const build = await this.requestJson("POST", "/api/v1/agent/perps/spot/order", {
+      walletId,
+      ...order,
+      ...clientId !== undefined ? { clientId } : {}
+    });
+    const replay = perpsReplayOf(build, walletId, clientId);
+    if (replay)
+      return replay;
+    return this.perpsComplete(build, { ...params, ...clientId ? { clientId } : {} }, "spotOrder");
+  }
+  async perpsSpotCancel(params) {
+    this.requireKey("perpsSpotCancel()");
+    refuseEmbeddedSpot(params.walletId, "perpsSpotCancel()");
+    const cloid = typeof params.cloid === "string" ? params.cloid.toLowerCase() : "";
+    if (!HYPERLIQUID_CLOID_RE.test(cloid))
+      throw new Error("perpsSpotCancel(): cloid must be 0x followed by 32 hex digits");
+    this.perpsBuilder();
+    const build = await this.requestJson("POST", "/api/v1/agent/perps/spot/cancel", {
+      walletId: params.walletId,
+      cloid
+    });
+    const ref = { ...params, cloid };
+    return this.perpsComplete(build, ref, "spotCancel");
+  }
   async perpsFillsPage(walletId, options = {}) {
     this.requireKey("perpsFillsPage()");
     return await this.perpsHistoryPage("fills", walletId, options);
@@ -7996,11 +8202,16 @@ class CandleClient {
     const opts = {
       builder: this.perpsBuilder(),
       network: this.hyperliquidNetwork,
-      intent: { method, params },
       keyReduceOnly: build.perpsReduceOnly === true
     };
-    const check = method === "setup" ? verifyPerpsBuild(build, opts) : await verifyPerpsBuildAgainstVenue(build, {
+    const check = method === "spotOrder" || method === "spotCancel" ? await verifySpotBuildAgainstVenue(build, {
       ...opts,
+      intent: { method, params },
+      address: build.address,
+      fetcher: this.fetchImpl
+    }) : method === "setup" ? verifyPerpsBuild(build, { ...opts, intent: { method, params } }) : await verifyPerpsBuildAgainstVenue(build, {
+      ...opts,
+      intent: { method, params },
       address: build.address,
       fetcher: this.fetchImpl,
       now: Date.now
@@ -8527,7 +8738,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.32";
+var SDK_VERSION = "0.6.33";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

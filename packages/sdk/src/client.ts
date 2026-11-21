@@ -98,8 +98,10 @@ import {
   PerpsMaybeLanded,
   perpsSetupStatusProblem,
   resolveHyperliquidBuilder,
+  type SpotIntentMethod,
   verifyPerpsBuild,
   verifyPerpsBuildAgainstVenue,
+  verifySpotBuildAgainstVenue,
 } from "./hyperliquid"
 import {
   type PerpsBuildReview,
@@ -3070,7 +3072,18 @@ export interface PerpsBuild {
   clientId?: string
   success: true
   perpOrderId: string
-  kind: "open" | "close" | "modify" | "cancel" | "leverage" | "margin" | "setup" | "tpsl" | "scheduleCancel"
+  kind:
+    | "open"
+    | "close"
+    | "modify"
+    | "cancel"
+    | "leverage"
+    | "margin"
+    | "setup"
+    | "tpsl"
+    | "scheduleCancel"
+    | "spotOrder"
+    | "spotCancel"
   network: HyperliquidNetwork
   walletId: string
   address: string
@@ -3138,7 +3151,7 @@ export interface PerpsReplay {
   success: true
   replayed: true
   perpOrderId: string
-  kind: "open" | "close"
+  kind: "open" | "close" | "spotOrder"
   network: HyperliquidNetwork
   walletId: string
   address: string
@@ -3163,6 +3176,104 @@ export interface PerpsReplayResult {
   signature: null
   submitted: false
   exchange: null
+}
+
+// -- Hyperliquid spot (BE-3771 HM2, BE-4216) ------------------------------------------------------
+
+/** The venue terms a spot pair trades on: Hyperliquid's fees, and the side Candle's builder fee is charged on. */
+export interface PerpsSpotTerms {
+  venue: "hyperliquid-spot"
+  base: string
+  quote: string
+  takerFeePct: string
+  makerFeePct: string
+  /** Hyperliquid charges a builder fee on the quote side only: on sells, never on buys. */
+  builderFeeSide: "sell"
+}
+
+/** One row of `GET /perps/spot/markets`. A refused pair (`tradable: false`) carries why in `refusal`. */
+export interface PerpsSpotMarket {
+  /** The readable pair name, `HYPE/USDC`, or the venue's name when its tokens cannot be read. */
+  market: string
+  /** Hyperliquid's own name for the pair: `@107`, or `PURR/USDC` for a canonical pair. */
+  coin: string
+  /** `10000 + spot index`, the asset an order carries. */
+  asset: number
+  base: string | null
+  quote: string | null
+  midPx: string | null
+  markPx: string | null
+  dayVolumeUsd: string | null
+  szDecimals: number | null
+  terms: PerpsSpotTerms | null
+  tradable: boolean
+  refusal: { limit: string; message: string } | null
+}
+
+export interface PerpsSpotMarketsOptions {
+  /** Include pairs Candle refuses (`tradable: false`, with `refusal`). Default: tradable pairs only. */
+  all?: boolean
+  /** 1 to 500; the server's default is 50. Rows are sorted by 24 h volume, highest first. */
+  limit?: number
+}
+
+export interface PerpsSpotMarketsResult {
+  success: true
+  network: HyperliquidNetwork
+  /** The 24 h volume floor a buy is held to, in USD. */
+  minDayVolumeUsd: number
+  quote: "USDC"
+  count: number
+  markets: PerpsSpotMarket[]
+}
+
+/** One token the wallet holds on Hyperliquid spot; `hold` is the part resting in open orders. */
+export interface PerpsSpotBalance {
+  coin: string
+  token: number
+  total: string
+  hold: string
+}
+
+export interface PerpsSpotBalancesResult {
+  success: true
+  walletId: string
+  address: string
+  network: HyperliquidNetwork
+  balances: PerpsSpotBalance[]
+}
+
+/**
+ * A spot buy or sell from the key's EVM TEE wallet. A buy spends the wallet's spot USDC (spot and
+ * perps balances are separate on a standard account) and carries no builder fee; a sell may carry
+ * Candle's. The build's `preview` shows the venue fee (`terms`) and the builder fee (`builderFee`).
+ */
+export interface PerpsSpotOrderParams extends PerpsWalletRef {
+  /** The pair name (`HYPE/USDC`) or Hyperliquid's index (`@107`). USDC-quoted pairs only. */
+  market: string
+  side: "buy" | "sell"
+  /** Size in the base token, a decimal string. */
+  size: string
+  /** `market` (IOC at the mid moved by the slippage) or `limit`. Default: limit when `price` is set. */
+  type?: "market" | "limit"
+  price?: string
+  tif?: "Gtc" | "Alo" | "Ioc"
+  slippageBps?: number
+  /** Optional client order id, as on `PerpsOpenParams.clientId`: a retry returns the original operation. */
+  clientId?: string
+}
+
+export interface PerpsSpotCancelParams extends PerpsWalletRef {
+  /** The cloid of a spot order Candle built for this wallet. */
+  cloid: string
+}
+
+/** Spot signs only from the key's EVM TEE wallet; the embedded wallet is refused before any request. */
+function refuseEmbeddedSpot(walletId: unknown, method: string): void {
+  if (walletId === "embedded")
+    throw new Error(
+      `${method}: Hyperliquid spot signs only from the key's EVM TEE wallet; the embedded wallet is not offered for spot. Nothing was requested.`,
+    )
 }
 
 // -- Hyperliquid withdrawals (spec 2026-10-17-hyperliquid-withdrawals-design.md) ------------------
@@ -7406,6 +7517,71 @@ export class CandleClient {
     return this.requestJson<PerpsOrders>("GET", `/api/v1/agent/perps/orders?${params}`)
   }
 
+  /** BE-4216: Hyperliquid spot pairs Candle trades (every pair with `all`), with mid, 24 h volume and fees. */
+  async perpsSpotMarkets(opts: PerpsSpotMarketsOptions = {}): Promise<PerpsSpotMarketsResult> {
+    this.requireKey("perpsSpotMarkets()")
+    const params = new URLSearchParams()
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit))
+    if (opts.all === true) params.set("all", "true")
+    const query = params.toString()
+    return this.requestJson<PerpsSpotMarketsResult>(
+      "GET",
+      `/api/v1/agent/perps/spot/markets${query ? `?${query}` : ""}`,
+    )
+  }
+
+  /** BE-4216: the EVM TEE wallet's Hyperliquid spot balances (separate from its perps balance). */
+  async perpsSpotBalances(walletId: string): Promise<PerpsSpotBalancesResult> {
+    this.requireKey("perpsSpotBalances()")
+    refuseEmbeddedSpot(walletId, "perpsSpotBalances()")
+    return this.requestJson<PerpsSpotBalancesResult>(
+      "GET",
+      `/api/v1/agent/perps/spot/balances?${new URLSearchParams({ walletId })}`,
+    )
+  }
+
+  /**
+   * BE-4216: buy or sell a Hyperliquid spot pair from the key's EVM TEE wallet. Candle builds the
+   * order; this client checks it against its own `spotMetaAndAssetCtxs` read
+   * (`verifySpotBuildAgainstVenue`) and refuses with the check's reason before anything is signed;
+   * then the relay signs and this client submits to Hyperliquid. A buy spends the wallet's spot USDC.
+   * With `clientId`, a retry of the same request returns the original operation (`replayed: true`).
+   */
+  async perpsSpotOrder(params: PerpsSpotOrderParams & { clientId?: undefined }): Promise<PerpsActionResult>
+  async perpsSpotOrder(params: PerpsSpotOrderParams): Promise<PerpsActionResult | PerpsReplayResult>
+  async perpsSpotOrder(params: PerpsSpotOrderParams): Promise<PerpsActionResult | PerpsReplayResult> {
+    this.requireKey("perpsSpotOrder()")
+    refuseEmbeddedSpot(params.walletId, "perpsSpotOrder()")
+    if (params.side !== "buy" && params.side !== "sell") throw new Error("perpsSpotOrder(): side must be buy or sell")
+    this.perpsBuilder()
+    const { walletId, privyWalletId: _p, submit: _s, ...order } = params
+    const clientId = perpsClientId(params.clientId)
+    const build = await this.requestJson<PerpsBuild | PerpsReplay>("POST", "/api/v1/agent/perps/spot/order", {
+      walletId,
+      ...order,
+      ...(clientId !== undefined ? { clientId } : {}),
+    })
+    const replay = perpsReplayOf(build, walletId, clientId)
+    if (replay) return replay
+    return this.perpsComplete(build as PerpsBuild, { ...params, ...(clientId ? { clientId } : {}) }, "spotOrder")
+  }
+
+  /** BE-4216: cancel a resting spot order Candle built, by its cloid; checked against Hyperliquid before signing. */
+  async perpsSpotCancel(params: PerpsSpotCancelParams): Promise<PerpsActionResult> {
+    this.requireKey("perpsSpotCancel()")
+    refuseEmbeddedSpot(params.walletId, "perpsSpotCancel()")
+    const cloid = typeof params.cloid === "string" ? params.cloid.toLowerCase() : ""
+    if (!HYPERLIQUID_CLOID_RE.test(cloid))
+      throw new Error("perpsSpotCancel(): cloid must be 0x followed by 32 hex digits")
+    this.perpsBuilder()
+    const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/spot/cancel", {
+      walletId: params.walletId,
+      cloid,
+    })
+    const ref: PerpsSpotCancelParams = { ...params, cloid }
+    return this.perpsComplete(build, ref, "spotCancel")
+  }
+
   /**
    * One page of the wallet's fills, read directly from Hyperliquid's `/info` (spec 2026-10-17 C,
    * sections 3 and 4). Candle resolves only the wallet's address; no Candle credential reaches
@@ -7854,7 +8030,7 @@ export class CandleClient {
   private async perpsComplete(
     build: PerpsBuild,
     ref: PerpsWalletRef,
-    method: PerpsIntentMethod,
+    method: PerpsIntentMethod | SpotIntentMethod,
   ): Promise<PerpsActionResult> {
     if (
       ref.walletId === "embedded" &&
@@ -7868,18 +8044,27 @@ export class CandleClient {
     const opts = {
       builder: this.perpsBuilder(),
       network: this.hyperliquidNetwork,
-      intent: { method, params },
       keyReduceOnly: build.perpsReduceOnly === true,
     }
+    // BE-4216: spot has its own venue check (the perps intent check refuses spot assets on purpose),
+    // which reads the pair from this machine's `spotMetaAndAssetCtxs` before anything is signed.
     const check =
-      method === "setup"
-        ? verifyPerpsBuild(build, opts)
-        : await verifyPerpsBuildAgainstVenue(build, {
+      method === "spotOrder" || method === "spotCancel"
+        ? await verifySpotBuildAgainstVenue(build, {
             ...opts,
+            intent: { method, params },
             address: build.address,
             fetcher: this.fetchImpl as never,
-            now: Date.now,
           })
+        : method === "setup"
+          ? verifyPerpsBuild(build, { ...opts, intent: { method, params } })
+          : await verifyPerpsBuildAgainstVenue(build, {
+              ...opts,
+              intent: { method, params },
+              address: build.address,
+              fetcher: this.fetchImpl as never,
+              now: Date.now,
+            })
     if (!check.ok) throw new Error(`perps: refused to sign this build: ${check.reason}`)
     if (ref.submit === false) return { build, signature: null, submitted: false, exchange: null }
     const signature =
@@ -8617,7 +8802,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.32"
+export const SDK_VERSION = "0.6.33"
 
 let sdkUpdateWarned = false
 
