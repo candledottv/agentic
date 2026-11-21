@@ -549,7 +549,7 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "spot <markets|balances|buy|sell|cancel> ...",
         description:
-          "Hyperliquid spot from the same TEE wallet (BE-3771): markets [--all] [--limit <n>]; balances; buy|sell <pair> <size> [--price <px>] [--tif <t>] [--slippage-bps <n>] [--client-id <id>]; cancel <cloid>. <pair> is HYPE/USDC or @107, size in the base token; USDC-quoted pairs only; a buy spends the spot USDC balance, which is separate from perps",
+          "Hyperliquid spot from the same TEE wallet (BE-3771): markets [--all] [--limit <n>]; balances; buy|sell <pair> <size> [--price <px>] [--tif <t>] [--slippage-bps <n>] [--client-id <id>] [--hide]; cancel <cloid>. <pair> is HYPE/USDC or @107, size in the base token; USDC-quoted pairs only; a buy spends the spot USDC balance, which is separate from perps",
       },
       {
         invocation: "positions [--wallet <tee>]",
@@ -637,7 +637,7 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "--hide",
         description:
-          "open, close, modify and tpsl: keep this order's fills out of Candle's public activity stream. Sent only when set. Fails closed: if the build does not confirm it is hidden, nothing is signed or submitted and the command exits 1. A modify keeps a hidden order hidden. An older candle refuses the flag as unknown.",
+          "open, close, modify, tpsl and spot buy|sell: keep this order's fills out of Candle's public activity stream. Sent only when set. Fails closed: if the build does not confirm it is hidden, nothing is signed or submitted and the command exits 1. A modify keeps a hidden order hidden. An older candle refuses the flag as unknown.",
       },
       {
         invocation: "--start-time <ms> / --end-time <ms>",

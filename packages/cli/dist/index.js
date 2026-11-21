@@ -208,7 +208,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.41";
+var CLI_VERSION = "0.13.42";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
@@ -81179,7 +81179,7 @@ var HELP = {
       },
       {
         invocation: "spot <markets|balances|buy|sell|cancel> ...",
-        description: "Hyperliquid spot from the same TEE wallet (BE-3771): markets [--all] [--limit <n>]; balances; buy|sell <pair> <size> [--price <px>] [--tif <t>] [--slippage-bps <n>] [--client-id <id>]; cancel <cloid>. <pair> is HYPE/USDC or @107, size in the base token; USDC-quoted pairs only; a buy spends the spot USDC balance, which is separate from perps"
+        description: "Hyperliquid spot from the same TEE wallet (BE-3771): markets [--all] [--limit <n>]; balances; buy|sell <pair> <size> [--price <px>] [--tif <t>] [--slippage-bps <n>] [--client-id <id>] [--hide]; cancel <cloid>. <pair> is HYPE/USDC or @107, size in the base token; USDC-quoted pairs only; a buy spends the spot USDC balance, which is separate from perps"
       },
       {
         invocation: "positions [--wallet <tee>]",
@@ -81255,7 +81255,7 @@ var HELP = {
       },
       {
         invocation: "--hide",
-        description: "open, close, modify and tpsl: keep this order's fills out of Candle's public activity stream. Sent only when set. Fails closed: if the build does not confirm it is hidden, nothing is signed or submitted and the command exits 1. A modify keeps a hidden order hidden. An older candle refuses the flag as unknown."
+        description: "open, close, modify, tpsl and spot buy|sell: keep this order's fills out of Candle's public activity stream. Sent only when set. Fails closed: if the build does not confirm it is hidden, nothing is signed or submitted and the command exits 1. A modify keeps a hidden order hidden. An older candle refuses the flag as unknown."
       },
       {
         invocation: "--start-time <ms> / --end-time <ms>",
@@ -106231,7 +106231,7 @@ var SPOT_USAGE = [
   "Usage: candle perps spot <markets|balances|buy|sell|cancel>",
   "  candle perps spot markets [--all] [--limit <n>]",
   "  candle perps spot balances [--wallet tee]",
-  "  candle perps spot buy|sell <pair> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--yes]",
+  "  candle perps spot buy|sell <pair> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--hide] [--yes]",
   "  candle perps spot cancel <cloid> [--yes]",
   "  <pair> is HYPE/USDC or @107; <size> is in the base token. Spot pairs quoted in USDC only."
 ].join(`
@@ -106324,7 +106324,7 @@ async function spotBalances(args, ctx) {
 async function spotOrder(side, args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--wallet", "--price", "--tif", "--slippage-bps", "--client-id"],
-    booleanFlags: ["--yes", "--no-submit", "--sign-only"]
+    booleanFlags: ["--yes", "--no-submit", "--sign-only", "--hide"]
   });
   if ("error" in parsed)
     return usage10(ctx, parsed.error);
@@ -106360,7 +106360,8 @@ async function spotOrder(side, args, ctx) {
     ...price !== undefined ? { price } : {},
     ...tif !== undefined && price !== undefined ? { tif } : {},
     ...slippageBps !== undefined ? { slippageBps } : {},
-    ...clientId2 !== undefined ? { clientId: clientId2.toLowerCase() } : {}
+    ...clientId2 !== undefined ? { clientId: clientId2.toLowerCase() } : {},
+    ...parsed.booleans.has("--hide") ? { hide: true } : {}
   };
   try {
     return await runPerpsWrite(ctx, {

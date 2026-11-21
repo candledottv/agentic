@@ -162,6 +162,47 @@ describe("candle perps spot buy", () => {
   })
 })
 
+describe("BE-4215: --hide on spot orders", () => {
+  const signedOrPosted = (f: { calls: { host: string; path: string }[] }) =>
+    f.calls.some((c) => c.path.endsWith("/sign") || (c.host === "api.hyperliquid.xyz" && c.path === "/exchange"))
+
+  test("buy --hide sends hide: true, and an echoed build is signed and posted", async () => {
+    const f = await fixture({ ...buildFor(buyAction()), hide: true })
+    expect(await run([...BUY, "--hide"], f.deps)).toBe(0)
+    expect(f.calls[1]?.body).toEqual({
+      walletId: "wallet",
+      market: "HYPE/USDC",
+      side: "buy",
+      size: "1",
+      type: "market",
+      hide: true,
+    })
+    expect(signedOrPosted(f)).toBe(true)
+  })
+
+  test("without --hide the body carries no hide key", async () => {
+    const f = await fixture()
+    expect(await run(BUY, f.deps)).toBe(0)
+    expect(f.calls[1]?.body).not.toHaveProperty("hide")
+  })
+
+  test("a build without the hide echo is refused before signing, for a buy and a sell", async () => {
+    for (const side of ["buy", "sell"]) {
+      const f = await fixture()
+      expect(await run(["perps", "spot", side, "HYPE/USDC", "1", "--hide", "--yes", "--json"], f.deps)).toBe(1)
+      expect(f.calls[1]?.body).toMatchObject({ side, hide: true })
+      expect(JSON.parse(f.stdout.text.trim())).toMatchObject({ ok: false, code: "HIDE_NOT_CONFIRMED" })
+      expect(signedOrPosted(f)).toBe(false)
+    }
+  })
+
+  test("the usage line names --hide", async () => {
+    const f = await fixture()
+    expect(await run(["perps", "spot", "--json"], f.deps)).toBe(2)
+    expect(`${f.stdout.text}${f.stderr.text}`).toContain("[--hide]")
+  })
+})
+
 describe("candle perps spot reads and cancel", () => {
   test("markets reads the server's spot market list", async () => {
     const f = await fixture()

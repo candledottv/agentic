@@ -6,7 +6,7 @@
  *
  *   candle perps spot markets [--all] [--limit <n>]
  *   candle perps spot balances [--wallet tee]
- *   candle perps spot buy <pair> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--client-id <id>]
+ *   candle perps spot buy <pair> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--client-id <id>] [--hide]
  *   candle perps spot sell <pair> <size> [...same]
  *   candle perps spot cancel <cloid>
  *
@@ -29,7 +29,7 @@ export const SPOT_USAGE = [
   "Usage: candle perps spot <markets|balances|buy|sell|cancel>",
   "  candle perps spot markets [--all] [--limit <n>]",
   "  candle perps spot balances [--wallet tee]",
-  "  candle perps spot buy|sell <pair> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--yes]",
+  "  candle perps spot buy|sell <pair> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--client-id <0x+32 hex>] [--hide] [--yes]",
   "  candle perps spot cancel <cloid> [--yes]",
   "  <pair> is HYPE/USDC or @107; <size> is in the base token. Spot pairs quoted in USDC only.",
 ].join("\n")
@@ -120,7 +120,7 @@ async function spotBalances(args: string[], ctx: CommandContext): Promise<number
 async function spotOrder(side: "buy" | "sell", args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
     valueFlags: ["--wallet", "--price", "--tif", "--slippage-bps", "--client-id"],
-    booleanFlags: ["--yes", "--no-submit", "--sign-only"],
+    booleanFlags: ["--yes", "--no-submit", "--sign-only", "--hide"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [market, size] = parsed.positionals
@@ -149,6 +149,8 @@ async function spotOrder(side: "buy" | "sell", args: string[], ctx: CommandConte
     ...(tif !== undefined && price !== undefined ? { tif } : {}),
     ...(slippageBps !== undefined ? { slippageBps } : {}),
     ...(clientId !== undefined ? { clientId: clientId.toLowerCase() } : {}),
+    // BE-4215: the same `hide` as perps; runPerpsWrite refuses a build that does not echo it.
+    ...(parsed.booleans.has("--hide") ? { hide: true } : {}),
   }
   try {
     return await runPerpsWrite(ctx, {
