@@ -48,9 +48,11 @@ Most tools are a thin wrapper: a one-request mapping onto Candle's REST API
 (`POST /api/v1/launch/headless`, `GET /api/v1/markets/:chain/:mint`, `GET /api/v1/markets/feed`,
 `POST /api/v1/activity/report`, `GET /api/v1/users/:idOrWallet/agent`) that hands the response body
 straight back to the caller, unchanged, error responses included. `candle_trade` and
-`candle_launch_and_seed` are the two exceptions: each is a small orchestration (a decimal-to-raw
-conversion, an idempotency key, a follow-up read) on top of the same REST surface, see Errors
-below.
+`candle_launch_and_seed` are the two exceptions: each is a small orchestration (an idempotency
+key, a pre-request read where the amount needs one, a decimal-to-raw conversion, a follow-up read)
+on top of the same REST surface, see Errors below. A `candle_trade` buy or paper amount sell does
+no read and no conversion of its own: it sends the decimal `amount` as `amountDecimal` and the API
+converts it.
 
 `candle_trade` takes `deferExecution: true` to quote first and spend later: it builds the trade and returns
 `status: "built"` with the quote, and nothing is signed until `candle_trade_execute` is called with the same
@@ -224,7 +226,7 @@ before installed-package support can be claimed.
 | `candle_get_perp_market` | One perp market with the public Candle agents long and short in it, `dex:COIN` included | `GET /api/v1/agent/perps-markets/{coin}` | none |
 | `candle_list_agents` | The agent directory: every published agent with its strategy, declared models, all-time P&L and trade and launch counts, sorted `newest`, `active` or `pnl`, filtered by `strategy`, searched by `q` | `GET /api/v1/agent/directory` | none |
 | `candle_get_plans` | Plans: prices, fees, limits and what each can do, as JSON and a Markdown table | `GET /api/v1/agent/plans` | none |
-| `candle_trade` | Buy or sell a token | Reads the market for its decimals (or wallet balance, for a percent sell) then `POST /api/v1/trade/agent/build` | `CANDLE_AGENT_API_KEY` (`swap:write`) |
+| `candle_trade` | Buy or sell a token | A buy or paper amount sell sends `amountDecimal` straight to `POST /api/v1/trade/agent/build`, which converts it. A live amount sell reads the market for the token's decimals and a live percent sell reads the wallet balance, then builds with `amountRaw`; a paper percent sell forwards `percent` | `CANDLE_AGENT_API_KEY` (`swap:write`) |
 | `candle_trade_execute` | Execute a trade built with `candle_trade` and `deferExecution: true` | `POST /api/v1/trade/agent/execute` with the `clientTradeId` only | `CANDLE_AGENT_API_KEY` (`swap:write`) |
 | `candle_launch_and_seed` | Launch a token and seed it | `POST /api/v1/launch/headless` (or `/dry-run`); a Solana seed is an atomic launch instead, `POST /api/v1/launch/atomic/build` then `/submit` (or `/atomic/dry-run`), one Jito bundle from the embedded wallet (Pro or Max, `swap:write`); then a follow-up `GET /api/v1/markets/:chain/:mint`; with `imagePath`, `POST /api/v1/uploads/agent-image` first | `CANDLE_AGENT_API_KEY` |
 | `candle_swap` | Swap between base assets | `POST /api/v1/agent/swap` | `CANDLE_AGENT_API_KEY` (`swap:write`) |
@@ -387,9 +389,15 @@ one hundred and ten tools:
     or runs it for the first time. A new id would be a second trade or launch.
   - Once the underlying request is actually sent, the shape is
     `{ clientTradeId | clientLaunchId, resolved?, api | launch, market?, note? }`. `candle_trade`
-    always returns `{ clientTradeId, resolved, api }`: `resolved` is the decimal-to-raw (or
-    percent-to-raw) conversion this tool computed before calling the trade endpoint, and `api` is
-    that endpoint's own response body verbatim, success or error. `candle_launch_and_seed` returns
+    always returns `{ clientTradeId, resolved, api }`: `resolved` is the amount this tool sent to
+    the trade endpoint, and `api` is that endpoint's own response body verbatim, success or error.
+    A buy or paper amount sell sends the decimal amount for the API to convert with its own
+    decimals, so `resolved` is `{ amountDecimal }` with no raw figure. A live amount sell converts here after its market read, so `resolved` is
+    `{ amountDecimal, decimals, amountRaw }`. A percent sell gives `{ percent }` on paper and
+    `{ percent, balanceRaw, amountRaw }` live. If the API does not handle `amountDecimal` (an older
+    API asks for `amountRaw`, or it cannot read the asset's decimals) the tool falls back to the
+    market read and converts itself, with the same `clientTradeId`, and `resolved` is the
+    read-path shape. `candle_launch_and_seed` returns
     `{ clientLaunchId, api }` for a dry run or a failed launch, and
     `{ clientLaunchId, launch, market, note? }` for a confirmed launch: `launch` is the launch
     endpoint's own response body, `market` is a best-effort follow-up market read (`null` when

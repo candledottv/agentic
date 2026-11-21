@@ -101,7 +101,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.44";
+var SERVER_VERSION = "0.10.45";
 
 // src/client.ts
 var DEFAULT_API_URL = "https://api.alpha.candle.tv";
@@ -7462,7 +7462,17 @@ async function readPaperInventory(cfg, doFetch, extra) {
   const body = JSON.parse(text);
   return { positions: body.positions ?? [] };
 }
-async function executeTrade(args, cfg, doFetch) {
+function amountDecimalNotHandled(body) {
+  const err = body?.error;
+  if (!err)
+    return false;
+  if (err.code === "VALIDATION_FAILED" && err.field === "amountRaw" && /amountRaw is required/.test(String(err.message)))
+    return true;
+  if (err.code === "VALIDATION_FAILED" && err.field === "amountDecimal" && /^chain_mismatch:/.test(String(err.message)))
+    return true;
+  return err.code === "QUOTE_UNAVAILABLE" && err.field === "amountDecimal";
+}
+async function executeTrade(args, cfg, doFetch, forceMarketRead = false) {
   const apiKey = requireApiKey(cfg);
   const clientTradeId = args.clientTradeId ?? randomUUID();
   if (args.amount !== undefined && args.percent !== undefined) {
@@ -7487,13 +7497,39 @@ async function executeTrade(args, cfg, doFetch) {
       clientTradeId
     });
   }
+  const serverConverts = !forceMarketRead && args.amount !== undefined && (args.side === "buy" || paper);
+  if (serverConverts) {
+    const direct = await postJson(`${base(cfg)}/api/v1/trade/agent/build`, apiKey, {
+      clientTradeId,
+      mint: args.mint,
+      side: args.side,
+      amountDecimal: args.amount,
+      payer: { type: "main" },
+      ...args.quoteAsset !== undefined ? { quoteAsset: args.quoteAsset } : {},
+      ...args.maxSlippageBps !== undefined ? { maxSlippageBps: args.maxSlippageBps } : {},
+      ...paper ? { paper: true } : {},
+      ...deferExecution ? { deferExecution: true } : {},
+      ...hideField(args.hide)
+    }, doFetch);
+    if ("thrown" in direct)
+      return transportError("clientTradeId", clientTradeId, direct.thrown);
+    if (!direct.ok && amountDecimalNotHandled(direct.body)) {
+      return executeTrade({ ...args, clientTradeId }, cfg, doFetch, true);
+    }
+    if (hide && direct.ok && !hideEchoed(direct.body)) {
+      return errText(hideNotConfirmedMessage("candle_trade"), { clientTradeId, api: direct.body });
+    }
+    const wrappedDirect = JSON.stringify({ clientTradeId, resolved: { amountDecimal: args.amount }, api: direct.body });
+    return direct.ok ? { text: wrappedDirect } : { text: wrappedDirect, isError: true };
+  }
   try {
     if (args.side === "buy") {
       const amount = args.amount;
       const read = await readMarket(args.mint, cfg, doFetch, { clientTradeId });
       let decimals;
-      if ("market" in read && (read.market.external === true || read.market.candleLaunched === false)) {
-        const q = quoteIdDecimals(args.quoteAsset, chainForMint(args.mint), { clientTradeId });
+      const buyChain = chainForMint(args.mint);
+      if ("market" in read && (read.market.external === true || read.market.candleLaunched === false || isEvmChain(requireChain(buyChain)) && read.market.venue === "dex")) {
+        const q = quoteIdDecimals(args.quoteAsset, buyChain, { clientTradeId });
         if ("err" in q)
           return q.err;
         decimals = q.decimals;

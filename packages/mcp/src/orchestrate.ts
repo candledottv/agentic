@@ -182,6 +182,8 @@ async function postJson(
 interface MarketRead {
   external?: boolean
   candleLaunched?: boolean
+  /** "dex" once a Candle token has graduated: it then trades against the asked ETH or USDG. */
+  venue?: string
   decimals?: number
   quoteDecimals?: number
 }
@@ -278,7 +280,33 @@ export interface TradeArgs {
   hide?: unknown
 }
 
-export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch: FetchLike): Promise<ToolText> {
+/**
+ * True when the build refused `amountDecimal` before doing anything with it, so the same
+ * clientTradeId is safe to retry through the market read: an API that predates the field (it
+ * ignores it and asks for amountRaw), or one that could not name the asset's decimals itself.
+ */
+function amountDecimalNotHandled(body: unknown): boolean {
+  const err = (body as { error?: { code?: unknown; field?: unknown; message?: unknown } } | null)?.error
+  if (!err) return false
+  if (
+    err.code === "VALIDATION_FAILED" &&
+    err.field === "amountRaw" &&
+    /amountRaw is required/.test(String(err.message))
+  )
+    return true
+  // The API's stand-in for the market read's chain_mismatch: retry through the read, which relays it with its hint.
+  if (err.code === "VALIDATION_FAILED" && err.field === "amountDecimal" && /^chain_mismatch:/.test(String(err.message)))
+    return true
+  return err.code === "QUOTE_UNAVAILABLE" && err.field === "amountDecimal"
+}
+
+export async function executeTrade(
+  args: TradeArgs,
+  cfg: RequestConfig,
+  doFetch: FetchLike,
+  /** Internal: take the decimals from the market read instead of letting the API convert. */
+  forceMarketRead = false,
+): Promise<ToolText> {
   const apiKey = requireApiKey(cfg)
   const clientTradeId = args.clientTradeId ?? randomUUID()
 
@@ -309,6 +337,39 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
       clientTradeId,
     })
   }
+  // The API converts a decimal amount with its own trusted decimals (BE-3924), so a buy, or a
+  // sell the caller marked paper, needs no market read first. A live amount sell still reads: a
+  // sell of a mint with no Candle market falls back to the paper book below, which only the read
+  // can tell. Percent sells size from a balance and keep their reads.
+  const serverConverts = !forceMarketRead && args.amount !== undefined && (args.side === "buy" || paper)
+  if (serverConverts) {
+    const direct = await postJson(
+      `${base(cfg)}/api/v1/trade/agent/build`,
+      apiKey,
+      {
+        clientTradeId,
+        mint: args.mint,
+        side: args.side,
+        amountDecimal: args.amount,
+        payer: { type: "main" },
+        ...(args.quoteAsset !== undefined ? { quoteAsset: args.quoteAsset } : {}),
+        ...(args.maxSlippageBps !== undefined ? { maxSlippageBps: args.maxSlippageBps } : {}),
+        ...(paper ? { paper: true } : {}),
+        ...(deferExecution ? { deferExecution: true } : {}),
+        ...hideField(args.hide),
+      },
+      doFetch,
+    )
+    if ("thrown" in direct) return transportError("clientTradeId", clientTradeId, direct.thrown)
+    if (!direct.ok && amountDecimalNotHandled(direct.body)) {
+      return executeTrade({ ...args, clientTradeId }, cfg, doFetch, true)
+    }
+    if (hide && direct.ok && !hideEchoed(direct.body)) {
+      return errText(hideNotConfirmedMessage("candle_trade"), { clientTradeId, api: direct.body })
+    }
+    const wrappedDirect = JSON.stringify({ clientTradeId, resolved: { amountDecimal: args.amount }, api: direct.body })
+    return direct.ok ? { text: wrappedDirect } : { text: wrappedDirect, isError: true }
+  }
   try {
     if (args.side === "buy") {
       const amount = args.amount as string
@@ -320,8 +381,16 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
       // come from the market read, never from the caller.
       const read = await readMarket(args.mint, cfg, doFetch, { clientTradeId })
       let decimals: number
-      if ("market" in read && (read.market.external === true || read.market.candleLaunched === false)) {
-        const q = quoteIdDecimals(args.quoteAsset, chainForMint(args.mint), { clientTradeId })
+      const buyChain = chainForMint(args.mint)
+      if (
+        "market" in read &&
+        (read.market.external === true ||
+          read.market.candleLaunched === false ||
+          // A graduated Hood Candle token settles on the DEX in the asset the caller names, not in
+          // its launch pair, so the named (or default) quote's scale is the one that applies.
+          (isEvmChain(requireChain(buyChain)) && read.market.venue === "dex"))
+      ) {
+        const q = quoteIdDecimals(args.quoteAsset, buyChain, { clientTradeId })
         if ("err" in q) return q.err
         decimals = q.decimals
       } else if ("market" in read) {

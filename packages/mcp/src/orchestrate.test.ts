@@ -9,6 +9,10 @@ import {
 } from "./orchestrate"
 import { __resetUpdateNoticeForTest, noteVersionHeaders } from "./update-notice"
 
+/** The market-read path: what runs for live amount sells, and when the API cannot convert (BE-3924). */
+const legacyTrade = (a: Parameters<typeof executeTrade>[0], c: Parameters<typeof executeTrade>[1], f: FetchLike) =>
+  executeTrade(a, c, f, true)
+
 const CFG = { apiUrl: "https://api.test", apiKey: "cndl_live_k" }
 
 interface Call {
@@ -48,7 +52,7 @@ describe("executeTrade: buys", () => {
       "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
-    const result = await executeTrade(
+    const result = await legacyTrade(
       { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "0.5", clientTradeId: "t-1" },
       CFG,
       fetch,
@@ -76,7 +80,7 @@ describe("executeTrade: buys", () => {
       },
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
-    const result = await executeTrade(
+    const result = await legacyTrade(
       { mint: "UsdcTok1111111111111111111111111", side: "buy", amount: "100", clientTradeId: "t-usdc" },
       CFG,
       fetch,
@@ -92,7 +96,7 @@ describe("executeTrade: buys", () => {
       "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
-    await executeTrade(
+    await legacyTrade(
       {
         mint: "M1nt1111111111111111111111111111",
         side: "buy",
@@ -117,7 +121,7 @@ describe("executeTrade: buys", () => {
       },
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
-    const result = await executeTrade(
+    const result = await legacyTrade(
       {
         mint: "JupTok11111111111111111111111111",
         side: "buy",
@@ -139,7 +143,7 @@ describe("executeTrade: buys", () => {
         body: { success: true, market: { decimals: 6 } },
       },
     })
-    const result = await executeTrade(
+    const result = await legacyTrade(
       { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "1", clientTradeId: "t-no-quote-decimals" },
       CFG,
       fetch,
@@ -155,7 +159,7 @@ describe("executeTrade: buys", () => {
       "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
-    const result = await executeTrade(
+    const result = await legacyTrade(
       { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "0.5" },
       CFG,
       fetch,
@@ -186,7 +190,7 @@ describe("executeTrade: buys", () => {
         body: { success: false, error: { code: "MARKET_NOT_FOUND", message: "no market" } },
       },
     })
-    const result = await executeTrade(
+    const result = await legacyTrade(
       {
         mint: "JupTok11111111111111111111111111",
         side: "buy",
@@ -228,7 +232,7 @@ describe("executeTrade: deferExecution (BE-2657)", () => {
         "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
         "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
       })
-      await executeTrade(
+      await legacyTrade(
         {
           mint: "M1nt1111111111111111111111111111",
           side: "buy",
@@ -251,7 +255,7 @@ describe("executeTrade: deferExecution (BE-2657)", () => {
         "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
         "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
       })
-      await executeTrade(
+      await legacyTrade(
         {
           mint: "M1nt1111111111111111111111111111",
           side: "buy",
@@ -298,7 +302,7 @@ describe("executeTrade: paper mode", () => {
       "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
-    await executeTrade(
+    await legacyTrade(
       { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "0.5", clientTradeId: "p-1", paper: true },
       CFG,
       fetch,
@@ -313,7 +317,7 @@ describe("executeTrade: paper mode", () => {
         "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
         "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
       })
-      await executeTrade(
+      await legacyTrade(
         {
           mint: "M1nt1111111111111111111111111111",
           side: "buy",
@@ -342,7 +346,7 @@ describe("executeTrade: paper mode", () => {
         "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
         "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
       })
-      await executeTrade(
+      await legacyTrade(
         { mint: "M1nt1111111111111111111111111111", side: "buy", amount: "0.5", clientTradeId: "live", ...args },
         CFG,
         fetch,
@@ -358,7 +362,7 @@ describe("executeTrade: paper mode", () => {
       "https://api.test/api/v1/markets/solana/M1nt1111111111111111111111111111": SOL_MARKET,
       "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
     })
-    await executeTrade(
+    await legacyTrade(
       { mint: "M1nt1111111111111111111111111111", side: "sell", amount: "100", clientTradeId: "p-2", paper: true },
       CFG,
       fetch,
@@ -405,7 +409,7 @@ describe("executeTrade: paper mode", () => {
       },
       "https://api.test/api/v1/trade/agent/build": { body: { success: true, paper: true } },
     })
-    const result = await executeTrade(
+    const result = await legacyTrade(
       { mint: "ExtMint1111111111111111111111111", side: "sell", amount: "5", clientTradeId: "p-amt", paper: true },
       CFG,
       fetch,
@@ -1777,7 +1781,7 @@ describe("paper mint matching", () => {
         },
         "https://api.test/api/v1/trade/agent/build": { body: { success: true, paper: true } },
       })
-      const result = await executeTrade(
+      const result = await legacyTrade(
         { mint, side: "sell", amount: "5", clientTradeId: "canonical-paper", paper: true },
         CFG,
         fetch,
@@ -1818,7 +1822,7 @@ test("external market 200 uses the selected quote asset scale for a buy", async 
     },
     "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
   })
-  const result = await executeTrade(
+  const result = await legacyTrade(
     {
       mint: "ExtMint1111111111111111111111111",
       side: "buy",
@@ -1848,7 +1852,7 @@ describe("executeTrade and executeLaunchAndSeed: hide (agent-stream S)", () => {
       [false, false],
     ] as const) {
       const { calls, fetch } = fakeFetch(tradeRoutes({ ...EXECUTED, hide: true }))
-      await executeTrade({ mint: MINT, side: "buy", amount: "0.5", clientTradeId: "h-1", hide }, CFG, fetch)
+      await legacyTrade({ mint: MINT, side: "buy", amount: "0.5", clientTradeId: "h-1", hide }, CFG, fetch)
       const raw = String(calls[1]?.init?.body)
       expect(raw.includes("hide")).toBe(expected)
     }
@@ -1951,5 +1955,265 @@ describe("executeTrade and executeLaunchAndSeed: hide (agent-stream S)", () => {
     expect(result.isError).toBe(true)
     expect(result.text).toContain("HIDE_NOT_CONFIRMED")
     expect(calls.length).toBe(1)
+  })
+})
+
+describe("executeTrade: the API converts the amount (BE-3924)", () => {
+  const MINT = "M1nt1111111111111111111111111111"
+  const BUILD = "https://api.test/api/v1/trade/agent/build"
+
+  test("a buy sends amountDecimal to /build with no market read", async () => {
+    const { calls, fetch } = fakeFetch({ [BUILD]: { body: EXECUTED } })
+    const result = await executeTrade({ mint: MINT, side: "buy", amount: "0.5", clientTradeId: "d-1" }, CFG, fetch)
+    expect(calls.map((c) => c.url)).toEqual([BUILD])
+    const body = JSON.parse(String(calls[0]?.init?.body))
+    expect(body).toMatchObject({
+      clientTradeId: "d-1",
+      mint: MINT,
+      side: "buy",
+      amountDecimal: "0.5",
+      payer: { type: "main" },
+    })
+    expect(body.amountRaw).toBeUndefined()
+    expect(body.amountDecimals).toBeUndefined()
+    const parsed = JSON.parse(result.text)
+    expect(parsed.resolved).toEqual({ amountDecimal: "0.5" })
+    expect(parsed.api.status).toBe("executed")
+  })
+
+  test("quoteAsset, slippage, paper, deferExecution and hide ride along as before", async () => {
+    const { calls, fetch } = fakeFetch({ [BUILD]: { body: { ...EXECUTED, hide: true } } })
+    await executeTrade(
+      {
+        mint: MINT,
+        side: "buy",
+        amount: "1",
+        quoteAsset: "usdc",
+        maxSlippageBps: 50,
+        paper: true,
+        clientTradeId: "d-2",
+      },
+      CFG,
+      fetch,
+    )
+    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({
+      amountDecimal: "1",
+      quoteAsset: "usdc",
+      maxSlippageBps: 50,
+      paper: true,
+    })
+  })
+
+  test("a paper amount sell goes straight to /build too", async () => {
+    const { calls, fetch } = fakeFetch({ [BUILD]: { body: EXECUTED } })
+    await executeTrade({ mint: MINT, side: "sell", amount: "2", paper: true, clientTradeId: "d-3" }, CFG, fetch)
+    expect(calls.map((c) => c.url)).toEqual([BUILD])
+  })
+
+  test("a live amount sell and a percent sell keep their reads", async () => {
+    const live = fakeFetch({
+      [`https://api.test/api/v1/markets/solana/${MINT}`]: SOL_MARKET,
+      [BUILD]: { body: EXECUTED },
+    })
+    await executeTrade({ mint: MINT, side: "sell", amount: "2", clientTradeId: "d-4" }, CFG, live.fetch)
+    expect(live.calls[0]?.url).toContain("/markets/")
+    expect(JSON.parse(String(live.calls[1]?.init?.body)).amountRaw).toBe("2000000")
+
+    const pct = fakeFetch({
+      "https://api.test/api/v1/agent/wallets/embedded": { body: { wallets: { solana: { address: "W" } } } },
+      "https://api.test/api/v1/tokens/": { body: { payload: { balance: "1000" } } },
+      [BUILD]: { body: EXECUTED },
+    })
+    await executeTrade({ mint: MINT, side: "sell", percent: 50, clientTradeId: "d-5" }, CFG, pct.fetch)
+    expect(pct.calls.some((c) => c.url.includes("/wallets/embedded"))).toBe(true)
+    expect(JSON.parse(String(pct.calls.at(-1)?.init?.body)).amountRaw).toBe("500")
+  })
+
+  test("an API that predates amountDecimal is retried through the market read, same clientTradeId", async () => {
+    let builds = 0
+    const calls: string[] = []
+    const doFetch: FetchLike = async (url, init) => {
+      calls.push(url)
+      if (url === BUILD) {
+        builds++
+        const sent = JSON.parse(String(init?.body))
+        if (sent.amountDecimal !== undefined) {
+          return {
+            ok: false,
+            status: 400,
+            text: async () =>
+              JSON.stringify({
+                success: false,
+                error: {
+                  code: "VALIDATION_FAILED",
+                  message: "amountRaw is required (or percent on a paper sell)",
+                  field: "amountRaw",
+                },
+              }),
+          }
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify(EXECUTED) }
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify(SOL_MARKET.body) }
+    }
+    const result = await executeTrade({ mint: MINT, side: "buy", amount: "0.5", clientTradeId: "d-6" }, CFG, doFetch)
+    expect(builds).toBe(2)
+    expect(calls[1]).toContain("/markets/")
+    expect(result.isError).toBeUndefined()
+    expect(JSON.parse(result.text).resolved).toMatchObject({ amountRaw: "500000000", decimals: 9 })
+  })
+
+  test("an API that cannot name the asset's decimals falls back to the read", async () => {
+    let first = true
+    const doFetch: FetchLike = async (url) => {
+      if (url === BUILD && first) {
+        first = false
+        return {
+          ok: false,
+          status: 503,
+          text: async () =>
+            JSON.stringify({
+              success: false,
+              error: { code: "QUOTE_UNAVAILABLE", message: "x", field: "amountDecimal" },
+            }),
+        }
+      }
+      if (url === BUILD) return { ok: true, status: 200, text: async () => JSON.stringify(EXECUTED) }
+      return { ok: true, status: 200, text: async () => JSON.stringify(SOL_MARKET.body) }
+    }
+    const result = await executeTrade({ mint: MINT, side: "buy", amount: "0.5", clientTradeId: "d-7" }, CFG, doFetch)
+    expect(result.isError).toBeUndefined()
+  })
+
+  test("any other API refusal, such as excess precision, is relayed and never retried", async () => {
+    const refusal = {
+      success: false,
+      error: { code: "VALIDATION_FAILED", message: "has more fraction digits", field: "amountDecimal" },
+    }
+    const { calls, fetch } = fakeFetch({ [BUILD]: { status: 400, body: refusal } })
+    const result = await executeTrade(
+      { mint: MINT, side: "buy", amount: "0.0000000001", clientTradeId: "d-8" },
+      CFG,
+      fetch,
+    )
+    expect(calls.length).toBe(1)
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(result.text).api.error.field).toBe("amountDecimal")
+  })
+
+  test("a chain_mismatch from the API retries through the market read, which relays its refusal and hint", async () => {
+    const market404 = {
+      success: false,
+      error: {
+        code: "MARKET_NOT_FOUND",
+        message: "wrong chain",
+        routing: { reason: "chain_mismatch" },
+        hint: "try hood",
+      },
+    }
+    const calls: string[] = []
+    const doFetch: FetchLike = async (url) => {
+      calls.push(url)
+      if (url === BUILD) {
+        return {
+          ok: false,
+          status: 400,
+          text: async () =>
+            JSON.stringify({
+              success: false,
+              error: {
+                code: "VALIDATION_FAILED",
+                message: "chain_mismatch: recorded on another chain",
+                field: "amountDecimal",
+              },
+            }),
+        }
+      }
+      return { ok: false, status: 404, text: async () => JSON.stringify(market404) }
+    }
+    const result = await executeTrade({ mint: MINT, side: "buy", amount: "1", clientTradeId: "d-9" }, CFG, doFetch)
+    expect(calls.length).toBe(2)
+    expect(calls[1]).toContain("/markets/")
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("chain_mismatch")
+    expect(result.text).toContain("try hood")
+  })
+
+  test.each([
+    // launch pair's quoteDecimals, quoteAsset sent, amount, expected raw, expected amountDecimals
+    { launch: "eth", quoteDecimals: 18, quoteAsset: "usdg", amount: "10", raw: "10000000", dec: 6 },
+    { launch: "eth", quoteDecimals: 18, quoteAsset: "eth", amount: "0.05", raw: "50000000000000000", dec: 18 },
+    { launch: "eth", quoteDecimals: 18, quoteAsset: undefined, amount: "0.05", raw: "50000000000000000", dec: 18 },
+    { launch: "usdg", quoteDecimals: 6, quoteAsset: "eth", amount: "0.05", raw: "50000000000000000", dec: 18 },
+    { launch: "usdg", quoteDecimals: 6, quoteAsset: undefined, amount: "0.05", raw: "50000000000000000", dec: 18 },
+    { launch: "usdg", quoteDecimals: 6, quoteAsset: "usdg", amount: "10", raw: "10000000", dec: 6 },
+  ])("the market-read buy on a graduated Hood token ($launch-launched, quoteAsset $quoteAsset) scales at the settlement asset", async ({
+    quoteDecimals,
+    quoteAsset,
+    amount,
+    raw,
+    dec,
+  }) => {
+    const HOOD = "0xAbC1230000000000000000000000000000000000"
+    const { calls, fetch } = fakeFetch({
+      [`https://api.test/api/v1/markets/hood/${HOOD}`]: {
+        body: { success: true, market: { candleLaunched: true, venue: "dex", decimals: 18, quoteDecimals } },
+      },
+      [BUILD]: { body: EXECUTED },
+    })
+    await legacyTrade(
+      { mint: HOOD, side: "buy", amount, ...(quoteAsset ? { quoteAsset } : {}), clientTradeId: "d-10" },
+      CFG,
+      fetch,
+    )
+    const sent = JSON.parse(String(calls[1]?.init?.body))
+    expect(sent.amountRaw).toBe(raw)
+    expect(sent.amountDecimals).toBe(dec)
+  })
+
+  test("an ungraduated Hood Candle market still scales at its launch pair", async () => {
+    const HOOD = "0xAbC1230000000000000000000000000000000000"
+    const { calls, fetch } = fakeFetch({
+      [`https://api.test/api/v1/markets/hood/${HOOD}`]: {
+        body: { success: true, market: { candleLaunched: true, venue: "curve", decimals: 18, quoteDecimals: 6 } },
+      },
+      [BUILD]: { body: EXECUTED },
+    })
+    await legacyTrade({ mint: HOOD, side: "buy", amount: "10", quoteAsset: "eth", clientTradeId: "d-11" }, CFG, fetch)
+    expect(JSON.parse(String(calls[1]?.init?.body)).amountRaw).toBe("10000000")
+  })
+
+  test("a feed-only chain_mismatch from the API retries through the market read and relays its hint", async () => {
+    const calls: string[] = []
+    const doFetch: FetchLike = async (url) => {
+      calls.push(url)
+      if (url === BUILD)
+        return {
+          ok: false,
+          status: 400,
+          text: async () =>
+            JSON.stringify({
+              success: false,
+              error: {
+                code: "VALIDATION_FAILED",
+                message: "chain_mismatch: this mint is indexed on a different chain",
+                field: "amountDecimal",
+              },
+            }),
+        }
+      return {
+        ok: false,
+        status: 404,
+        text: async () =>
+          JSON.stringify({
+            success: false,
+            error: { code: "MARKET_NOT_FOUND", routing: { reason: "chain_mismatch" }, hint: "try hood" },
+          }),
+      }
+    }
+    const result = await executeTrade({ mint: MINT, side: "buy", amount: "1", clientTradeId: "d-12" }, CFG, doFetch)
+    expect(calls).toHaveLength(2)
+    expect(result.isError).toBe(true)
+    expect(result.text).toContain("try hood")
   })
 })
