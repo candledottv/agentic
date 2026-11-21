@@ -211,8 +211,8 @@ A TEE wallet passed to `launch()` needs Pro or Max and the agent signs locally; 
 `selfLaunch()` follows the same path. `launchAtomic()` lands the launch and 1 to 4 first buys in one Jito bundle: several
 transactions in the same block, all or none. Each buy is paid by the embedded wallet or a linked
 wallet; the same payer may fund more than one leg. A TEE wallet can be the creator or a buyer, and
-A TEE `launch()` can carry `buy`, only where the server has
-`TEE_LAUNCH_BUYS_ENABLED` on. It is off by default, and a TEE wallet is refused there until it is.
+A TEE `launch()` can carry `buy`. It is on by default; a server turns it off with
+`TEE_LAUNCH_BUYS_ENABLED=0`, and a TEE wallet is refused a buy there.
 
 ## One launch method
 

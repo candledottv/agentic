@@ -161,7 +161,7 @@ function launchBuy(flags: Record<string, string>, chain: TradeChain): LaunchBuy 
 }
 
 /**
- * What `/launch/atomic/build` answers for a TEE creator while TEE_LAUNCH_BUYS_ENABLED is off
+ * What `/launch/atomic/build` answers for a TEE creator while TEE_LAUNCH_BUYS_ENABLED=0 turns it off
  * (BE-868): the payer resolver's refusal of a TEE wallet on the `launch` route class, on field
  * `linkedWalletId`. The route has no code of its own for it, so the CLI reads the message.
  */
@@ -169,7 +169,7 @@ const ATOMIC_TEE_REFUSAL = "This is a TEE wallet: agents may only trade it throu
 
 /**
  * The server's refusal of a TEE wallet's first buy, said plainly (BE-869). Candle takes a first
- * buy on a TEE launch only with TEE_LAUNCH_BUYS_ENABLED on. While it is off, `/launch/self/build`
+ * buy on a TEE launch unless a server sets TEE_LAUNCH_BUYS_ENABLED=0 (it is on by default). While it is off, `/launch/self/build`
  * (Hood) answers `VALIDATION_FAILED` on field `buyAmount`, and `/launch/atomic/build` (a Solana
  * `--buy`, BE-1721) refuses the TEE creator with `ATOMIC_TEE_REFUSAL`. Any other error passes
  * through as is.

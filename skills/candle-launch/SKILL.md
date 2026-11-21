@@ -58,7 +58,7 @@ point at a different deployment.
 6. Two other launch paths exist, both for the Pro or Max plan and neither an MCP tool. The SDK's
    `selfLaunch` launches from a linked or TEE wallet the agent signs for locally (the CLI's
    `candle launch` is this path, from a TEE wallet; `--buy <amount>` adds a first buy from the
-   same wallet where the server has `TEE_LAUNCH_BUYS_ENABLED` on, which is off by default, and
+   same wallet unless the server turns it off with `TEE_LAUNCH_BUYS_ENABLED=0` (on by default), and
    without it the first buy is a separate swap). On Solana the CLI can also set where the launch's
    curve and pool fees earn with `--fee-wallet <address>` (an on-curve wallet, or a Squads v4 vault
    named by `--fee-wallet-multisig <address>` with `--fee-wallet-multisig-vault-index <n>`, CLI
