@@ -8,6 +8,26 @@ import {
   withOperationIds,
 } from "./errors"
 
+describe("BE-4292 presign_refused fields", () => {
+  test("refusal and detail survive the envelope", () => {
+    const error = {
+      code: "SWAP_FAILED",
+      message:
+        "The built transaction failed the pre-sign safety check (simulation_failed); nothing was signed or sent.",
+      retryable: true,
+      stage: "not_broadcast",
+      reason: "presign_refused",
+      refusal: "simulation_failed",
+      detail: "The price moved past maxSlippageBps before the transaction could land.",
+    }
+    const parsed = candleApiErrorFromResponse(500, JSON.stringify({ success: false, error }))
+    expect(parsed.refusal).toBe("simulation_failed")
+    expect(parsed.detail).toBe(error.detail)
+    expect(parsed.reason).toBe("presign_refused")
+    expect(parsed.retryable).toBe(true)
+  })
+})
+
 describe("Release A structured failures", () => {
   test.each([true, false])("BE-2470 quote refusal preserves retryable:%s and the existing stop hint", (retryable) => {
     const error = {

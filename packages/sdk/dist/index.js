@@ -205,6 +205,8 @@ class CandleApiError extends Error {
   quoteAsset;
   treasury;
   reason;
+  refusal;
+  detail;
   retryAfter;
   operationKind;
   refId;
@@ -251,6 +253,10 @@ class CandleApiError extends Error {
       this.treasury = args.treasury;
     if (args.reason !== undefined)
       this.reason = args.reason;
+    if (args.refusal !== undefined)
+      this.refusal = args.refusal;
+    if (args.detail !== undefined)
+      this.detail = args.detail;
     if (args.retryAfter !== undefined)
       this.retryAfter = args.retryAfter;
     if (args.operationKind !== undefined)
@@ -469,6 +475,8 @@ function envelopeError(body) {
     ...typeof error.quoteAsset === "string" ? { quoteAsset: error.quoteAsset } : {},
     ...typeof error.treasury === "string" ? { treasury: error.treasury } : {},
     ...typeof error.reason === "string" ? { reason: error.reason } : {},
+    ...typeof error.refusal === "string" ? { refusal: error.refusal } : {},
+    ...typeof error.detail === "string" ? { detail: error.detail } : {},
     ...typeof error.retryAfter === "number" ? { retryAfter: error.retryAfter } : {},
     ...recoveryEvidenceOf(candidate, error)
   };
@@ -8741,7 +8749,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.36";
+var SDK_VERSION = "0.6.37";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

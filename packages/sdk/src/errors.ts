@@ -87,6 +87,16 @@ export interface CandleErrorPayload {
    * still land: broadcast what was signed, or retry after `retryAfter`), `chain_read_failed`.
    */
   reason?: string
+  /**
+   * BE-4292: on `reason: "presign_refused"`, the pre-sign check that fired (for example
+   * `simulation_failed`, `fee_amount_mismatch`). Nothing was signed or sent.
+   */
+  refusal?: string
+  /**
+   * BE-4292: the refusal's own sentence for why it fired, redacted by the server. For a
+   * `simulation_failed` caused by price movement it says so and names `maxSlippageBps`.
+   */
+  detail?: string
   /** Epoch milliseconds after which a retryable refusal is worth retrying, when the server knows. */
   retryAfter?: number
   /** The operation a sequenced Hood refusal is about. */
@@ -211,6 +221,10 @@ export class CandleApiError extends Error {
   readonly treasury?: string
   /** See `CandleErrorPayload.reason`. */
   readonly reason?: string
+  /** See `CandleErrorPayload.refusal`. */
+  readonly refusal?: string
+  /** See `CandleErrorPayload.detail`. */
+  readonly detail?: string
   /** See `CandleErrorPayload.retryAfter`. */
   readonly retryAfter?: number
   /** BE-3072 recovery evidence; see `CandleErrorPayload`. Present only when the server sent it. */
@@ -261,6 +275,8 @@ export class CandleApiError extends Error {
     if (args.quoteAsset !== undefined) this.quoteAsset = args.quoteAsset
     if (args.treasury !== undefined) this.treasury = args.treasury
     if (args.reason !== undefined) this.reason = args.reason
+    if (args.refusal !== undefined) this.refusal = args.refusal
+    if (args.detail !== undefined) this.detail = args.detail
     if (args.retryAfter !== undefined) this.retryAfter = args.retryAfter
     if (args.operationKind !== undefined) this.operationKind = args.operationKind
     if (args.refId !== undefined) this.refId = args.refId
@@ -721,6 +737,8 @@ function envelopeError(body: unknown): CandleErrorPayload | null {
     ...(typeof error.quoteAsset === "string" ? { quoteAsset: error.quoteAsset } : {}),
     ...(typeof error.treasury === "string" ? { treasury: error.treasury } : {}),
     ...(typeof error.reason === "string" ? { reason: error.reason } : {}),
+    ...(typeof error.refusal === "string" ? { refusal: error.refusal } : {}),
+    ...(typeof error.detail === "string" ? { detail: error.detail } : {}),
     ...(typeof error.retryAfter === "number" ? { retryAfter: error.retryAfter } : {}),
     ...recoveryEvidenceOf(candidate, error),
   }
