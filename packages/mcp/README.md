@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-one hundred and six tools over stdio, plus four Hyperliquid market reads (one hundred and ten in all; the published 0.10.36 ships `candle_recover_operation`, `candle_get_swap_receipt`, `candle_perps_transfer` and the three hacc signal record tools along with the rest; `candle_perps_activity` is source only until the next release), so an MCP-capable agent can launch tokens (optionally seeded with a dev
+one hundred and ten tools over stdio, plus four Hyperliquid market reads (one hundred and fourteen in all; the published 0.10.36 ships `candle_recover_operation`, `candle_get_swap_receipt`, `candle_perps_transfer` and the three hacc signal record tools along with the rest; `candle_perps_activity` is source only until the next release, and the four `candle_perps_spot_*` Hyperliquid spot tools are in 0.10.43 and later), so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, read one token's signals and tracked-wallet trades and its card data, report on-chain activity,
 check an agent profile, backtest a strategy in hacc's strategy lab, and read hacc's scorecard and signal records without hand-rolling HTTP calls. The five
@@ -39,7 +39,7 @@ environment.
 To mint a key for another agent without keeping it as the CLI profile's working key, run `candle keys create --access write --label agent-one --no-store` after device login. The key is printed once; put it in the intended agent's secret store. `--json` reports `stored: false` and exits 0. The profile's existing working key, prefix and scopes stay unchanged, even when it has no working key. Add `--embedded-wallet allow` at a terminal if this key needs the account's embedded wallet. This is a CLI storage option; it adds no MCP tool and does not change tool counts.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all one hundred and ten: the one hundred and six tools in the table below plus the four Hyperliquid
+Unset means all one hundred and fourteen: the one hundred and ten tools in the table below plus the four Hyperliquid
 market reads. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
@@ -267,6 +267,10 @@ before installed-package support can be claimed.
 | `candle_perps_schedule_cancel` | Set or clear Hyperliquid's wallet-wide cancel-all timer | `POST /api/v1/agent/perps/schedule-cancel`, the same, then `/schedule-cancel/ack` | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
 | `candle_perps_flatten` | Cancel every main-perp order, then close every main-perp position; at most 100 signed steps a call | `POST /api/v1/agent/perps/flatten/cancel` and `/perps/close`, one checked step at a time | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
 | `candle_perps_reduce_only` | Read this key's reduce-only setting, or turn it on (never off) | `GET` / `PUT /api/v1/agent/keys/self/perps-reduce-only` | `CANDLE_AGENT_API_KEY` |
+| `candle_perps_spot_order` | Buy or sell a Hyperliquid spot pair (`HYPE/USDC` or `@107`, USDC-quoted only), size in the base token; a buy spends the wallet's spot USDC, which is separate from its perps balance; the preview shows the venue fee and Candle's builder fee (sells only) before the order; optional `clientId` and `hide` (BE-4217, 0.10.43) | `POST /api/v1/agent/perps/spot/order`, checked here against Hyperliquid's own spot metadata, relay-signed, submitted to Hyperliquid | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
+| `candle_perps_spot_cancel` | Cancel a resting spot order Candle built, by cloid (BE-4217, 0.10.43) | `POST /api/v1/agent/perps/spot/cancel`, checked against the order Hyperliquid shows for the cloid, the same | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
+| `candle_perps_spot_markets` | The Hyperliquid spot pairs Candle trades, by 24 h volume, with mid, fees and the liquidity floor; `all` adds refused pairs (BE-4217, 0.10.43) | `GET /api/v1/agent/perps/spot/markets` | `CANDLE_AGENT_API_KEY` |
+| `candle_perps_spot_balances` | The EVM TEE wallet's Hyperliquid spot balances, separate from its perps balance (BE-4217, 0.10.43) | `GET /api/v1/agent/perps/spot/balances` | `CANDLE_AGENT_API_KEY` |
 | `candle_perps_deposit` | Deposit onto the key's Hyperliquid account through Relay, from its Solana or Hood TEE wallet | `POST /api/v1/agent/perps/deposit`, checked here, relay-signed, `POST /api/v1/agent/perps/deposit/submit` | `CANDLE_AGENT_API_KEY` (`swap:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
 | `candle_perps_transfer` | Move USDC between the same wallet's main perps and builder dex balances (`toDex`, `fromDex`); fixed client id and checked action | `POST /api/v1/agent/perps/transfer`, relay-sign, client venue submission and `/submitted` | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
 | `candle_perps_orders` | Open Hyperliquid orders and every action Candle built | `GET /api/v1/agent/perps/orders` | `CANDLE_AGENT_API_KEY` |
@@ -356,7 +360,7 @@ it: a same-id resend replays the stored first answer.
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-one hundred and six tools:
+one hundred and ten tools:
 
 - `candle_token_events`, called with `kind`, is the one narrowing of a SUCCESS body, never an
   error one: the relayed `events` are filtered to that kind and the body gains `filteredByKind`.

@@ -106,6 +106,9 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_perps_account: READ,
   candle_perps_risk: READ,
   candle_perps_thresholds: READ,
+  // BE-4217: Hyperliquid spot reads.
+  candle_perps_spot_markets: READ,
+  candle_perps_spot_balances: READ,
   // BE-3794: the public Hood holder-exit read.
   candle_holder_exit: READ,
   // Money writes (K-1).
@@ -136,6 +139,9 @@ export const TOOL_CLASSES: Readonly<Record<string, ToolClass>> = {
   candle_perps_schedule_cancel: card("perps"),
   candle_perps_flatten: card("perps"),
   candle_perps_reduce_only: card("perps"),
+  // BE-4217: a Hyperliquid spot order moves funds like a perps open; its retry key is clientId.
+  candle_perps_spot_order: card("perps", "clientId"),
+  candle_perps_spot_cancel: card("perps"),
   candle_perps_deposit: card("perps", "clientDepositId"),
   candle_perps_set_thresholds: card("perps"),
   // Public writes under the user's agent: a card, no factor (D4 default A).

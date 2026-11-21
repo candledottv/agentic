@@ -183,6 +183,10 @@ signs up.
 | | `candle_perps_set_thresholds` | yes | tighten the key's own risk thresholds; it can never loosen them |
 | | `candle_perps_fills` | yes | one page of the wallet's fills, read directly from Hyperliquid; no signer needed |
 | | `candle_perps_funding` | yes | one page of the wallet's funding payments, read directly from Hyperliquid; no signer needed |
+| | `candle_perps_spot_markets` | yes | the Hyperliquid spot pairs Candle trades (USDC-quoted), by 24 h volume, with mid, fees and the buy liquidity floor |
+| | `candle_perps_spot_balances` | yes | the EVM TEE wallet's Hyperliquid spot balances, separate from its perps balance |
+| | `candle_perps_spot_order` | yes | buy or sell a spot pair (`HYPE/USDC` or `@107`), size in the base token; a buy spends spot USDC; checked against Hyperliquid's own spot metadata before signing; EVM TEE wallet only (0.10.43) |
+| | `candle_perps_spot_cancel` | yes | cancel a resting spot order Candle built, by cloid, checked against the order Hyperliquid shows (0.10.43) |
 | | `candle_perps_markets` | yes, any scope | Hyperliquid perp markets with volume, open interest and funding; read-only market data, no signer, local server only |
 | | `candle_perps_market` | yes, any scope | one Hyperliquid market in detail; read-only, no signer, local server only |
 | | `candle_perps_book` | yes, any scope | one market's order book; read-only, no signer, local server only |

@@ -286,6 +286,11 @@ export const TOOL_NAMES = [
   "candle_perps_schedule_cancel",
   "candle_perps_flatten",
   "candle_perps_reduce_only",
+  // BE-4217 (BE-3771 HM2): Hyperliquid spot from the EVM TEE wallet (perps.ts). Local only.
+  "candle_perps_spot_markets",
+  "candle_perps_spot_balances",
+  "candle_perps_spot_order",
+  "candle_perps_spot_cancel",
   // Hyperliquid perps C (BE-647): the Relay deposit (perps.ts).
   "candle_perps_deposit",
   "candle_perps_transfer",
@@ -3767,6 +3772,83 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: perpsShapes.candle_perps_reduce_only,
     },
     perpsTool("candle_perps_reduce_only"),
+  )
+
+  // BE-4217 (BE-4165 slice 03, BE-3771 HM2): Hyperliquid spot, the `candle perps spot` mirror. The
+  // order and cancel are built by Candle, checked here against this server's own read of the spot
+  // pair (verifySpotBuildAgainstVenue) before anything is signed, relay-signed and submitted by this
+  // server, exactly as the perps writes are. A failed check signs nothing.
+  const spotNote =
+    " Spot pairs quoted in USDC only, named HYPE/USDC or by Hyperliquid's index (@107). Spot and perps balances " +
+    "are separate on Hyperliquid: a buy spends the wallet's spot USDC, not its perps balance. Spot uses the key's " +
+    "EVM TEE wallet only, never the embedded wallet."
+  const spotWrite =
+    " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the order within this key's limits " +
+    "(USD window, maximum position, slippage and price bands, the liquidity floor on buys); this server checks the " +
+    "build against its own read of the pair (asset, side, size, price, time in force, client id, no grouping, the " +
+    "builder) before signing, then submits it to Hyperliquid itself. A build that fails the check is refused with " +
+    "its reason and nothing signed. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE."
+  register(
+    "candle_perps_spot_markets",
+    {
+      title: "Hyperliquid spot markets",
+      description:
+        "The Hyperliquid spot pairs Candle trades (GET /api/v1/agent/perps/spot/markets), highest 24 h volume " +
+        "first: market, coin, asset, base, quote, midPx, markPx, dayVolumeUsd, szDecimals and terms (Hyperliquid's " +
+        "taker and maker fee; Candle's builder fee is charged on sells only, never on buys). all: true adds the pairs " +
+        "Candle refuses (tradable false, with refusal). minDayVolumeUsd is the liquidity floor a buy is held to." +
+        spotNote +
+        " Needs a Candle agent key of any scope. Reads only; moves nothing.",
+      inputSchema: perpsShapes.candle_perps_spot_markets,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    perpsTool("candle_perps_spot_markets"),
+  )
+  register(
+    "candle_perps_spot_balances",
+    {
+      title: "Hyperliquid spot balances",
+      description:
+        "The EVM TEE wallet's Hyperliquid spot balances (GET /api/v1/agent/perps/spot/balances): per token coin, " +
+        "total and hold (the part resting in open orders). Separate from the perps balance candle_perps_positions " +
+        "reads; spot USDC here is what a buy spends." +
+        spotNote +
+        " Reads only; moves nothing.",
+      inputSchema: perpsShapes.candle_perps_spot_balances,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    perpsTool("candle_perps_spot_balances"),
+  )
+  register(
+    "candle_perps_spot_order",
+    {
+      title: "Buy or sell Hyperliquid spot",
+      description:
+        "Buy or sell a Hyperliquid spot pair: a market order (IOC within slippageBps of the mid) without price, a " +
+        "limit order with it. size is in the base token (HYPE for HYPE/USDC), price in USDC. The build's preview " +
+        "shows the fee before the order: terms (Hyperliquid's taker and maker fee) and builderFee (Candle's builder " +
+        "fee: none on a buy, on a sell the plan's rate, 0.1% today, none on Max). A buy is refused beyond the " +
+        "wallet's free spot USDC, a sell beyond its free base token. Pass clientId to make a retry return the original " +
+        "order instead of placing another. hide: true keeps the fills out of the public activity stream, and a build " +
+        "without the API's hide confirmation is refused before signing." +
+        spotNote +
+        spotWrite,
+      inputSchema: perpsShapes.candle_perps_spot_order,
+    },
+    perpsTool("candle_perps_spot_order"),
+  )
+  register(
+    "candle_perps_spot_cancel",
+    {
+      title: "Cancel a Hyperliquid spot order",
+      description:
+        "Cancel a resting spot order Candle built for this wallet, by its cloid (from candle_perps_spot_order). This " +
+        "server checks that the cancel names the order Hyperliquid shows for that cloid on this wallet, on a spot " +
+        "pair, before signing." +
+        spotWrite,
+      inputSchema: perpsShapes.candle_perps_spot_cancel,
+    },
+    perpsTool("candle_perps_spot_cancel"),
   )
 
   register(

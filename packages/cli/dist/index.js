@@ -208,7 +208,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.43";
+var CLI_VERSION = "0.13.44";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
@@ -7687,6 +7687,160 @@ async function verifyPerpsBuildAgainstVenue(build, opts) {
   }
   return verifyPerpsBuild(build, { ...verify, ...evidence });
 }
+function hyperliquidSpotAsset(a) {
+  return typeof a === "number" && Number.isSafeInteger(a) && a >= 1e4 && a < 1e5;
+}
+function hyperliquidSpotPair(answer, market) {
+  if (!Array.isArray(answer) || !answer[0] || typeof answer[0] !== "object" || !Array.isArray(answer[1]))
+    return null;
+  const meta = answer[0];
+  if (!Array.isArray(meta.universe) || !Array.isArray(meta.tokens))
+    return null;
+  const tokens = new Map;
+  for (const t of meta.tokens)
+    if (typeof t?.name === "string" && Number.isSafeInteger(t.index))
+      tokens.set(t.index, t.name);
+  const pairs = [];
+  for (const p of meta.universe) {
+    if (typeof p?.name !== "string" || !Number.isSafeInteger(p.index) || !Array.isArray(p.tokens))
+      continue;
+    const [b, q] = p.tokens;
+    const base = tokens.get(b);
+    const quote = tokens.get(q);
+    if (base === undefined || quote === undefined)
+      continue;
+    const ctx = answer[1].find((c) => c?.coin === p.name);
+    pairs.push({
+      name: p.name,
+      index: p.index,
+      base,
+      quote,
+      quoteToken: q,
+      midPx: typeof ctx?.midPx === "string" ? ctx.midPx : null
+    });
+  }
+  if (/^@(0|[1-9][0-9]{0,5})$/.test(market))
+    return pairs.find((p) => p.index === Number(market.slice(1))) ?? null;
+  const venue = pairs.find((p) => p.name === market);
+  if (venue)
+    return venue;
+  const exact = pairs.filter((p) => `${p.base}/${p.quote}` === market);
+  if (exact.length === 1)
+    return exact[0] ?? null;
+  if (exact.length > 1)
+    return null;
+  const folded = pairs.filter((p) => `${p.base}/${p.quote}`.toLowerCase() === market.toLowerCase());
+  return folded.length === 1 ? folded[0] ?? null : null;
+}
+async function verifySpotBuildAgainstVenue(build, opts) {
+  try {
+    const network = opts.network ?? "mainnet";
+    const p = opts.intent.params;
+    if (!EVM_ADDRESS_RE.test(opts.builder) || opts.builder.toLowerCase() === ZERO_ADDRESS)
+      return { ok: false, reason: "no valid Candle builder address to check against" };
+    if (build.network !== undefined && build.network !== network)
+      return { ok: false, reason: `the build is for ${build.network}, this client trades ${network}` };
+    if (build.address && build.address.toLowerCase() !== opts.address.toLowerCase())
+      return { ok: false, reason: "the build is for a different wallet" };
+    if (!Number.isSafeInteger(build.nonce) || build.nonce <= 0)
+      return { ok: false, reason: "invalid nonce" };
+    const action = build.action;
+    const typed = build.typedData;
+    if (!action || typeof action !== "object")
+      return { ok: false, reason: "no action" };
+    if (!typed || typeof typed !== "object" || typed.primary_type !== "Agent")
+      return { ok: false, reason: "a spot build must be an L1 Agent signature" };
+    if ("vaultAddress" in action)
+      return { ok: false, reason: "the action names a vault" };
+    const shape = actionShapeProblem(action);
+    if (shape)
+      return { ok: false, reason: shape };
+    if (opts.intent.method === "spotOrder") {
+      if (action.type !== "order")
+        return { ok: false, reason: "action type does not match the requested method" };
+      const orders = action.orders;
+      if (!Array.isArray(orders) || orders.length !== 1 || action.grouping !== "na")
+        return { ok: false, reason: "a spot order is exactly one order with no grouping" };
+      const o = orders[0];
+      if (!o || typeof o !== "object" || !hyperliquidSpotAsset(o.a))
+        return { ok: false, reason: "order asset is not a Hyperliquid spot market" };
+      const isBuy = p.side === "buy";
+      if (p.side !== "buy" && p.side !== "sell")
+        return { ok: false, reason: "side must be buy or sell" };
+      if (opts.keyReduceOnly === true && isBuy)
+        return { ok: false, reason: "this key is reduce-only and a buy is not reducing" };
+      if (o.b !== isBuy || o.r !== false || decimal2(o.s) === null || decimal2(o.s) !== decimal2(p.size))
+        return { ok: false, reason: "order side, size or reduce-only flag does not match the request" };
+      const tif = o.t?.limit?.tif;
+      const marketOrder = (p.type ?? (p.price === undefined ? "market" : "limit")) === "market";
+      if (tif !== (marketOrder ? "Ioc" : p.tif ?? "Gtc"))
+        return { ok: false, reason: "order time in force does not match the request" };
+      if (p.price != null && decimal2(o.p) !== decimal2(p.price))
+        return { ok: false, reason: "order price does not match the request" };
+      if ((decimal2(o.p) ?? 0n) <= 0n)
+        return { ok: false, reason: "invalid order price" };
+      if (p.clientId != null) {
+        const clientId = typeof p.clientId === "string" ? p.clientId.toLowerCase() : null;
+        if (clientId === null || !HYPERLIQUID_CLOID_RE.test(clientId) || o.c !== clientId)
+          return { ok: false, reason: "the order does not carry the requested client order id" };
+      }
+      if (o.c !== undefined && (typeof o.c !== "string" || !HYPERLIQUID_CLOID_RE.test(o.c)))
+        return { ok: false, reason: "invalid client order id" };
+      if (isBuy && "builder" in action && action.builder !== undefined)
+        return { ok: false, reason: "a spot buy carries no builder fee on Hyperliquid, so no builder field" };
+      const builderRefusal = checkBuilderField(action, opts.builder);
+      if (builderRefusal)
+        return { ok: false, reason: builderRefusal };
+      if (typeof p.market !== "string")
+        return { ok: false, reason: "no market in the request" };
+      const pair = hyperliquidSpotPair(await infoRead(opts.fetcher, network, { type: "spotMetaAndAssetCtxs" }), p.market);
+      if (!pair)
+        return { ok: false, reason: "Hyperliquid lists no such spot pair" };
+      if (pair.quoteToken !== 0)
+        return { ok: false, reason: "the pair is not quoted in USDC" };
+      if (o.a !== HYPERLIQUID_SPOT_ASSET_OFFSET + pair.index)
+        return { ok: false, reason: "order asset is not the requested pair's on Hyperliquid" };
+      if (marketOrder) {
+        const mid = decimal2(pair.midPx);
+        const slippage = typeof p.slippageBps === "number" ? p.slippageBps : 100;
+        if (mid === null || mid <= 0n)
+          return { ok: false, reason: "Hyperliquid shows no mid price for the pair" };
+        if (!withinBps(decimal2(o.p) ?? 0n, mid, isBuy, slippage + HYPERLIQUID_MID_DRIFT_BPS))
+          return { ok: false, reason: "order price is outside its slippage of Hyperliquid's mid" };
+      }
+    } else {
+      if (action.type !== "cancel")
+        return { ok: false, reason: "action type does not match the requested method" };
+      const cancels = action.cancels;
+      if (!Array.isArray(cancels) || cancels.length !== 1 || !hyperliquidSpotAsset(cancels[0]?.a))
+        return { ok: false, reason: "invalid spot cancel asset" };
+      if ("builder" in action)
+        return { ok: false, reason: "a cancel action carries no builder" };
+      const status = await infoRead(opts.fetcher, network, {
+        type: "orderStatus",
+        user: opts.address.toLowerCase(),
+        oid: p.cloid
+      });
+      const resting = status?.order?.order;
+      if (!resting || typeof resting.coin !== "string" || !Number.isSafeInteger(resting.oid))
+        return { ok: false, reason: "Hyperliquid shows no order with this cloid on this wallet" };
+      const pair = hyperliquidSpotPair(await infoRead(opts.fetcher, network, { type: "spotMetaAndAssetCtxs" }), resting.coin);
+      if (!pair || pair.name !== resting.coin)
+        return { ok: false, reason: "the order is not on a Hyperliquid spot pair" };
+      if (cancels[0]?.a !== HYPERLIQUID_SPOT_ASSET_OFFSET + pair.index || cancels[0]?.o !== resting.oid)
+        return { ok: false, reason: "the cancel does not name the order Hyperliquid shows for this request" };
+    }
+    const expected = hyperliquidL1TypedData(hyperliquidActionHash(action, build.nonce), network);
+    if (!sameValue(typed, expected))
+      return { ok: false, reason: "the typed data does not commit to this action and nonce" };
+    return { ok: true, kind: "l1" };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `could not check it against Hyperliquid: ${err instanceof Error ? err.message : "read failed"}`
+    };
+  }
+}
 function hyperliquidExchangeOutcome(exchange) {
   if (!exchange || typeof exchange !== "object")
     return { status: "unknown", error: "Hyperliquid returned no answer" };
@@ -7735,7 +7889,7 @@ function hyperliquidSignatureHex(value) {
     throw new Error("Invalid embedded Hyperliquid signature");
   return `${sig.r}${sig.s.slice(2)}${Number(sig.v).toString(16).padStart(2, "0")}`;
 }
-var HYPERLIQUID_ALLOWED_ACTION_TYPES, HYPERLIQUID_EXCHANGE_URLS, HYPERLIQUID_INFO_URLS, CANDLE_HYPERLIQUID_BUILDER_ADDRESS = "0xc43ff1f6ad9f93fc94558e07c2071b8458e7470b", HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS = 100, HYPERLIQUID_MAX_BUILDER_FEE_RATE = "0.1%", HYPERLIQUID_SIGNATURE_CHAIN_ID = "0xa4b1", ZERO_ADDRESS = "0x0000000000000000000000000000000000000000", UINT64_MAX, INT64_MIN, EVM_ADDRESS_RE, HYPERLIQUID_CLOID_RE, HYPERLIQUID_STANDARD_ACCOUNT_MODES, ACTION_KEYS, HYPERLIQUID_DEFAULT_SLIPPAGE_BPS = 100, HYPERLIQUID_MID_DRIFT_BPS = 100, HYPERLIQUID_TPSL_SLIPPAGE_BPS = 500, HYPERLIQUID_SCHEDULE_CANCEL_MIN_LEAD_MS = 5000, HYPERLIQUID_SCHEDULE_CANCEL_DRIFT_MS = 60000;
+var HYPERLIQUID_ALLOWED_ACTION_TYPES, HYPERLIQUID_EXCHANGE_URLS, HYPERLIQUID_INFO_URLS, CANDLE_HYPERLIQUID_BUILDER_ADDRESS = "0xc43ff1f6ad9f93fc94558e07c2071b8458e7470b", HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS = 100, HYPERLIQUID_MAX_BUILDER_FEE_RATE = "0.1%", HYPERLIQUID_SIGNATURE_CHAIN_ID = "0xa4b1", ZERO_ADDRESS = "0x0000000000000000000000000000000000000000", UINT64_MAX, INT64_MIN, EVM_ADDRESS_RE, HYPERLIQUID_CLOID_RE, HYPERLIQUID_STANDARD_ACCOUNT_MODES, ACTION_KEYS, HYPERLIQUID_DEFAULT_SLIPPAGE_BPS = 100, HYPERLIQUID_MID_DRIFT_BPS = 100, HYPERLIQUID_TPSL_SLIPPAGE_BPS = 500, HYPERLIQUID_SCHEDULE_CANCEL_MIN_LEAD_MS = 5000, HYPERLIQUID_SCHEDULE_CANCEL_DRIFT_MS = 60000, HYPERLIQUID_SPOT_ASSET_OFFSET = 1e4;
 var init_hyperliquid = __esm(() => {
   init_sha3();
   init_hyperliquid_markets();
@@ -9677,6 +9831,14 @@ async function walletFor(cfg, fetch2, name, scope) {
     throw new Refusal(fail("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it." : `Name exactly one EVM TEE wallet: ${evm.map((row) => row.label ?? row.id).join(", ")}`));
   return { row: matches[0], appId: typeof listed.privyAppId === "string" ? listed.privyAppId : "" };
 }
+async function spotWalletFor(cfg, fetch2, name, scope) {
+  if (name === "embedded")
+    throw new Refusal(fail("TEE_WALLET_REQUIRED", SPOT_TEE_ONLY));
+  const found = await walletFor(cfg, fetch2, name, scope);
+  if (found.row.id === "embedded")
+    throw new Refusal(fail("TEE_WALLET_REQUIRED", "This key has no EVM TEE wallet bound to it. Spot signs only from one."));
+  return found;
+}
 function builderPin(env) {
   try {
     return resolveHyperliquidBuilder(env.CANDLE_HYPERLIQUID_BUILDER);
@@ -9737,8 +9899,30 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     }
     if (tool === "candle_perps_reduce_only")
       return await executeReduceOnly(args, cfg, fetch2);
+    if (isSpotTool(tool) && name === "embedded")
+      return fail("TEE_WALLET_REQUIRED", SPOT_TEE_ONLY);
+    if (tool === "candle_perps_spot_markets") {
+      const query = new URLSearchParams;
+      if (typeof args.limit === "number")
+        query.set("limit", String(args.limit));
+      if (args.all === true)
+        query.set("all", "true");
+      return { text: JSON.stringify(await call(cfg, fetch2, "GET", `${PATHS[tool]}${query.size ? `?${query}` : ""}`)) };
+    }
+    if (tool === "candle_perps_spot_balances") {
+      const { row: row2 } = await spotWalletFor(cfg, fetch2, name);
+      return {
+        text: JSON.stringify(await call(cfg, fetch2, "GET", `${PATHS[tool]}?${new URLSearchParams({ walletId: row2.id })}`))
+      };
+    }
     const { wallet: _w, submit: _s, hide: hideArg, ...rest } = args;
-    const hide = isHideFlag(hideArg) && ["candle_perps_open", "candle_perps_close", "candle_perps_modify", "candle_perps_tpsl"].includes(tool);
+    const hide = isHideFlag(hideArg) && [
+      "candle_perps_open",
+      "candle_perps_close",
+      "candle_perps_modify",
+      "candle_perps_tpsl",
+      "candle_perps_spot_order"
+    ].includes(tool);
     let clientId2 = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined;
     let fields2 = {
       ...rest,
@@ -9747,6 +9931,19 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     };
     let path = PATHS[tool];
     let method = path.split("/").at(-1);
+    if (tool === "candle_perps_spot_order") {
+      const { pair, ...order } = fields2;
+      if (order.tif !== undefined && order.tif !== "Ioc" && order.price === undefined)
+        return fail("MCP_VALIDATION", "tif Gtc or Alo needs price; a market order is always Ioc.");
+      fields2 = { market: pair, ...order, type: order.price === undefined ? "market" : "limit" };
+      if (order.price === undefined)
+        delete fields2.tif;
+      method = "spotOrder";
+    }
+    if (tool === "candle_perps_spot_cancel") {
+      fields2 = { cloid: String(fields2.cloid).toLowerCase() };
+      method = "spotCancel";
+    }
     if (tool === "candle_perps_close") {
       if (fields2.pct !== undefined && fields2.size !== undefined)
         return fail("MCP_VALIDATION", "Give size or pct, not both.");
@@ -9790,7 +9987,7 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       if (problem)
         return fail("MCP_VALIDATION", problem);
     }
-    const { row, appId } = await walletFor(cfg, fetch2, name, "perps:write");
+    const { row, appId } = isSpotTool(tool) ? await spotWalletFor(cfg, fetch2, name, "perps:write") : await walletFor(cfg, fetch2, name, "perps:write");
     if (row.id === "embedded" && ["open", "close"].includes(method) && clientId2 === undefined) {
       clientId2 = `0x${randomBytes2(16).toString("hex")}`;
       fields2.clientId = clientId2;
@@ -9917,10 +10114,17 @@ async function executePerps(tool, args, cfg, env, fetch2) {
       builder,
       network: network2,
       address: row.address,
-      intent: { method, params: fields2 },
       keyReduceOnly: build.perpsReduceOnly === true
     };
-    const check = method === "setup" ? verifyPerpsBuild(build, verifyOpts) : await verifyPerpsBuildAgainstVenue(build, { ...verifyOpts, fetcher: fetch2 });
+    const check = method === "spotOrder" || method === "spotCancel" ? await verifySpotBuildAgainstVenue(build, {
+      ...verifyOpts,
+      intent: { method, params: fields2 },
+      fetcher: fetch2
+    }) : method === "setup" ? verifyPerpsBuild(build, { ...verifyOpts, intent: { method, params: fields2 } }) : await verifyPerpsBuildAgainstVenue(build, {
+      ...verifyOpts,
+      intent: { method, params: fields2 },
+      fetcher: fetch2
+    });
     if (!check.ok)
       return fail("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`);
     if (!willSubmit || signerPem === null && row.id !== "embedded")
@@ -10194,13 +10398,13 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
     return fail("MCP_TRANSPORT", error instanceof Error ? error.message : "The deposit call failed.");
   }
 }
-var PERPS_RISK_TOOL_NAMES, PERPS_TOOL_NAMES, isRiskTool = (tool) => PERPS_RISK_TOOL_NAMES.includes(tool), decimal3, wallet2, submit, clientId, epochMs, history = (max) => ({
+var PERPS_RISK_TOOL_NAMES, PERPS_SPOT_TOOL_NAMES, PERPS_TOOL_NAMES, isRiskTool = (tool) => PERPS_RISK_TOOL_NAMES.includes(tool), decimal3, wallet2, submit, clientId, epochMs, spotWallet, spotCloid, history = (max) => ({
   wallet: wallet2,
   startTime: epochMs.optional().describe("Inclusive epoch milliseconds. Default: 7 days before endTime."),
   endTime: epochMs.optional().describe("Inclusive epoch milliseconds. Default: now, fixed into the cursor."),
   limit: exports_external.number().int().min(1).max(max).optional().describe(`Rows per page (default 100, at most ${max}).`),
   cursor: exports_external.string().min(1).max(200000).optional().describe("nextCursor from the previous page. The window and limit must not change.")
-}), perpsShapes, PATHS, Refusal, HYPERLIQUID_RELAY_CHAIN_ID = 1337, HYPERLIQUID_RELAY_USDC = "0x00000000000000000000000000000000", DEPOSIT_ASSETS, perpsDepositShape;
+}), perpsShapes, PATHS, isSpotTool = (tool) => PERPS_SPOT_TOOL_NAMES.includes(tool), SPOT_TEE_ONLY = "Hyperliquid spot signs only from the key's EVM TEE wallet; the embedded wallet is not offered for spot. Nothing was requested.", Refusal, HYPERLIQUID_RELAY_CHAIN_ID = 1337, HYPERLIQUID_RELAY_USDC = "0x00000000000000000000000000000000", DEPOSIT_ASSETS, perpsDepositShape;
 var init_perps = __esm(() => {
   init_zod();
   init_hide();
@@ -10213,6 +10417,12 @@ var init_perps = __esm(() => {
     "candle_perps_risk",
     "candle_perps_thresholds",
     "candle_perps_set_thresholds"
+  ];
+  PERPS_SPOT_TOOL_NAMES = [
+    "candle_perps_spot_markets",
+    "candle_perps_spot_balances",
+    "candle_perps_spot_order",
+    "candle_perps_spot_cancel"
   ];
   PERPS_TOOL_NAMES = [
     "candle_perps_setup",
@@ -10231,6 +10441,7 @@ var init_perps = __esm(() => {
     "candle_perps_schedule_cancel",
     "candle_perps_flatten",
     "candle_perps_reduce_only",
+    ...PERPS_SPOT_TOOL_NAMES,
     ...PERPS_RISK_TOOL_NAMES
   ];
   decimal3 = exports_external.string().regex(/^(0|[1-9][0-9]*)(\.[0-9]+)?$/, "a plain decimal string");
@@ -10238,6 +10449,8 @@ var init_perps = __esm(() => {
   submit = exports_external.boolean().optional().describe("false: build and check without venue submission. Embedded builds already carry the server signature. Default true.");
   clientId = exports_external.string().regex(/^0x[0-9a-fA-F]{32}$/).optional().describe("Optional client order id (0x + 32 hex) used as the order's cloid. Retrying with the same id and request returns " + "the original operation (replayed: true); embedded returns its stored signature and resumes submission. Another request under that id is refused (PERPS_CLIENT_ID_CONFLICT). Embedded open/close generate an id when omitted. Use a new id for a new order.");
   epochMs = exports_external.number().int().min(0);
+  spotWallet = exports_external.string().refine((name) => name !== "embedded", "Hyperliquid spot signs only from the key's EVM TEE wallet").optional().describe("The EVM TEE wallet by id, address or label. Defaults to the only one. Spot never uses the embedded wallet.");
+  spotCloid = exports_external.string().regex(/^0x[0-9a-fA-F]{32}$/).describe("The cloid of a spot order Candle built for this wallet (from candle_perps_spot_order)");
   perpsShapes = {
     candle_perps_setup: { wallet: wallet2, submit },
     candle_perps_open: {
@@ -10319,6 +10532,24 @@ var init_perps = __esm(() => {
       submit
     },
     candle_perps_flatten: { wallet: wallet2, submit },
+    candle_perps_spot_markets: {
+      all: exports_external.boolean().optional().describe("true: also list the pairs Candle refuses, each with its refusal"),
+      limit: exports_external.number().int().min(1).max(500).optional().describe("Rows (1 to 500, default 50), by 24 h volume")
+    },
+    candle_perps_spot_balances: { wallet: spotWallet },
+    candle_perps_spot_order: {
+      pair: exports_external.string().regex(/^([A-Za-z0-9]{1,20}\/[A-Za-z0-9]{1,20}|@(0|[1-9][0-9]{0,5}))$/, "a pair such as HYPE/USDC, or @107").describe("The spot pair, HYPE/USDC, or Hyperliquid's index, @107. Pairs quoted in USDC only."),
+      side: exports_external.enum(["buy", "sell"]),
+      size: decimal3.describe('Size in the base token, decimal (e.g. "1.5")'),
+      price: decimal3.optional().describe("Limit price in USDC. Omit for a market order (IOC within slippageBps of the mid)."),
+      tif: exports_external.enum(["Gtc", "Alo", "Ioc"]).optional().describe("Time in force. Gtc (default) and Alo need price; a market order is always Ioc."),
+      slippageBps: exports_external.number().int().min(1).optional(),
+      clientId,
+      hide: hideSchema,
+      wallet: spotWallet,
+      submit
+    },
+    candle_perps_spot_cancel: { cloid: spotCloid, wallet: spotWallet, submit },
     candle_perps_reduce_only: {
       on: exports_external.boolean().optional().describe("Omit to read. true turns this key's reduce-only on. false is refused: only the owner turns it off")
     }
@@ -10339,7 +10570,11 @@ var init_perps = __esm(() => {
     candle_perps_tpsl: "/api/v1/agent/perps/tpsl",
     candle_perps_schedule_cancel: "/api/v1/agent/perps/schedule-cancel",
     candle_perps_flatten: "",
-    candle_perps_reduce_only: "/api/v1/agent/keys/self/perps-reduce-only"
+    candle_perps_reduce_only: "/api/v1/agent/keys/self/perps-reduce-only",
+    candle_perps_spot_markets: "/api/v1/agent/perps/spot/markets",
+    candle_perps_spot_balances: "/api/v1/agent/perps/spot/balances",
+    candle_perps_spot_order: "/api/v1/agent/perps/spot/order",
+    candle_perps_spot_cancel: "/api/v1/agent/perps/spot/cancel"
   };
   Refusal = class Refusal extends Error {
     tool;
@@ -10774,7 +11009,7 @@ var init_chain_registry = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.42";
+var SERVER_VERSION = "0.10.43";
 
 // ../mcp/src/client.ts
 function isLoopbackHost2(hostname) {
@@ -15714,6 +15949,30 @@ function registerToolSubset(server, options) {
     description: "Read this key's perps reduce-only setting, or turn it on (on: true). While on, the key may close, cancel, " + "protect, schedule a cancel and add isolated margin, and nothing that opens or grows exposure. This tool can " + "never turn it off; the owner does. It cancels no resting order and revokes no signed action. Needs perps:write to turn on.",
     inputSchema: perpsShapes.candle_perps_reduce_only
   }, perpsTool("candle_perps_reduce_only"));
+  const spotNote = " Spot pairs quoted in USDC only, named HYPE/USDC or by Hyperliquid's index (@107). Spot and perps balances " + "are separate on Hyperliquid: a buy spends the wallet's spot USDC, not its perps balance. Spot uses the key's " + "EVM TEE wallet only, never the embedded wallet.";
+  const spotWrite = " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the order within this key's limits " + "(USD window, maximum position, slippage and price bands, the liquidity floor on buys); this server checks the " + "build against its own read of the pair (asset, side, size, price, time in force, client id, no grouping, the " + "builder) before signing, then submits it to Hyperliquid itself. A build that fails the check is refused with " + "its reason and nothing signed. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE.";
+  register("candle_perps_spot_markets", {
+    title: "Hyperliquid spot markets",
+    description: "The Hyperliquid spot pairs Candle trades (GET /api/v1/agent/perps/spot/markets), highest 24 h volume " + "first: market, coin, asset, base, quote, midPx, markPx, dayVolumeUsd, szDecimals and terms (Hyperliquid's " + "taker and maker fee; Candle's builder fee is charged on sells only, never on buys). all: true adds the pairs " + "Candle refuses (tradable false, with refusal). minDayVolumeUsd is the liquidity floor a buy is held to." + spotNote + " Needs a Candle agent key of any scope. Reads only; moves nothing.",
+    inputSchema: perpsShapes.candle_perps_spot_markets,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, perpsTool("candle_perps_spot_markets"));
+  register("candle_perps_spot_balances", {
+    title: "Hyperliquid spot balances",
+    description: "The EVM TEE wallet's Hyperliquid spot balances (GET /api/v1/agent/perps/spot/balances): per token coin, " + "total and hold (the part resting in open orders). Separate from the perps balance candle_perps_positions " + "reads; spot USDC here is what a buy spends." + spotNote + " Reads only; moves nothing.",
+    inputSchema: perpsShapes.candle_perps_spot_balances,
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  }, perpsTool("candle_perps_spot_balances"));
+  register("candle_perps_spot_order", {
+    title: "Buy or sell Hyperliquid spot",
+    description: "Buy or sell a Hyperliquid spot pair: a market order (IOC within slippageBps of the mid) without price, a " + "limit order with it. size is in the base token (HYPE for HYPE/USDC), price in USDC. The build's preview " + "shows the fee before the order: terms (Hyperliquid's taker and maker fee) and builderFee (Candle's builder " + "fee: none on a buy, on a sell the plan's rate, 0.1% today, none on Max). A buy is refused beyond the " + "wallet's free spot USDC, a sell beyond its free base token. Pass clientId to make a retry return the original " + "order instead of placing another. hide: true keeps the fills out of the public activity stream, and a build " + "without the API's hide confirmation is refused before signing." + spotNote + spotWrite,
+    inputSchema: perpsShapes.candle_perps_spot_order
+  }, perpsTool("candle_perps_spot_order"));
+  register("candle_perps_spot_cancel", {
+    title: "Cancel a Hyperliquid spot order",
+    description: "Cancel a resting spot order Candle built for this wallet, by its cloid (from candle_perps_spot_order). This " + "server checks that the cancel names the order Hyperliquid shows for that cloid on this wallet, on a spot " + "pair, before signing." + spotWrite,
+    inputSchema: perpsShapes.candle_perps_spot_cancel
+  }, perpsTool("candle_perps_spot_cancel"));
   register("candle_perps_transfer", {
     title: "Transfer own Hyperliquid USDC",
     description: "Move USDC between this wallet's own main perps and builder dex balances (toDex, fromDex). Needs perps:write. No destination address accepted. clientTransferId is required for safe retries; submit=false checks without signing.",
@@ -15949,6 +16208,10 @@ var init_tools = __esm(() => {
     "candle_perps_schedule_cancel",
     "candle_perps_flatten",
     "candle_perps_reduce_only",
+    "candle_perps_spot_markets",
+    "candle_perps_spot_balances",
+    "candle_perps_spot_order",
+    "candle_perps_spot_cancel",
     "candle_perps_deposit",
     "candle_perps_transfer",
     "candle_perps_account",
@@ -82950,6 +83213,8 @@ var TOOL_CLASSES = {
   candle_perps_account: READ,
   candle_perps_risk: READ,
   candle_perps_thresholds: READ,
+  candle_perps_spot_markets: READ,
+  candle_perps_spot_balances: READ,
   candle_holder_exit: READ,
   candle_trade: card("trade", "clientTradeId"),
   candle_trade_execute: card("trade"),
@@ -82973,6 +83238,8 @@ var TOOL_CLASSES = {
   candle_perps_schedule_cancel: card("perps"),
   candle_perps_flatten: card("perps"),
   candle_perps_reduce_only: card("perps"),
+  candle_perps_spot_order: card("perps", "clientId"),
+  candle_perps_spot_cancel: card("perps"),
   candle_perps_deposit: card("perps", "clientDepositId"),
   candle_perps_set_thresholds: card("perps"),
   candle_update_profile: card("profile"),
@@ -99835,6 +100102,10 @@ var MCP_TOOL_NAMES = [
   "candle_perps_schedule_cancel",
   "candle_perps_flatten",
   "candle_perps_reduce_only",
+  "candle_perps_spot_markets",
+  "candle_perps_spot_balances",
+  "candle_perps_spot_order",
+  "candle_perps_spot_cancel",
   "candle_perps_deposit",
   "candle_perps_transfer",
   "candle_perps_account",
@@ -101758,11 +102029,11 @@ async function verifyPerpsBuildAgainstVenue2(build, opts) {
   }
   return verifyPerpsBuild2(build, { ...verify, ...evidence });
 }
-var HYPERLIQUID_SPOT_ASSET_OFFSET = 1e4;
-function hyperliquidSpotAsset(a) {
+var HYPERLIQUID_SPOT_ASSET_OFFSET2 = 1e4;
+function hyperliquidSpotAsset2(a) {
   return typeof a === "number" && Number.isSafeInteger(a) && a >= 1e4 && a < 1e5;
 }
-function hyperliquidSpotPair(answer2, market) {
+function hyperliquidSpotPair2(answer2, market) {
   if (!Array.isArray(answer2) || !answer2[0] || typeof answer2[0] !== "object" || !Array.isArray(answer2[1]))
     return null;
   const meta = answer2[0];
@@ -101804,7 +102075,7 @@ function hyperliquidSpotPair(answer2, market) {
   const folded = pairs.filter((p) => `${p.base}/${p.quote}`.toLowerCase() === market.toLowerCase());
   return folded.length === 1 ? folded[0] ?? null : null;
 }
-async function verifySpotBuildAgainstVenue(build, opts) {
+async function verifySpotBuildAgainstVenue2(build, opts) {
   try {
     const network2 = opts.network ?? "mainnet";
     const p = opts.intent.params;
@@ -101834,7 +102105,7 @@ async function verifySpotBuildAgainstVenue(build, opts) {
       if (!Array.isArray(orders) || orders.length !== 1 || action.grouping !== "na")
         return { ok: false, reason: "a spot order is exactly one order with no grouping" };
       const o = orders[0];
-      if (!o || typeof o !== "object" || !hyperliquidSpotAsset(o.a))
+      if (!o || typeof o !== "object" || !hyperliquidSpotAsset2(o.a))
         return { ok: false, reason: "order asset is not a Hyperliquid spot market" };
       const isBuy = p.side === "buy";
       if (p.side !== "buy" && p.side !== "sell")
@@ -101865,12 +102136,12 @@ async function verifySpotBuildAgainstVenue(build, opts) {
         return { ok: false, reason: builderRefusal };
       if (typeof p.market !== "string")
         return { ok: false, reason: "no market in the request" };
-      const pair = hyperliquidSpotPair(await infoRead2(opts.fetcher, network2, { type: "spotMetaAndAssetCtxs" }), p.market);
+      const pair = hyperliquidSpotPair2(await infoRead2(opts.fetcher, network2, { type: "spotMetaAndAssetCtxs" }), p.market);
       if (!pair)
         return { ok: false, reason: "Hyperliquid lists no such spot pair" };
       if (pair.quoteToken !== 0)
         return { ok: false, reason: "the pair is not quoted in USDC" };
-      if (o.a !== HYPERLIQUID_SPOT_ASSET_OFFSET + pair.index)
+      if (o.a !== HYPERLIQUID_SPOT_ASSET_OFFSET2 + pair.index)
         return { ok: false, reason: "order asset is not the requested pair's on Hyperliquid" };
       if (marketOrder) {
         const mid = decimal5(pair.midPx);
@@ -101884,7 +102155,7 @@ async function verifySpotBuildAgainstVenue(build, opts) {
       if (action.type !== "cancel")
         return { ok: false, reason: "action type does not match the requested method" };
       const cancels = action.cancels;
-      if (!Array.isArray(cancels) || cancels.length !== 1 || !hyperliquidSpotAsset(cancels[0]?.a))
+      if (!Array.isArray(cancels) || cancels.length !== 1 || !hyperliquidSpotAsset2(cancels[0]?.a))
         return { ok: false, reason: "invalid spot cancel asset" };
       if ("builder" in action)
         return { ok: false, reason: "a cancel action carries no builder" };
@@ -101896,10 +102167,10 @@ async function verifySpotBuildAgainstVenue(build, opts) {
       const resting = status?.order?.order;
       if (!resting || typeof resting.coin !== "string" || !Number.isSafeInteger(resting.oid))
         return { ok: false, reason: "Hyperliquid shows no order with this cloid on this wallet" };
-      const pair = hyperliquidSpotPair(await infoRead2(opts.fetcher, network2, { type: "spotMetaAndAssetCtxs" }), resting.coin);
+      const pair = hyperliquidSpotPair2(await infoRead2(opts.fetcher, network2, { type: "spotMetaAndAssetCtxs" }), resting.coin);
       if (!pair || pair.name !== resting.coin)
         return { ok: false, reason: "the order is not on a Hyperliquid spot pair" };
-      if (cancels[0]?.a !== HYPERLIQUID_SPOT_ASSET_OFFSET + pair.index || cancels[0]?.o !== resting.oid)
+      if (cancels[0]?.a !== HYPERLIQUID_SPOT_ASSET_OFFSET2 + pair.index || cancels[0]?.o !== resting.oid)
         return { ok: false, reason: "the cancel does not name the order Hyperliquid shows for this request" };
     }
     const expected = hyperliquidL1TypedData2(hyperliquidActionHash2(action, build.nonce), network2);
@@ -104326,7 +104597,7 @@ async function runPerpsWrite(ctx, opts) {
     address: wallet3.address,
     keyReduceOnly: build.perpsReduceOnly === true
   };
-  const check2 = method === "spotOrder" || method === "spotCancel" ? await verifySpotBuildAgainstVenue(build, {
+  const check2 = method === "spotOrder" || method === "spotCancel" ? await verifySpotBuildAgainstVenue2(build, {
     builder,
     network: net,
     address: wallet3.address,

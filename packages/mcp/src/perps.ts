@@ -44,8 +44,10 @@ import {
   type PerpsIntentMethod,
   perpsSetupStatusProblem,
   resolveHyperliquidBuilder,
+  type SpotIntentMethod,
   verifyPerpsBuild,
   verifyPerpsBuildAgainstVenue,
+  verifySpotBuildAgainstVenue,
 } from "./hyperliquid"
 import {
   PerpsWorkflowError,
@@ -68,6 +70,20 @@ export const PERPS_RISK_TOOL_NAMES = [
 ] as const
 export type PerpsRiskToolName = (typeof PERPS_RISK_TOOL_NAMES)[number]
 
+/**
+ * BE-4217 (BE-4165 slice 03, BE-3771 HM2): Hyperliquid spot from the key's EVM TEE wallet, the MCP
+ * mirror of `candle perps spot`. The order and cancel go through the same build, check, sign and
+ * submit path as the perps writes, but the check is `verifySpotBuildAgainstVenue` (this machine's
+ * own `spotMetaAndAssetCtxs` read), never the perps intent check, which refuses spot on purpose.
+ */
+export const PERPS_SPOT_TOOL_NAMES = [
+  "candle_perps_spot_markets",
+  "candle_perps_spot_balances",
+  "candle_perps_spot_order",
+  "candle_perps_spot_cancel",
+] as const
+export type PerpsSpotToolName = (typeof PERPS_SPOT_TOOL_NAMES)[number]
+
 export const PERPS_TOOL_NAMES = [
   "candle_perps_setup",
   "candle_perps_open",
@@ -86,6 +102,7 @@ export const PERPS_TOOL_NAMES = [
   "candle_perps_schedule_cancel",
   "candle_perps_flatten",
   "candle_perps_reduce_only",
+  ...PERPS_SPOT_TOOL_NAMES,
   ...PERPS_RISK_TOOL_NAMES,
 ] as const
 export type PerpsToolName = (typeof PERPS_TOOL_NAMES)[number]
@@ -115,6 +132,17 @@ const clientId = z
       "the original operation (replayed: true); embedded returns its stored signature and resumes submission. Another request under that id is refused (PERPS_CLIENT_ID_CONFLICT). Embedded open/close generate an id when omitted. Use a new id for a new order.",
   )
 const epochMs = z.number().int().min(0)
+const spotWallet = z
+  .string()
+  .refine((name) => name !== "embedded", "Hyperliquid spot signs only from the key's EVM TEE wallet")
+  .optional()
+  .describe(
+    "The EVM TEE wallet by id, address or label. Defaults to the only one. Spot never uses the embedded wallet.",
+  )
+const spotCloid = z
+  .string()
+  .regex(/^0x[0-9a-fA-F]{32}$/)
+  .describe("The cloid of a spot order Candle built for this wallet (from candle_perps_spot_order)")
 const history = (max: number) => ({
   wallet,
   startTime: epochMs.optional().describe("Inclusive epoch milliseconds. Default: 7 days before endTime."),
@@ -240,6 +268,32 @@ export const perpsShapes = {
     submit,
   },
   candle_perps_flatten: { wallet, submit },
+  candle_perps_spot_markets: {
+    all: z.boolean().optional().describe("true: also list the pairs Candle refuses, each with its refusal"),
+    limit: z.number().int().min(1).max(500).optional().describe("Rows (1 to 500, default 50), by 24 h volume"),
+  },
+  candle_perps_spot_balances: { wallet: spotWallet },
+  candle_perps_spot_order: {
+    pair: z
+      .string()
+      .regex(/^([A-Za-z0-9]{1,20}\/[A-Za-z0-9]{1,20}|@(0|[1-9][0-9]{0,5}))$/, "a pair such as HYPE/USDC, or @107")
+      .describe("The spot pair, HYPE/USDC, or Hyperliquid's index, @107. Pairs quoted in USDC only."),
+    side: z.enum(["buy", "sell"]),
+    size: decimal.describe('Size in the base token, decimal (e.g. "1.5")'),
+    price: decimal
+      .optional()
+      .describe("Limit price in USDC. Omit for a market order (IOC within slippageBps of the mid)."),
+    tif: z
+      .enum(["Gtc", "Alo", "Ioc"])
+      .optional()
+      .describe("Time in force. Gtc (default) and Alo need price; a market order is always Ioc."),
+    slippageBps: z.number().int().min(1).optional(),
+    clientId,
+    hide: hideSchema,
+    wallet: spotWallet,
+    submit,
+  },
+  candle_perps_spot_cancel: { cloid: spotCloid, wallet: spotWallet, submit },
   candle_perps_reduce_only: {
     on: z
       .boolean()
@@ -265,7 +319,18 @@ const PATHS: Record<Exclude<PerpsToolName, PerpsRiskToolName>, string> = {
   candle_perps_schedule_cancel: "/api/v1/agent/perps/schedule-cancel",
   candle_perps_flatten: "",
   candle_perps_reduce_only: "/api/v1/agent/keys/self/perps-reduce-only",
+  candle_perps_spot_markets: "/api/v1/agent/perps/spot/markets",
+  candle_perps_spot_balances: "/api/v1/agent/perps/spot/balances",
+  candle_perps_spot_order: "/api/v1/agent/perps/spot/order",
+  candle_perps_spot_cancel: "/api/v1/agent/perps/spot/cancel",
 }
+
+const isSpotTool = (tool: PerpsToolName): tool is PerpsSpotToolName =>
+  (PERPS_SPOT_TOOL_NAMES as readonly string[]).includes(tool)
+
+/** Spot signs only from the key's EVM TEE wallet: refused before any request. */
+const SPOT_TEE_ONLY =
+  "Hyperliquid spot signs only from the key's EVM TEE wallet; the embedded wallet is not offered for spot. Nothing was requested."
 
 export function fail(code: string, message: string, extra: Record<string, unknown> = {}): ToolText {
   return { text: JSON.stringify({ success: false, error: { code, message }, ...extra }), isError: true }
@@ -356,6 +421,22 @@ export async function walletFor(
   return { row: matches[0] as WalletRow, appId: typeof listed.privyAppId === "string" ? listed.privyAppId : "" }
 }
 
+/** The key's EVM TEE wallet for spot: never the embedded wallet, even as a fallback. */
+async function spotWalletFor(
+  cfg: RequestConfig,
+  fetch: FetchLike,
+  name: string | undefined,
+  scope?: string,
+): Promise<{ row: WalletRow; appId: string }> {
+  if (name === "embedded") throw new Refusal(fail("TEE_WALLET_REQUIRED", SPOT_TEE_ONLY))
+  const found = await walletFor(cfg, fetch, name, scope)
+  if (found.row.id === "embedded")
+    throw new Refusal(
+      fail("TEE_WALLET_REQUIRED", "This key has no EVM TEE wallet bound to it. Spot signs only from one."),
+    )
+  return found
+}
+
 function builderPin(env: Record<string, string | undefined>) {
   try {
     return resolveHyperliquidBuilder(env.CANDLE_HYPERLIQUID_BUILDER)
@@ -433,13 +514,36 @@ export async function executePerps(
 
     if (tool === "candle_perps_reduce_only") return await executeReduceOnly(args, cfg, fetch)
 
+    // BE-4217: spot reads. Markets names no wallet; balances is the EVM TEE wallet's, never embedded.
+    if (isSpotTool(tool) && name === "embedded") return fail("TEE_WALLET_REQUIRED", SPOT_TEE_ONLY)
+    if (tool === "candle_perps_spot_markets") {
+      const query = new URLSearchParams()
+      if (typeof args.limit === "number") query.set("limit", String(args.limit))
+      if (args.all === true) query.set("all", "true")
+      return { text: JSON.stringify(await call(cfg, fetch, "GET", `${PATHS[tool]}${query.size ? `?${query}` : ""}`)) }
+    }
+    if (tool === "candle_perps_spot_balances") {
+      const { row } = await spotWalletFor(cfg, fetch, name)
+      return {
+        text: JSON.stringify(
+          await call(cfg, fetch, "GET", `${PATHS[tool]}?${new URLSearchParams({ walletId: row.id })}`),
+        ),
+      }
+    }
+
     // A write. Inputs are checked first, then the signer, both before any build, so a request that
     // cannot be signed stamps nothing.
     const { wallet: _w, submit: _s, hide: hideArg, ...rest } = args
     // BE-3996: sent as `hide: true` only when asked, so no other body carries the word.
     const hide =
       isHideFlag(hideArg) &&
-      ["candle_perps_open", "candle_perps_close", "candle_perps_modify", "candle_perps_tpsl"].includes(tool)
+      [
+        "candle_perps_open",
+        "candle_perps_close",
+        "candle_perps_modify",
+        "candle_perps_tpsl",
+        "candle_perps_spot_order",
+      ].includes(tool)
     let clientId = typeof rest.clientId === "string" ? rest.clientId.toLowerCase() : undefined
     let fields: Record<string, unknown> = {
       ...rest,
@@ -447,7 +551,20 @@ export async function executePerps(
       ...(hide ? { hide: true } : {}),
     }
     let path = PATHS[tool]
-    let method = path.split("/").at(-1) as PerpsIntentMethod
+    let method = path.split("/").at(-1) as PerpsIntentMethod | SpotIntentMethod
+    if (tool === "candle_perps_spot_order") {
+      // The route's field is `market`; the order type is explicit, as the CLI sends it.
+      const { pair, ...order } = fields
+      if (order.tif !== undefined && order.tif !== "Ioc" && order.price === undefined)
+        return fail("MCP_VALIDATION", "tif Gtc or Alo needs price; a market order is always Ioc.")
+      fields = { market: pair, ...order, type: order.price === undefined ? "market" : "limit" }
+      if (order.price === undefined) delete fields.tif
+      method = "spotOrder"
+    }
+    if (tool === "candle_perps_spot_cancel") {
+      fields = { cloid: String(fields.cloid).toLowerCase() }
+      method = "spotCancel"
+    }
     if (tool === "candle_perps_close") {
       if (fields.pct !== undefined && fields.size !== undefined)
         return fail("MCP_VALIDATION", "Give size or pct, not both.")
@@ -487,7 +604,9 @@ export async function executePerps(
       const problem = perpsTpslParamsProblem(fields as never)
       if (problem) return fail("MCP_VALIDATION", problem)
     }
-    const { row, appId } = await walletFor(cfg, fetch, name, "perps:write")
+    const { row, appId } = isSpotTool(tool)
+      ? await spotWalletFor(cfg, fetch, name, "perps:write")
+      : await walletFor(cfg, fetch, name, "perps:write")
     if (row.id === "embedded" && ["open", "close"].includes(method) && clientId === undefined) {
       clientId = `0x${randomBytes(16).toString("hex")}`
       fields.clientId = clientId
@@ -647,13 +766,24 @@ export async function executePerps(
       builder,
       network,
       address: row.address,
-      intent: { method, params: fields },
       keyReduceOnly: build.perpsReduceOnly === true,
     }
+    // BE-4217: a spot build is checked on its own path, against this machine's own read of the
+    // pair (`spotMetaAndAssetCtxs`), and for a cancel the order Hyperliquid shows for the cloid.
     const check =
-      method === "setup"
-        ? verifyPerpsBuild(build as never, verifyOpts)
-        : await verifyPerpsBuildAgainstVenue(build as never, { ...verifyOpts, fetcher: fetch as never })
+      method === "spotOrder" || method === "spotCancel"
+        ? await verifySpotBuildAgainstVenue(build as never, {
+            ...verifyOpts,
+            intent: { method, params: fields },
+            fetcher: fetch as never,
+          })
+        : method === "setup"
+          ? verifyPerpsBuild(build as never, { ...verifyOpts, intent: { method, params: fields } })
+          : await verifyPerpsBuildAgainstVenue(build as never, {
+              ...verifyOpts,
+              intent: { method, params: fields },
+              fetcher: fetch as never,
+            })
     if (!check.ok)
       return fail("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`)
     if (!willSubmit || (signerPem === null && row.id !== "embedded"))
