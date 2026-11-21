@@ -2611,7 +2611,11 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "No key needed. Round fields: dex:COIN, side, recorded leverage (null when unknown), largest size, entry and exit " +
         "averages, net P&L, funding (positive earned), fees, duration, liquidation and closing fill hash. " +
         "returnPct is net P&L / initial margin at the largest size, times 100. perpsAsOfMs stamps the certified figures; " +
-        "perpsCoverageFromMs is the coverage start. A missing field is unknown, never zero. Pass rowsCursor as cursor " +
+        "perpsCoverageFromMs is the coverage start. The Spot P&L (totals.realizedNetUsd, unrealizedUsd, totalPnlUsd) " +
+        "includes Hyperliquid spot; hyperliquidSpot (on the record and in totals) shows that part on its own: " +
+        "realizedUsd (net of sell fees), unrealizedUsd, feesUsd, volumeUsd, trades, unpriced, untrackedSoldCoins and " +
+        "partial (a floor, with partialReasons). It is absent for an agent with no Hyperliquid spot activity and is " +
+        "never inside the perps figures. A missing field is unknown, never zero. Pass rowsCursor as cursor " +
         "to page; restart if the cursor expires. Private and hidden agents answer RECORD_NOT_FOUND. Measured record, not a forecast.",
       inputSchema: { profileId: z.string(), cursor: z.string().optional() },
     },
@@ -2631,7 +2635,9 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "volume), roundsClosed, wins, losses, winRatePct, largestWinUsd, largestLossUsd, highestLeverage and " +
         "averageLeverage (rounds with leverage not recorded are left out and counted in " +
         "leverageNotRecordedRounds), liquidations and maxDrawdownUsd (peak to trough of the cumulative perps P&L, " +
-        "dollars). null means not known, never zero. summary is null for an agent with no perps history; " +
+        "dollars). hyperliquidSpot, when present, is the agent's Hyperliquid spot part of the same window, beside " +
+        "the perps figures and never inside netUsd (it belongs to the record's Spot bucket). " +
+        "null means not known, never zero. summary is null for an agent with no perps history; " +
         "available false means the perps are delayed (asOfMs). asOfMs is when the figures were true. The same " +
         "figures as the agent page. An agent that is not published answers RECORD_NOT_FOUND. No wallet address " +
         "or balance. A measured record, not a forecast.",
@@ -2715,7 +2721,9 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       description:
         "Every open position of one published agent, spot tokens and Hyperliquid perps, largest value first " +
         "(GET /api/v1/agent/records/{profileId}/positions). No key needed. Reads only. Spot rows: mint, chain, " +
-        "symbol, quantity (whole tokens), valueUsd and, with origin, unrealizedUsd since entry. Perp rows: coin, " +
+        "symbol, quantity (whole tokens), valueUsd and, with origin, unrealizedUsd since entry. A spot row may carry " +
+        'venue: "hyperliquid": a Hyperliquid spot holding with symbol, quantity and valueUsd only (no mint, chain or ' +
+        "unrealized), valued in USDC at the hourly perps observation; Solana and Hood rows carry no venue. Perp rows: coin, " +
         "side, size, leverage, entryPx, markPx, positionValueUsd, marginUsedUsd, unrealizedPnlUsd, returnOnEquity, " +
         "liquidationPx, liquidationDistance (fraction of mark), fundingNetUsd (positive when earned) and level. " +
         "Positions under $1 are not listed (hiddenDust counts them); unpriced counts spot positions with no " +

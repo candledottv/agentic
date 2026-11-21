@@ -208,7 +208,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.44";
+var CLI_VERSION = "0.13.45";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
@@ -11009,7 +11009,7 @@ var init_chain_registry = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.43";
+var SERVER_VERSION = "0.10.44";
 
 // ../mcp/src/client.ts
 function isLoopbackHost2(hostname) {
@@ -15537,12 +15537,12 @@ function registerToolSubset(server, options) {
   }, async (args) => callAndRelay("candle_list_agent_posts", args, getConfig(), doFetch));
   register("candle_get_agent_record", {
     title: "Get an agent's measured record",
-    description: "Public trading record, spot swaps and certified closed Hyperliquid rounds interleaved newest first. " + "No key needed. Round fields: dex:COIN, side, recorded leverage (null when unknown), largest size, entry and exit " + "averages, net P&L, funding (positive earned), fees, duration, liquidation and closing fill hash. " + "returnPct is net P&L / initial margin at the largest size, times 100. perpsAsOfMs stamps the certified figures; " + "perpsCoverageFromMs is the coverage start. A missing field is unknown, never zero. Pass rowsCursor as cursor " + "to page; restart if the cursor expires. Private and hidden agents answer RECORD_NOT_FOUND. Measured record, not a forecast.",
+    description: "Public trading record, spot swaps and certified closed Hyperliquid rounds interleaved newest first. " + "No key needed. Round fields: dex:COIN, side, recorded leverage (null when unknown), largest size, entry and exit " + "averages, net P&L, funding (positive earned), fees, duration, liquidation and closing fill hash. " + "returnPct is net P&L / initial margin at the largest size, times 100. perpsAsOfMs stamps the certified figures; " + "perpsCoverageFromMs is the coverage start. The Spot P&L (totals.realizedNetUsd, unrealizedUsd, totalPnlUsd) " + "includes Hyperliquid spot; hyperliquidSpot (on the record and in totals) shows that part on its own: " + "realizedUsd (net of sell fees), unrealizedUsd, feesUsd, volumeUsd, trades, unpriced, untrackedSoldCoins and " + "partial (a floor, with partialReasons). It is absent for an agent with no Hyperliquid spot activity and is " + "never inside the perps figures. A missing field is unknown, never zero. Pass rowsCursor as cursor " + "to page; restart if the cursor expires. Private and hidden agents answer RECORD_NOT_FOUND. Measured record, not a forecast.",
     inputSchema: { profileId: exports_external.string(), cursor: exports_external.string().optional() }
   }, async (args) => callAndRelay("candle_get_agent_record", args, getConfig(), doFetch));
   register("candle_get_agent_perps_summary", {
     title: "Get an agent's perps summary",
-    description: "One published agent's Hyperliquid perps summary for a window (all, 24h, 7d or 30d; default all) " + "(GET /api/v1/agent/records/{profileId}/perps). No key needed. Reads only. summary: netUsd (realized + " + "funding - fees + unrealized change), realizedUsd, unrealizedUsd, fundingUsd (positive when received), " + "feesUsd (Hyperliquid fees, Candle's builder fee included), volumeUsd (sum of px x sz of the agent's fills, " + "builder-dex fills included; builderDexVolumeUsd is their part), feesToVolumePct (fees over main-exchange " + "volume), roundsClosed, wins, losses, winRatePct, largestWinUsd, largestLossUsd, highestLeverage and " + "averageLeverage (rounds with leverage not recorded are left out and counted in " + "leverageNotRecordedRounds), liquidations and maxDrawdownUsd (peak to trough of the cumulative perps P&L, " + "dollars). null means not known, never zero. summary is null for an agent with no perps history; " + "available false means the perps are delayed (asOfMs). asOfMs is when the figures were true. The same " + "figures as the agent page. An agent that is not published answers RECORD_NOT_FOUND. No wallet address " + "or balance. A measured record, not a forecast.",
+    description: "One published agent's Hyperliquid perps summary for a window (all, 24h, 7d or 30d; default all) " + "(GET /api/v1/agent/records/{profileId}/perps). No key needed. Reads only. summary: netUsd (realized + " + "funding - fees + unrealized change), realizedUsd, unrealizedUsd, fundingUsd (positive when received), " + "feesUsd (Hyperliquid fees, Candle's builder fee included), volumeUsd (sum of px x sz of the agent's fills, " + "builder-dex fills included; builderDexVolumeUsd is their part), feesToVolumePct (fees over main-exchange " + "volume), roundsClosed, wins, losses, winRatePct, largestWinUsd, largestLossUsd, highestLeverage and " + "averageLeverage (rounds with leverage not recorded are left out and counted in " + "leverageNotRecordedRounds), liquidations and maxDrawdownUsd (peak to trough of the cumulative perps P&L, " + "dollars). hyperliquidSpot, when present, is the agent's Hyperliquid spot part of the same window, beside " + "the perps figures and never inside netUsd (it belongs to the record's Spot bucket). " + "null means not known, never zero. summary is null for an agent with no perps history; " + "available false means the perps are delayed (asOfMs). asOfMs is when the figures were true. The same " + "figures as the agent page. An agent that is not published answers RECORD_NOT_FOUND. No wallet address " + "or balance. A measured record, not a forecast.",
     inputSchema: getAgentPerpsSummaryShape
   }, async (args) => callAndRelay("candle_get_agent_perps_summary", args, getConfig(), doFetch));
   register("candle_get_agent_perp_round", {
@@ -15567,7 +15567,7 @@ function registerToolSubset(server, options) {
   }, async (args) => callAndRelay("candle_get_perp_market", args, getConfig(), doFetch));
   register("candle_get_agent_positions", {
     title: "Get an agent's open positions",
-    description: "Every open position of one published agent, spot tokens and Hyperliquid perps, largest value first " + "(GET /api/v1/agent/records/{profileId}/positions). No key needed. Reads only. Spot rows: mint, chain, " + "symbol, quantity (whole tokens), valueUsd and, with origin, unrealizedUsd since entry. Perp rows: coin, " + "side, size, leverage, entryPx, markPx, positionValueUsd, marginUsedUsd, unrealizedPnlUsd, returnOnEquity, " + "liquidationPx, liquidationDistance (fraction of mark), fundingNetUsd (positive when earned) and level. " + "Positions under $1 are not listed (hiddenDust counts them); unpriced counts spot positions with no " + "price. kind keeps spot or perp. portfolioValueUsd is spot value plus each perp's margin and " + "unrealized, never idle USDC; null with perpsUnavailable means the perps have no certified snapshot " + "yet. publishedBuildId is the board generation (the same id on the record, rank and chart); seq is the " + "push resume cursor, not that generation. A retained bundle keeps perpsSnapshotId and changes " + "publishedBuildId. perpsAsOfMs is the oldest wallet cutoff: with perpsProvisional true it is a " + "provisional read refreshed every board build (about 10 minutes) and perpsCertifiedAsOfMs is the hourly " + "certified cutoff under it, which corrects the provisional figures; without it the figures are certified, " + "about an hour behind. perpsPartial or " + "portfolioPartial means a figure is incomplete, never zero. No wallet address or balance. An agent that " + "is not published " + "answers RECORD_NOT_FOUND; a server that does not serve positions yet answers 503 positions_unavailable. " + "profileId comes from candle_list_agents. A position is data, not advice.",
+    description: "Every open position of one published agent, spot tokens and Hyperliquid perps, largest value first " + "(GET /api/v1/agent/records/{profileId}/positions). No key needed. Reads only. Spot rows: mint, chain, " + "symbol, quantity (whole tokens), valueUsd and, with origin, unrealizedUsd since entry. A spot row may carry " + 'venue: "hyperliquid": a Hyperliquid spot holding with symbol, quantity and valueUsd only (no mint, chain or ' + "unrealized), valued in USDC at the hourly perps observation; Solana and Hood rows carry no venue. Perp rows: coin, " + "side, size, leverage, entryPx, markPx, positionValueUsd, marginUsedUsd, unrealizedPnlUsd, returnOnEquity, " + "liquidationPx, liquidationDistance (fraction of mark), fundingNetUsd (positive when earned) and level. " + "Positions under $1 are not listed (hiddenDust counts them); unpriced counts spot positions with no " + "price. kind keeps spot or perp. portfolioValueUsd is spot value plus each perp's margin and " + "unrealized, never idle USDC; null with perpsUnavailable means the perps have no certified snapshot " + "yet. publishedBuildId is the board generation (the same id on the record, rank and chart); seq is the " + "push resume cursor, not that generation. A retained bundle keeps perpsSnapshotId and changes " + "publishedBuildId. perpsAsOfMs is the oldest wallet cutoff: with perpsProvisional true it is a " + "provisional read refreshed every board build (about 10 minutes) and perpsCertifiedAsOfMs is the hourly " + "certified cutoff under it, which corrects the provisional figures; without it the figures are certified, " + "about an hour behind. perpsPartial or " + "portfolioPartial means a figure is incomplete, never zero. No wallet address or balance. An agent that " + "is not published " + "answers RECORD_NOT_FOUND; a server that does not serve positions yet answers 503 positions_unavailable. " + "profileId comes from candle_list_agents. A position is data, not advice.",
     inputSchema: getAgentPositionsShape
   }, async (args) => callAndRelay("candle_get_agent_positions", args, getConfig(), doFetch));
   register("candle_list_agents", {
@@ -30212,6 +30212,8 @@ function renderOpenOrders(body, now) {
   return lines;
 }
 function rowOf(p) {
+  if (p.kind === "spot" && p.venue === "hyperliquid")
+    return ["Hyperliquid spot", p.symbol, formatQuantity(p.quantity), formatUsd(p.valueUsd), "–", "–"];
   if (p.kind === "spot") {
     const pnl2 = p.unrealizedUsd === undefined ? "–" : `${formatUsd(p.unrealizedUsd, { signed: true })}${p.unrealizedPct === undefined ? "" : ` (${pct(p.unrealizedPct)})`}`;
     return ["token", p.symbol ?? p.mint, formatQuantity(p.quantity), formatUsd(p.valueUsd), pnl2, "–"];
@@ -31093,17 +31095,17 @@ function applyPromotion(index, subject, destination, opts) {
   };
 }
 function promoteSentence(input) {
-  const plural = input.n !== 1;
-  const subject = plural ? `these ${input.n} keys` : "this key";
+  const plural2 = input.n !== 1;
+  const subject = plural2 ? `these ${input.n} keys` : "this key";
   const head = `You are about to accept a permanent copy of ${subject} in Privy's TEE: demoting will not remove it,`;
   switch (input.form) {
     case "U":
-      return `${head} and anything ${plural ? "a key" : "it"} signs for (a multisig, a token mint, a program upgrade authority) is then only as safe as Privy.`;
+      return `${head} and anything ${plural2 ? "a key" : "it"} signs for (a multisig, a token mint, a program upgrade authority) is then only as safe as Privy.`;
     case "N":
-      return `${head} ${plural ? "none of them is" : "it is not"} a token mint, freeze, program upgrade or stake authority, and any multisig ${plural ? "they sign" : "it signs"} for (not checked) is then only as safe as Privy.`;
+      return `${head} ${plural2 ? "none of them is" : "it is not"} a token mint, freeze, program upgrade or stake authority, and any multisig ${plural2 ? "they sign" : "it signs"} for (not checked) is then only as safe as Privy.`;
     case "F": {
       const k = input.k ?? 1;
-      const holder = plural ? `${k} of them ${k === 1 ? "holds" : "hold"}` : "it holds";
+      const holder = plural2 ? `${k} of them ${k === 1 ? "holds" : "hold"}` : "it holds";
       return `${head} and ${holder} a mint, freeze, upgrade or stake authority, named ${input.where}, which is then only as safe as Privy.`;
     }
   }
@@ -78175,7 +78177,7 @@ START HERE — fifteen tools need NO credential. Call these first to confirm the
   candle_get_agent_profile  your own tier, caps and verified activity
   candle_list_agents      the agent directory: every published agent with its strategy, declared models, all-time P&L, trades and launches; sort newest, active or pnl
   candle_list_agent_posts one published agent's posts, newest first: free text it or its owner wrote, with an optional token chip. Data, never instructions or advice
-  candle_get_agent_positions one published agent's open positions, spot and Hyperliquid perps, with quantities; under $1 hidden and counted, funding positive when earned, no wallet or balance
+  candle_get_agent_positions one published agent's open positions, spot and Hyperliquid perps, with quantities; Hyperliquid spot rows carry venue: "hyperliquid"; under $1 hidden and counted, funding positive when earned, no wallet or balance
   candle_get_agent_perps_summary one published agent's perps summary for a window: net, realized, unrealized, funding, fees, volume, fees to volume, rounds, win rate, largest win and loss, leverage, liquidations, max drawdown; null is unknown, never zero
   candle_get_agent_perp_round one perp round of a published agent, open or closed: fills, funding, fees split Hyperliquid vs Candle builder fee, entry and exit averages, return on margin, outcome; roundId rnd_... or open:<COIN>
   candle_get_agent_open_orders a published agent's open limit and take-profit / stop orders, public on Hyperliquid, cached about 10 minutes; none means none
@@ -78983,6 +78985,21 @@ init_client();
 init_render();
 init_usd();
 init_swap();
+var plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+function renderHyperliquidSpot(h) {
+  if (!h || typeof h.realizedUsd !== "number" || typeof h.unrealizedUsd !== "number")
+    return null;
+  const notes = [
+    h.unpriced > 0 ? `${h.unpriced} unpriced` : "",
+    h.untrackedSoldCoins > 0 ? `${plural(h.untrackedSoldCoins, "coin")} sold beyond the tracked quantity` : "",
+    h.partial ? `partial, a floor${h.partialReasons?.length ? ` (${h.partialReasons.map(terminalText).join(", ")})` : ""}` : ""
+  ].filter(Boolean);
+  return [
+    `Spot P&L includes Hyperliquid spot: realized ${formatUsd(h.realizedUsd, { signed: true })}, unrealized ${formatUsd(h.unrealizedUsd, { signed: true })}`,
+    `fees ${formatUsd(h.feesUsd)}, volume ${formatUsd(h.volumeUsd)}, ${plural(h.trades, "trade")}`,
+    ...notes
+  ].join(" · ");
+}
 function renderRound(r) {
   const label = `${r.side === "long" ? "Long" : "Short"} ${r.coin} ${r.leverage ? `${r.leverage.value}x` : "leverage not recorded"}`;
   return [
@@ -79031,6 +79048,9 @@ async function agentRecord(args, ctx) {
         terminalText(r.name),
         `Perps as of ${stamp}${r.perpsUnavailable ? " (unavailable)" : r.perpsPartial ? " (partial)" : ""}`
       ];
+      const hyperliquidSpot = renderHyperliquidSpot(r.hyperliquidSpot ?? r.totals?.hyperliquidSpot);
+      if (hyperliquidSpot)
+        lines.push(hyperliquidSpot);
       for (const row of r.rows ?? [])
         lines.push(row.kind === "perp_round" ? renderRound(row) : terminalText(`${row.side} ${row.symbol ?? row.mint} ${row.usdAmount ?? ""}`));
       if (r.rowsCursor)
@@ -90310,7 +90330,7 @@ var unsupported = {
 function name(wallet3) {
   return wallet3.label ? `${labelCell(wallet3.label)} (${wallet3.id})` : wallet3.id;
 }
-function plural(n, one, many = `${one}s`) {
+function plural2(n, one, many = `${one}s`) {
   return `${n} ${n === 1 ? one : many}`;
 }
 async function teeSigner(args, ctx) {
@@ -90406,7 +90426,7 @@ async function teeSignerNew(args, ctx) {
       const count2 = owning.reduce((n, o) => n + o.count, 0);
       writeScreenLocalFailure(deps, {
         code: "KEY_SIGNER_ROTATION_REFUSED",
-        message: `This machine's signer ${owning.map((o) => o.entry.fingerprint).join(", ")} for key ${keyPrefix} still owns ${plural(count2, "wallet")}. A new signer does not move them. Nothing was generated.`,
+        message: `This machine's signer ${owning.map((o) => o.entry.fingerprint).join(", ")} for key ${keyPrefix} still owns ${plural2(count2, "wallet")}. A new signer does not move them. Nothing was generated.`,
         suggestion: `Pass --force to add a new signer and keep the old one here, so those wallets keep trading until candle keys signer move ${keyPrefix} moves them.`,
         details: { keyPrefix, wallets: count2 }
       }, json);
@@ -90415,10 +90435,10 @@ async function teeSignerNew(args, ctx) {
     if (active !== null) {
       replaces = { fingerprint: active.fingerprint, wallets: view.wallets.onSigner.length };
       if (json) {
-        notice(deps, "stderr", "warning", `Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}
+        notice(deps, "stderr", "warning", `Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural2(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}
 `.trim());
       } else {
-        notice(deps, "stderr", "warning", `Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}
+        notice(deps, "stderr", "warning", `Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural2(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}
 `.trimEnd());
       }
     }
@@ -90659,13 +90679,13 @@ function reportApproved(ctx, view, entry2, how) {
   }
   const lines = [
     `Approved: key ${entry2.keyPrefix}'s signer is ${entry2.fingerprint}, held on this machine.`,
-    onSigner.length > 0 ? `${plural(onSigner.length, "wallet")} on this signer trade${onSigner.length === 1 ? "s" : ""} from this machine now.` : "No wallet is on this signer yet. Promote onto it with candle vault promote --to-key on the vault machine."
+    onSigner.length > 0 ? `${plural2(onSigner.length, "wallet")} on this signer trade${onSigner.length === 1 ? "s" : ""} from this machine now.` : "No wallet is on this signer yet. Promote onto it with candle vault promote --to-key on the vault machine."
   ];
   if (moving.length > 0) {
-    lines.push(`${plural(moving.length, "wallet")} ${moving.length === 1 ? "is" : "are"} still on a previous signer of this key and keep${moving.length === 1 ? "s" : ""} trading from the machine that holds it until candle keys signer move ${entry2.keyPrefix} runs there: ${moving.map(name).join(", ")}`);
+    lines.push(`${plural2(moving.length, "wallet")} ${moving.length === 1 ? "is" : "are"} still on a previous signer of this key and keep${moving.length === 1 ? "s" : ""} trading from the machine that holds it until candle keys signer move ${entry2.keyPrefix} runs there: ${moving.map(name).join(", ")}`);
   }
   if (legacy.length > 0) {
-    lines.push(`${plural(legacy.length, "wallet")} keep${legacy.length === 1 ? "s" : ""} a per-wallet signer on the machine that promoted ${legacy.length === 1 ? "it" : "them"} until candle keys signer move ${entry2.keyPrefix} runs there: ${legacy.map(name).join(", ")}`);
+    lines.push(`${plural2(legacy.length, "wallet")} keep${legacy.length === 1 ? "s" : ""} a per-wallet signer on the machine that promoted ${legacy.length === 1 ? "it" : "them"} until candle keys signer move ${entry2.keyPrefix} runs there: ${legacy.map(name).join(", ")}`);
   }
   writeSuccess(deps, "stdout", "Key signer approved");
   writeFields(deps, "stdout", [
@@ -90765,7 +90785,7 @@ async function keysSignerApprove(args, ctx) {
       ["Fingerprint", pending.fingerprint],
       ["Wallets on this key", all.length]
     ], "Signer request");
-    notice(deps, "stderr", "warning", `Requested from a machine using this key. Compare the fingerprint with what that machine printed.${active !== null ? ` Approving replaces signer ${active.fingerprint} as this key's active signer.` : ""}${active !== null && onActive > 0 ? ` ${plural(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.` : ""}`);
+    notice(deps, "stderr", "warning", `Requested from a machine using this key. Compare the fingerprint with what that machine printed.${active !== null ? ` Approving replaces signer ${active.fingerprint} as this key's active signer.` : ""}${active !== null && onActive > 0 ? ` ${plural2(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.` : ""}`);
   } else {
     writeFields(deps, "stderr", [
       ["Key", keyPrefix],
@@ -90777,7 +90797,7 @@ async function keysSignerApprove(args, ctx) {
     if (active !== null)
       notice(deps, "stderr", "warning", `Approving replaces signer ${active.fingerprint} as this key's active signer.`);
     if (active !== null && onActive > 0)
-      notice(deps, "stderr", "warning", `${plural(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.`);
+      notice(deps, "stderr", "warning", `${plural2(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.`);
   }
   let typed;
   if (!reject) {
@@ -90817,7 +90837,7 @@ async function keysSignerApprove(args, ctx) {
     ["Fingerprint", pending.fingerprint]
   ]);
   if (moving > 0)
-    notice(deps, "stdout", "warning", `${plural(moving, "wallet")} ${moving === 1 ? "is" : "are"} moving: ${moving === 1 ? "it keeps" : "they keep"} trading from the machine holding the previous signer until candle keys signer move ${keyPrefix} runs there.`);
+    notice(deps, "stdout", "warning", `${plural2(moving, "wallet")} ${moving === 1 ? "is" : "are"} moving: ${moving === 1 ? "it keeps" : "they keep"} trading from the machine holding the previous signer until candle keys signer move ${keyPrefix} runs there.`);
   return 0;
 }
 async function keysSignerMove(args, ctx) {
@@ -91105,7 +91125,7 @@ async function deleteDrainedSlots(ctx, opts) {
       continue;
     const left = owners.filter((w) => w.signerQuorumId === entry2.signerQuorumId).length;
     if (left > 0) {
-      cleanup.kept.push({ slot: ref, reason: `${plural(left, "wallet")} still on it` });
+      cleanup.kept.push({ slot: ref, reason: `${plural2(left, "wallet")} still on it` });
       continue;
     }
     await deleteKeySignerEntry(deps, entry2);
@@ -91154,12 +91174,12 @@ function reportMove(ctx, report) {
     notice(deps, "stdout", "warning", "Binding only: the target key has no signer, so the owners stay.");
   const lines = [];
   if (failed.length > 0) {
-    lines.push(`${plural(failed.length, "wallet")} failed; run the same command again:`);
+    lines.push(`${plural2(failed.length, "wallet")} failed; run the same command again:`);
     for (const o of failed)
       lines.push(`  ${o.label ?? o.walletId}: ${o.code} ${o.message ?? ""}`);
   }
   if (notHere.length > 0) {
-    lines.push(`${plural(notHere.length, "wallet")} ${notHere.length === 1 ? "is" : "are"} owned by a signer this machine does not hold; run this on the machine that holds it: ${notHere.map((o) => o.label ?? o.walletId).join(", ")}`);
+    lines.push(`${plural2(notHere.length, "wallet")} ${notHere.length === 1 ? "is" : "are"} owned by a signer this machine does not hold; run this on the machine that holds it: ${notHere.map((o) => o.label ?? o.walletId).join(", ")}`);
   }
   for (const slot of report.cleanup.deleted)
     lines.push(`Deleted ${slot}: no wallet is left on it.`);
@@ -91474,7 +91494,7 @@ async function teeLimitsRow(ctx, apiKey, wallets2) {
 var DEVICE_TOKEN_ROW = "Device token beside signer";
 var DEVICE_TOKEN_NOTICE = "This machine holds a device token and a key signer, so it can approve its own signer request. On a trading machine you signed in to for a move, you can log out here and approve from the owner's machine:";
 var DEVICE_TOKEN_FIX = "candle auth logout --profile <name>";
-function plural2(count2, one, many) {
+function plural3(count2, one, many) {
   return `${count2} ${count2 === 1 ? one : many}`;
 }
 function renderDoctorReport(rows, role, style) {
@@ -91503,10 +91523,10 @@ function renderDoctorReport(rows, role, style) {
   }
   const count2 = (state) => rows.filter((row2) => row2.state === state).length;
   const tally = [
-    plural2(count2("PASS"), "passed", "passed"),
-    ...count2("WARN") > 0 ? [plural2(count2("WARN"), "warning", "warnings")] : [],
-    ...count2("FAIL") > 0 ? [plural2(count2("FAIL"), "failed", "failed")] : [],
-    ...count2("SKIP") > 0 ? [plural2(count2("SKIP"), "skipped", "skipped")] : []
+    plural3(count2("PASS"), "passed", "passed"),
+    ...count2("WARN") > 0 ? [plural3(count2("WARN"), "warning", "warnings")] : [],
+    ...count2("FAIL") > 0 ? [plural3(count2("FAIL"), "failed", "failed")] : [],
+    ...count2("SKIP") > 0 ? [plural3(count2("SKIP"), "skipped", "skipped")] : []
   ].join(` ${sym.note} `);
   out.push("", `${" ".repeat(indent)}${dim(tally, style)}`);
   return out.join(`
@@ -110213,7 +110233,7 @@ function writeSummary(ctx, s) {
   const total = totalOf(s);
   const lp = s.lp;
   if (lp?.read) {
-    const plural3 = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+    const plural4 = (n, one, many) => `${n} ${n === 1 ? one : many}`;
     lines.push([
       "LP realized",
       formatUsd(lp.realizedUsd, SIGNED),
@@ -110221,7 +110241,7 @@ function writeSummary(ctx, s) {
     ], [
       "LP unrealized",
       formatUsd(lp.unrealizedUsd, SIGNED),
-      `${lp.valued} of ${plural3(lp.openPositions, "open LP position", "open LP positions")} valued${lp.unpriced > 0 ? `; ${lp.unpriced} unpriced, not counted` : ""}${lp.unreadable > 0 ? `; ${lp.unreadable} not read, not counted` : ""}${lp.closedOutsideLedger > 0 ? `; ${lp.closedOutsideLedger} closed outside the ledger, not counted` : ""}`
+      `${lp.valued} of ${plural4(lp.openPositions, "open LP position", "open LP positions")} valued${lp.unpriced > 0 ? `; ${lp.unpriced} unpriced, not counted` : ""}${lp.unreadable > 0 ? `; ${lp.unreadable} not read, not counted` : ""}${lp.closedOutsideLedger > 0 ? `; ${lp.closedOutsideLedger} closed outside the ledger, not counted` : ""}`
     ], [
       "LP vs holding",
       lp.vsHoldingPositions > 0 ? formatUsd(lp.vsHoldingUsd, SIGNED) : symbolsMissing(ctx),

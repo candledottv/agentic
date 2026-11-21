@@ -1,5 +1,6 @@
 export type {
   AcceptedJob,
+  AgentChainSpotPosition,
   AgentDirectoryEntry,
   AgentDirectoryPage,
   AgentDirectorySort,
@@ -12,6 +13,8 @@ export type {
   AgentFeesPage,
   AgentFeeToken,
   AgentHoldingOrigin,
+  AgentHyperliquidSpotFigures,
+  AgentHyperliquidSpotPosition,
   AgentLeaderboardEntry,
   AgentOpenOrder,
   AgentOpenOrders,

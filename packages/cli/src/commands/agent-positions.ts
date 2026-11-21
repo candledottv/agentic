@@ -12,12 +12,21 @@ export const SLUG = /^[a-z0-9][a-z0-9_-]{2,29}$/
 
 interface SpotRow {
   kind: "spot"
+  venue?: undefined
   mint: string
   symbol: string | null
   quantity: number
   valueUsd: number
   unrealizedUsd?: number
   unrealizedPct?: number
+}
+/** BE-4220/BE-4222: a Hyperliquid spot holding, tagged with its venue; no mint and no unrealized figure. */
+interface HyperliquidSpotRow {
+  kind: "spot"
+  venue: "hyperliquid"
+  symbol: string
+  quantity: number
+  valueUsd: number
 }
 interface PerpRow {
   kind: "perp"
@@ -46,7 +55,7 @@ interface Positions {
   portfolioPartial: boolean
   hiddenDust: number
   unpriced: number
-  positions: (SpotRow | PerpRow)[]
+  positions: (SpotRow | HyperliquidSpotRow | PerpRow)[]
 }
 
 interface OpenOrder {
@@ -101,8 +110,13 @@ export function renderOpenOrders(body: OpenOrders, now: number): string[] {
 
 const pct = (value: number) => `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`
 
-/** One table row per position; perps read Fomo's way: "10x Short", margin, value, P&L and ROE. */
-function rowOf(p: SpotRow | PerpRow): string[] {
+/**
+ * One table row per position; perps read Fomo's way: "10x Short", margin, value, P&L and ROE. A Hyperliquid
+ * spot holding carries the venue label and no P&L (the route serves none for it).
+ */
+function rowOf(p: SpotRow | HyperliquidSpotRow | PerpRow): string[] {
+  if (p.kind === "spot" && p.venue === "hyperliquid")
+    return ["Hyperliquid spot", p.symbol, formatQuantity(p.quantity), formatUsd(p.valueUsd), "–", "–"]
   if (p.kind === "spot") {
     const pnl =
       p.unrealizedUsd === undefined

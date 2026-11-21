@@ -967,9 +967,10 @@ export type AgentPositionsKind = "spot" | "perp";
 export interface GetAgentPositionsOptions {
     kind?: AgentPositionsKind;
 }
-/** One open spot position of a public agent, with its quantity. */
-export interface AgentSpotPosition {
+/** One open Solana or Hood spot position of a public agent, with its quantity. Carries no `venue`. */
+export interface AgentChainSpotPosition {
     kind: "spot";
+    venue?: undefined;
     mint: string;
     chain: "solana" | "hood";
     symbol: string | null;
@@ -982,6 +983,28 @@ export interface AgentSpotPosition {
     unrealizedPct?: number;
     origin?: AgentHoldingOrigin;
 }
+/**
+ * BE-4220: one Hyperliquid spot holding of a public agent, valued in USDC at the hourly perps observation.
+ * Tagged `venue: "hyperliquid"`; no mint, chain or address, and no unrealized figure. Counted once in
+ * `portfolioValueUsd`. A unified account's USDC is never a row (the account value holds it); a holding
+ * with no USDC price is not listed and is counted in `unpriced`.
+ */
+export interface AgentHyperliquidSpotPosition {
+    kind: "spot";
+    venue: "hyperliquid";
+    mint?: undefined;
+    chain?: undefined;
+    /** The venue's base token name, for example `HYPE` or `PURR`. */
+    symbol: string;
+    /** Whole token units. */
+    quantity: number;
+    valueUsd: number;
+}
+/**
+ * One open spot position of a public agent. Narrow on `venue`: a Hyperliquid row (`venue: "hyperliquid"`,
+ * BE-4222) has no mint or chain; a Solana or Hood row has no `venue`.
+ */
+export type AgentSpotPosition = AgentChainSpotPosition | AgentHyperliquidSpotPosition;
 /** One open Hyperliquid perp position of a public agent, from its certified snapshot. Decimals are strings. */
 export interface AgentPerpPosition {
     kind: "perp";
@@ -1052,6 +1075,11 @@ export interface AgentPerpsSummaryFigures {
     maxDrawdownUsd: number | null;
     perpsProvisional?: true;
     perpsCertifiedAsOfMs?: number;
+    /**
+     * BE-4221: the agent's Hyperliquid spot part of the same window, beside the perps figures and never
+     * inside `netUsd` (it belongs to the record's Spot bucket). Absent with no Hyperliquid spot activity.
+     */
+    hyperliquidSpot?: AgentHyperliquidSpotFigures;
 }
 export type AgentPerpsSummary = AgentPerpsSummaryFigures | {
     available: false;
@@ -1355,6 +1383,29 @@ export interface ProfilePnlSummaryRow {
     board?: ProfileBoardPnl;
     [key: string]: unknown;
 }
+/**
+ * BE-4221: one window's Hyperliquid spot figures, the record's `hyperliquidSpot` sub-figure. They are
+ * already inside the Spot bucket's totals (`realizedNetUsd` gains `realizedUsd`; `unrealizedUsd` and
+ * `totalPnlUsd` gain `unrealizedUsd`); this block shows that part on its own. Never inside the perps figures.
+ */
+export interface AgentHyperliquidSpotFigures {
+    /** Realized P&L, net of sell fees (a base-token fee on a buy is in the cost basis, average cost). */
+    realizedUsd: number;
+    /** Tracked holdings' value at the certified cutoff less their remaining cost (a rolling window: the change). */
+    unrealizedUsd: number;
+    /** Informational; already inside `realizedUsd`. */
+    feesUsd: number;
+    /** USDC notional of the window's spot fills. */
+    volumeUsd: number;
+    trades: number;
+    /** Fills in the window plus holdings at the cutoff with no price; above zero, the figure is a floor. */
+    unpriced: number;
+    /** Base coins (a count, not a quantity) sold beyond the tracked quantity, all time through the cutoff. */
+    untrackedSoldCoins: number;
+    /** The figure is a floor, never a zero; `partialReasons` says why. */
+    partial: boolean;
+    partialReasons?: string[];
+}
 /** Public realized figures. feesUsd is fees paid; creatorFeesUsd is separate income. */
 export interface AgentRecordTotals extends AgentFeeIncome {
     realizedNetUsd: number;
@@ -1370,6 +1421,8 @@ export interface AgentRecordTotals extends AgentFeeIncome {
     totalPnlUsd?: number;
     realizedFromTransfersUsd?: number;
     unrealizedFromTransfersUsd?: number;
+    /** BE-4221: the Hyperliquid spot part already inside these totals. Absent with no Hyperliquid spot activity. */
+    hyperliquidSpot?: AgentHyperliquidSpotFigures;
 }
 /** One window of portfolio return % (PR-A). Portfolio return, not position return. */
 export interface AgentPortfolioReturnFigure {
@@ -1499,6 +1552,11 @@ export interface AgentPublicRecord extends AgentFeeIncome, AgentPerpsFigures {
     perpsProvisional?: true;
     /** BE-3767: with `perpsProvisional`, the oldest certified cutoff under it. */
     perpsCertifiedAsOfMs?: number;
+    /**
+     * BE-4221: the all-time Hyperliquid spot part of the Spot bucket (the same block as `totals.hyperliquidSpot`).
+     * Absent on an older API and for an agent with no Hyperliquid spot activity.
+     */
+    hyperliquidSpot?: AgentHyperliquidSpotFigures;
     /** Existing row, series, identity and coverage fields. */
     [key: string]: unknown;
 }
@@ -5465,7 +5523,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.35";
+export declare const SDK_VERSION = "0.6.36";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

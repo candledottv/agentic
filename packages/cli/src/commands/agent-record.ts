@@ -55,10 +55,52 @@ export interface AgentPerpsFigures {
   perpsPartial?: boolean
 }
 
+/**
+ * BE-4221: the Hyperliquid spot part of the record's Spot bucket (all time on the record). It is already
+ * inside the spot totals; the block shows that part on its own. Absent on an older API and for an agent
+ * with no Hyperliquid spot activity.
+ */
+export interface AgentHyperliquidSpotFigures {
+  realizedUsd: number
+  unrealizedUsd: number
+  feesUsd: number
+  volumeUsd: number
+  trades: number
+  unpriced: number
+  untrackedSoldCoins: number
+  partial: boolean
+  partialReasons?: string[]
+}
+
 interface AgentPublicRecord extends AgentPerpsFigures {
   name: string
   rows?: (AgentRecordTrade | AgentPerpRound)[]
   rowsCursor?: string | null
+  hyperliquidSpot?: AgentHyperliquidSpotFigures
+  totals?: { hyperliquidSpot?: AgentHyperliquidSpotFigures }
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+
+/**
+ * One line for the Hyperliquid spot part of the Spot P&L, or null when the answer has none (an older API,
+ * or an agent with no Hyperliquid spot activity), so those answers print exactly as before. A partial
+ * figure is a floor and says so; it is never shown as zero.
+ */
+export function renderHyperliquidSpot(h: AgentHyperliquidSpotFigures | undefined): string | null {
+  if (!h || typeof h.realizedUsd !== "number" || typeof h.unrealizedUsd !== "number") return null
+  const notes = [
+    h.unpriced > 0 ? `${h.unpriced} unpriced` : "",
+    h.untrackedSoldCoins > 0 ? `${plural(h.untrackedSoldCoins, "coin")} sold beyond the tracked quantity` : "",
+    h.partial
+      ? `partial, a floor${h.partialReasons?.length ? ` (${h.partialReasons.map(terminalText).join(", ")})` : ""}`
+      : "",
+  ].filter(Boolean)
+  return [
+    `Spot P&L includes Hyperliquid spot: realized ${formatUsd(h.realizedUsd, { signed: true })}, unrealized ${formatUsd(h.unrealizedUsd, { signed: true })}`,
+    `fees ${formatUsd(h.feesUsd)}, volume ${formatUsd(h.volumeUsd)}, ${plural(h.trades, "trade")}`,
+    ...notes,
+  ].join(" · ")
 }
 
 export function renderRound(r: AgentPerpRound): string {
@@ -118,6 +160,8 @@ export async function agentRecord(args: string[], ctx: CommandContext): Promise<
         terminalText(r.name),
         `Perps as of ${stamp}${r.perpsUnavailable ? " (unavailable)" : r.perpsPartial ? " (partial)" : ""}`,
       ]
+      const hyperliquidSpot = renderHyperliquidSpot(r.hyperliquidSpot ?? r.totals?.hyperliquidSpot)
+      if (hyperliquidSpot) lines.push(hyperliquidSpot)
       for (const row of r.rows ?? [])
         lines.push(
           row.kind === "perp_round"
