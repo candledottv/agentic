@@ -499,6 +499,7 @@ describe("DEX trade legs are decoded and held to what was confirmed", () => {
     }
     const bridgedBuy = shared.buildBridgedV4Swap({
       side: "buy",
+      baseToken: token,
       route: { ...route, poolKey: { ...route.poolKey, currency1: token }, zeroForOne: true },
       account: wallet,
       amountInWei: AMOUNT,
@@ -508,6 +509,7 @@ describe("DEX trade legs are decoded and held to what was confirmed", () => {
     expect(await buy("trade", dexLeg(HOOD_V4_UNIVERSAL_ROUTER, bridgedBuy.data, AMOUNT.toString()))).toBe(true)
     const bridgedSell = shared.buildBridgedV4Swap({
       side: "sell",
+      baseToken: token,
       route: { ...route, poolKey: { ...route.poolKey, currency1: token }, zeroForOne: false },
       account: wallet,
       amountInWei: AMOUNT,
@@ -518,6 +520,7 @@ describe("DEX trade legs are decoded and held to what was confirmed", () => {
     // ...and the same bridged sell with its unwrap paying another address is not.
     const stolen = shared.buildBridgedV4Swap({
       side: "sell",
+      baseToken: token,
       route: { ...route, poolKey: { ...route.poolKey, currency1: token }, zeroForOne: false },
       account: other,
       amountInWei: AMOUNT,

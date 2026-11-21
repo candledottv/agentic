@@ -205,6 +205,7 @@ test.skipIf(!existsSync(sharedFile))(
     const build = (side: "buy" | "sell", account = wallet, minAmountOut = minimum) =>
       shared.buildBridgedV4Swap({
         side,
+        baseToken: token,
         account,
         route: { ...route, zeroForOne: side === "buy" },
         amountInWei: amount,
