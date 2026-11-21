@@ -7877,13 +7877,16 @@ class CandleClient {
     if (params.side !== "buy" && params.side !== "sell")
       throw new Error("perpsSpotOrder(): side must be buy or sell");
     this.perpsBuilder();
-    const { walletId, privyWalletId: _p, submit: _s, ...order } = params;
+    const { walletId, privyWalletId: _p, submit: _s, hide, ...order } = params;
+    const hidden = hideRequested(hide);
     const clientId = perpsClientId(params.clientId);
     const build = await this.requestJson("POST", "/api/v1/agent/perps/spot/order", {
       walletId,
       ...order,
+      ...hideField(hidden),
       ...clientId !== undefined ? { clientId } : {}
     });
+    assertHideEchoed(hidden, build, "perpsSpotOrder()");
     const replay = perpsReplayOf(build, walletId, clientId);
     if (replay)
       return replay;
@@ -8738,7 +8741,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.34";
+var SDK_VERSION = "0.6.35";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

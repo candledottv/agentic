@@ -3261,6 +3261,12 @@ export interface PerpsSpotOrderParams extends PerpsWalletRef {
   slippageBps?: number
   /** Optional client order id, as on `PerpsOpenParams.clientId`: a retry returns the original operation. */
   clientId?: string
+  /**
+   * BE-4235 (BE-4215): keep this order's fills out of the public activity stream. Sent as
+   * `hide: true` only when true. Fail closed: the build must echo `hide: true`, else
+   * `CandleApiError` `HIDE_NOT_CONFIRMED` and nothing is signed or submitted.
+   */
+  hide?: boolean
 }
 
 export interface PerpsSpotCancelParams extends PerpsWalletRef {
@@ -7546,6 +7552,7 @@ export class CandleClient {
    * (`verifySpotBuildAgainstVenue`) and refuses with the check's reason before anything is signed;
    * then the relay signs and this client submits to Hyperliquid. A buy spends the wallet's spot USDC.
    * With `clientId`, a retry of the same request returns the original operation (`replayed: true`).
+   * With `hide`, the build must echo `hide: true` or nothing is signed (`HIDE_NOT_CONFIRMED`).
    */
   async perpsSpotOrder(params: PerpsSpotOrderParams & { clientId?: undefined }): Promise<PerpsActionResult>
   async perpsSpotOrder(params: PerpsSpotOrderParams): Promise<PerpsActionResult | PerpsReplayResult>
@@ -7554,13 +7561,16 @@ export class CandleClient {
     refuseEmbeddedSpot(params.walletId, "perpsSpotOrder()")
     if (params.side !== "buy" && params.side !== "sell") throw new Error("perpsSpotOrder(): side must be buy or sell")
     this.perpsBuilder()
-    const { walletId, privyWalletId: _p, submit: _s, ...order } = params
+    const { walletId, privyWalletId: _p, submit: _s, hide, ...order } = params
+    const hidden = hideRequested(hide)
     const clientId = perpsClientId(params.clientId)
     const build = await this.requestJson<PerpsBuild | PerpsReplay>("POST", "/api/v1/agent/perps/spot/order", {
       walletId,
       ...order,
+      ...hideField(hidden),
       ...(clientId !== undefined ? { clientId } : {}),
     })
+    assertHideEchoed(hidden, build, "perpsSpotOrder()")
     const replay = perpsReplayOf(build, walletId, clientId)
     if (replay) return replay
     return this.perpsComplete(build as PerpsBuild, { ...params, ...(clientId ? { clientId } : {}) }, "spotOrder")
@@ -8802,7 +8812,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.34"
+export const SDK_VERSION = "0.6.35"
 
 let sdkUpdateWarned = false
 

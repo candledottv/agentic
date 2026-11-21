@@ -3074,6 +3074,12 @@ export interface PerpsSpotOrderParams extends PerpsWalletRef {
     slippageBps?: number;
     /** Optional client order id, as on `PerpsOpenParams.clientId`: a retry returns the original operation. */
     clientId?: string;
+    /**
+     * BE-4235 (BE-4215): keep this order's fills out of the public activity stream. Sent as
+     * `hide: true` only when true. Fail closed: the build must echo `hide: true`, else
+     * `CandleApiError` `HIDE_NOT_CONFIRMED` and nothing is signed or submitted.
+     */
+    hide?: boolean;
 }
 export interface PerpsSpotCancelParams extends PerpsWalletRef {
     /** The cloid of a spot order Candle built for this wallet. */
@@ -5166,6 +5172,7 @@ export declare class CandleClient {
      * (`verifySpotBuildAgainstVenue`) and refuses with the check's reason before anything is signed;
      * then the relay signs and this client submits to Hyperliquid. A buy spends the wallet's spot USDC.
      * With `clientId`, a retry of the same request returns the original operation (`replayed: true`).
+     * With `hide`, the build must echo `hide: true` or nothing is signed (`HIDE_NOT_CONFIRMED`).
      */
     perpsSpotOrder(params: PerpsSpotOrderParams & {
         clientId?: undefined;
@@ -5458,7 +5465,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.34";
+export declare const SDK_VERSION = "0.6.35";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

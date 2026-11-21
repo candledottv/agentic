@@ -224,6 +224,79 @@ describe("perpsSpotOrder: build, venue check, sign, submit", () => {
   })
 })
 
+describe("BE-4235: hide on spot orders", () => {
+  test("sends hide: true only when asked, and an echoed build is checked, signed and submitted", async () => {
+    const build = { ...spotBuild(buyAction), hide: true }
+    const { client: c, calls } = await client({ [ORDER_PATH]: build })
+    const result = await c.perpsSpotOrder({ ...BUY, hide: true })
+    expect(calls[0]?.body).toEqual({ walletId: WALLET, market: "HYPE/USDC", side: "buy", size: "1", hide: true })
+    expect(calls.map((call) => call.url)).toEqual([
+      `https://api.test${ORDER_PATH}`,
+      INFO,
+      `https://api.test/api/v1/agent/wallets/${WALLET}/sign`,
+      EXCHANGE,
+    ])
+    expect(result).toMatchObject({ submitted: true, outcome: { status: "confirmed" } })
+  })
+
+  test("hide: false and an omitted hide leave the body without the key", async () => {
+    for (const hide of [false, undefined]) {
+      const { client: c, calls } = await client({ [ORDER_PATH]: spotBuild(buyAction) })
+      await c.perpsSpotOrder({ ...BUY, hide, submit: false })
+      expect(calls[0]?.body).not.toHaveProperty("hide")
+    }
+  })
+
+  test("a build without the hide echo is refused before the venue read, the relay or the exchange", async () => {
+    const { client: c, calls } = await client({ [ORDER_PATH]: spotBuild(buyAction) })
+    const err = await c.perpsSpotOrder({ ...BUY, hide: true }).catch((e: unknown) => e)
+    expect(err).toMatchObject({ code: "HIDE_NOT_CONFIRMED", field: "hide" })
+    expect((err as Error).message).toContain("perpsSpotOrder()")
+    expect(calls.map((call) => call.url)).toEqual([`https://api.test${ORDER_PATH}`])
+    expect(calls[0]?.body).toMatchObject({ hide: true })
+  })
+
+  test("a replay without the echo is refused too; one with it returns the original operation", async () => {
+    const clientId = `0x${"cd".repeat(16)}`
+    const replay = {
+      success: true,
+      replayed: true,
+      perpOrderId: "perp-1",
+      kind: "spotOrder",
+      network: "mainnet",
+      walletId: WALLET,
+      address: ADDRESS,
+      clientId,
+      cloid: clientId,
+      childCloids: [],
+      nonce: NONCE,
+      status: "settled",
+      venueStatus: "filled",
+      filledSz: "1",
+      notionalUsdMicros: 69_488_000,
+      builtAt: 1,
+      settledAt: 2,
+      preview: null,
+    }
+    const stale = await client({ [ORDER_PATH]: replay })
+    await expect(stale.client.perpsSpotOrder({ ...BUY, clientId, hide: true })).rejects.toMatchObject({
+      code: "HIDE_NOT_CONFIRMED",
+    })
+    const echoed = await client({ [ORDER_PATH]: { ...replay, hide: true } })
+    const result = await echoed.client.perpsSpotOrder({ ...BUY, clientId, hide: true })
+    expect(echoed.calls).toHaveLength(1)
+    expect(result).toMatchObject({ replayed: true, submitted: false })
+  })
+
+  test("an unreadable hide is a validation error before any request", async () => {
+    const { client: c, calls } = await client({})
+    await expect(c.perpsSpotOrder({ ...BUY, hide: "maybe" as never })).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+    })
+    expect(calls).toHaveLength(0)
+  })
+})
+
 describe("perpsSpotCancel", () => {
   const cancelAction = { type: "cancel", cancels: [{ a: 10_107, o: 77 }] }
   const resting = { status: "order", order: { order: { coin: "@107", oid: 77 }, status: "open" } }
