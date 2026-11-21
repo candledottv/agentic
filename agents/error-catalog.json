@@ -292,6 +292,11 @@
       "retryable": false,
       "action": "Candle blocked this account. Every key it held is revoked and new keys are refused. Nothing the agent or the owner does from the console clears it. Stop, and tell the owner to contact Candle support.",
       "codes": ["ACCOUNT_BLOCKED"]
+    },
+    "withdrawal_address_approval": {
+      "retryable": false,
+      "action": "A different case-sensitive Solana address occupies the allowlist lookup. The owner must inspect the exact destination and revoke the existing approval before adding its replacement. Never change the case of a Solana address to make it match.",
+      "codes": ["WITHDRAWAL_ADDRESS_CASE_COLLISION"]
     }
   }
 }
