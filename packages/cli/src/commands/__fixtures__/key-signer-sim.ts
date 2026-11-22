@@ -62,6 +62,19 @@ export class SignerSim {
   private quorumCounter = 0
   /** Fail the owner relay for these wallet ids (a provider error; nothing changes). */
   failRelay = new Set<string>()
+  /**
+   * BE-4315: the owner confirm (BE-2948) on a rebind commit. `gate-first` is the API before
+   * BE-4315: the grant is redeemed (spent) before the owner-signature check, so an unsigned commit
+   * spends it on KEY_SIGNER_SIGNATURE_REQUIRED. `signatures-first` is the fix: the check runs
+   * first, so only a commit that can finish is confirmed. null: no confirm (a session, switch off).
+   */
+  ownerConfirm: "gate-first" | "signatures-first" | null = null
+  /** Every confirm issued: the exact commit bytes it binds, and whether a resend redeemed it. */
+  confirms: Array<{ id: string; body: string; redeemed: boolean }> = []
+  /** Refusals answered, in order, before any rebind is looked at (e.g. 503 REBIND_RECONCILE_INCOMPLETE). */
+  rebindRefusals: Array<{ status: number; code: string }> = []
+  /** Runs when a confirm's status is polled (the owner approving): a test changes state there. */
+  onApprove: (() => void) | null = null
 
   constructor(private readonly now: () => number) {}
 
@@ -325,12 +338,50 @@ export class SignerSim {
           ...(key.revoked ? { revokedAt: 5 } : {}),
         })),
       })
-    routes["/api/v1/agent/tee-wallets/rebind"] = (req) => this.rebind(parse(req))
+    routes["/api/v1/agent/tee-wallets/rebind"] = (req) => this.rebind(parse(req), req)
+    routes["/api/v1/agent/device/confirm/status"] = () => {
+      this.onApprove?.()
+      return jsonResponse(200, { status: "approved" })
+    }
     return routes
   }
 
-  private rebind(body: Record<string, unknown>): Response {
+  /**
+   * The owner-confirm gate, as `ownerConfirmGate(...).require` answers: no header issues a grant
+   * bound to these exact bytes (403); a header naming an unspent grant for the same bytes redeems
+   * it (null: go on); anything else issues a new one.
+   */
+  private confirmGate(req: CapturedRequest): Response | null {
+    const headers = (req.init.headers ?? {}) as Record<string, string>
+    const sent = Object.entries(headers).find(([name]) => name.toLowerCase() === "candle-owner-confirm")?.[1]
+    const bytes = String(req.init.body ?? "")
+    const grant = sent ? this.confirms.find((c) => c.id === sent) : undefined
+    if (grant && !grant.redeemed && grant.body === bytes) {
+      grant.redeemed = true
+      return null
+    }
+    const id = `confirm-${this.confirms.length + 1}`
+    this.confirms.push({ id, body: bytes, redeemed: false })
+    const userCode = `CODE-${this.confirms.length}`
+    return refusal(403, "OWNER_CONFIRM_REQUIRED", {
+      ownerConfirm: {
+        confirmId: id,
+        userCode,
+        verificationUri: "https://sim.test/dev/agent/confirm",
+        verificationUriComplete: `https://sim.test/dev/agent/confirm?code=${userCode}`,
+        expiresIn: 300,
+        interval: 5,
+        step: "tee.rebind",
+        summary: "Rebind TEE wallets",
+        reason: sent ? "grant_mismatch" : "required",
+      },
+    })
+  }
+
+  private rebind(body: Record<string, unknown>, req: CapturedRequest): Response {
     this.rebinds.push(body)
+    const queued = this.rebindRefusals.shift()
+    if (queued) return refusal(queued.status, queued.code)
     const target = this.keys.get(body.toKeyPrefix as string)
     if (!target) return refusal(404, "REBIND_WALLET_INVALID")
     const toKey = {
@@ -378,6 +429,10 @@ export class SignerSim {
     const owner = body.owner as
       | Record<string, { body: { owner_id: string }; authorizationSignature: string }>
       | undefined
+    if (this.ownerConfirm === "gate-first" || (this.ownerConfirm === "signatures-first" && !target.active)) {
+      const gated = this.confirmGate(req)
+      if (gated) return gated
+    }
     if (!target.active) {
       if (owner !== undefined) return refusal(400, "VALIDATION_FAILED")
       const rebound = wallets.map((w) => ({ ...row(w), auditId: `aud-${w.id}` }))
@@ -388,6 +443,7 @@ export class SignerSim {
     const missing = wallets.filter((w) => w.owner !== quorum && owner?.[w.id] === undefined)
     if (missing.length > 0) {
       return refusal(409, "KEY_SIGNER_SIGNATURE_REQUIRED", {
+        ...(this.ownerConfirm === "signatures-first" ? { beforeOwnerConfirm: true } : {}),
         walletIds: missing.map((w) => w.id),
         owners: missing.map((w) => ({ walletId: w.id, privyWalletId: w.privyWalletId, ownerId: w.owner })),
         keySigner: {
@@ -396,6 +452,10 @@ export class SignerSim {
           signerQuorumId: quorum,
         },
       })
+    }
+    if (this.ownerConfirm === "signatures-first") {
+      const gated = this.confirmGate(req)
+      if (gated) return gated
     }
     for (const w of wallets) {
       const change = owner?.[w.id]

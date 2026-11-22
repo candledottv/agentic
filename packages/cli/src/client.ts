@@ -76,6 +76,13 @@ export type ApiResult =
       uiHint?: string
       /** The API's docs path for this error, relative to docs.candle.tv, when it sent one. */
       docsPath?: string
+      /**
+       * BE-4315: this refusal answered the resend of an APPROVED owner confirm. `spent`: the server
+       * redeemed the grant before refusing. `unspent`: it refused before redeeming
+       * (`error.beforeOwnerConfirm`), so the approval was not used. Either way a caller must stop
+       * and report it, never send a follow-up request that would mint a second confirm.
+       */
+      ownerConfirmed?: "spent" | "unspent"
       raw: unknown
     }
 
@@ -617,6 +624,12 @@ export async function apiRequest(path: string, opts: ApiRequestOptions): Promise
       ...opts,
       headers: { ...(opts.headers ?? {}), [OWNER_CONFIRM_HEADER]: challenge.confirmId },
     })
+    // BE-4315: a refusal of the approved resend is marked, so the caller stops there. A second
+    // OWNER_CONFIRM_REQUIRED (the grant did not redeem) is still followed once, as before.
+    if (!result.ok && !ownerConfirmChallengeOf(result)) {
+      const before = (result.raw as { error?: { beforeOwnerConfirm?: unknown } } | undefined)?.error?.beforeOwnerConfirm
+      result = { ...result, ownerConfirmed: before === true ? "unspent" : "spent" }
+    }
   }
   return result
 }

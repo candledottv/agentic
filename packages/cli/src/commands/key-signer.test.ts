@@ -642,6 +642,120 @@ describe("T11: candle tee rebind onto a key", () => {
     expect(h.stderr.text).not.toContain(RELAY_SIGNER_LINE)
   })
 
+  test("BE-4315: an API that spends the approval before asking for signatures (production 2026-11-22: two 503 runs, then preview 200, commit 403, approved resend 409): the CLI stops after the 409 and never asks for a second approval", async () => {
+    const sim = new SignerSim(() => 0)
+    const legacy = pair()
+    const target = pair()
+    sim.addKey({ keyPrefix: FROM })
+    sim.addKey({ keyPrefix: TO, label: "tr-2", active: sim.signer(target.publicKeyDer, "q-to") })
+    sim.quorumFor(legacy.publicKeyDer, "q-leg")
+    sim.wallets.push(wallet("W1", { recorded: "q-leg", boundKeyPrefix: FROM }))
+    sim.ownerConfirm = "gate-first"
+    sim.rebindRefusals = [
+      { status: 503, code: "REBIND_RECONCILE_INCOMPLETE" },
+      { status: 503, code: "REBIND_RECONCILE_INCOMPLETE" },
+    ]
+    const fingerprint = sim.keys.get(TO)?.active?.fingerprint as string
+    const h = machine(sim, {
+      deviceToken: true,
+      secrets: [fingerprint],
+      lines: ["confirm"],
+      store: { [walletSignerRef("W1")]: pemToStoredSigner(legacy.pem) },
+    })
+    // The two 503 runs refuse at the preview, before any confirm.
+    expect(await run(["tee", "rebind", "W1", "--to-key", TO], h.deps)).toBe(1)
+    expect(await run(["tee", "rebind", "W1", "--to-key", TO], h.deps)).toBe(1)
+    expect(sim.confirms).toHaveLength(0)
+
+    expect(await run(["tee", "rebind", "W1", "--to-key", TO], h.deps)).toBe(1)
+    // Preview, the commit (403), and its approved resend (409). Nothing after the 409.
+    expect(sim.rebinds.slice(2).map((b) => (b.dryRun === true ? "preview" : b.owner ? "signed" : "unsigned"))).toEqual([
+      "preview",
+      "unsigned",
+      "unsigned",
+    ])
+    expect(sim.confirms.map((c) => c.redeemed)).toEqual([true])
+    expect(h.stderr.text.match(/Code: /g)).toHaveLength(1)
+    expect(humanText(h.stderr.text)).toContain(
+      humanText("Approved, but the server then asked for the wallets' owner signatures"),
+    )
+    expect(humanText(h.stderr.text)).toContain(humanText("nothing changed and nothing more was sent"))
+    // The recovery waits for the API fix; it never tells the operator to repeat now.
+    expect(humanText(h.stderr.text)).toContain(humanText("Do not run it again yet"))
+    expect(humanText(h.stderr.text)).toContain(humanText("Once the API carries the BE-4315 fix"))
+    const afterApproval = h.stderr.text.slice(h.stderr.text.indexOf("Approved. Sending the request again."))
+    expect(afterApproval).not.toContain("Run the same command again")
+    expect(sim.wallets[0]).toMatchObject({ boundKeyPrefix: FROM, owner: "q-leg", recorded: "q-leg" })
+
+    // --json carries the code and the same conditional suggestion.
+    const j = machine(sim, {
+      deviceToken: true,
+      secrets: [fingerprint],
+      lines: ["confirm"],
+      store: { [walletSignerRef("W1")]: pemToStoredSigner(legacy.pem) },
+    })
+    expect(await run(["tee", "rebind", "W1", "--to-key", TO, "--json"], j.deps)).toBe(1)
+    const doc = JSON.parse(j.stdout.text.trim().split("\n").at(-1) as string)
+    expect(doc.code ?? doc.error?.code).toBe("REBIND_CONFIRM_SPENT")
+    expect(doc.suggestion).toStartWith("Do not run it again yet")
+  })
+
+  test("BE-4315: on the fixed API, an owner that changes while the approval is pending is refused before the approval is used; the CLI stops (REBIND_OWNERS_CHANGED) and mints no second confirm", async () => {
+    const sim = new SignerSim(() => 0)
+    const target = pair()
+    sim.addKey({ keyPrefix: FROM })
+    sim.addKey({ keyPrefix: TO, label: "tr-2", active: sim.signer(target.publicKeyDer, "q-to") })
+    // Already owned by the target's signer at the preview: no signature is needed at first.
+    sim.wallets.push(wallet("W1", { recorded: "q-to", owner: "q-to", boundKeyPrefix: FROM }))
+    sim.ownerConfirm = "signatures-first"
+    sim.onApprove = () => {
+      const w = sim.wallets[0]
+      if (w) w.owner = "q-elsewhere"
+    }
+    const fingerprint = sim.keys.get(TO)?.active?.fingerprint as string
+    const h = machine(sim, { deviceToken: true, secrets: [fingerprint], lines: ["confirm"] })
+    expect(await run(["tee", "rebind", "W1", "--to-key", TO], h.deps)).toBe(1)
+    expect(sim.rebinds.map((b) => (b.dryRun === true ? "preview" : b.owner ? "signed" : "unsigned"))).toEqual([
+      "preview",
+      "unsigned",
+      "unsigned",
+    ])
+    expect(sim.confirms.map((c) => c.redeemed)).toEqual([false])
+    expect(h.stderr.text.match(/Code: /g)).toHaveLength(1)
+    expect(humanText(h.stderr.text)).toContain(humanText("refused before using it"))
+    expect(sim.wallets[0]).toMatchObject({ boundKeyPrefix: FROM })
+  })
+
+  test("BE-4315: the fixed API asks for signatures before the confirm, so one approval finishes: unsigned 409 (no confirm), signed 403, approved resend 200", async () => {
+    const sim = new SignerSim(() => 0)
+    const legacy = pair()
+    const target = pair()
+    sim.addKey({ keyPrefix: FROM })
+    sim.addKey({ keyPrefix: TO, label: "tr-2", active: sim.signer(target.publicKeyDer, "q-to") })
+    sim.quorumFor(legacy.publicKeyDer, "q-leg")
+    sim.wallets.push(wallet("W1", { recorded: "q-leg", boundKeyPrefix: FROM }))
+    sim.ownerConfirm = "signatures-first"
+    const fingerprint = sim.keys.get(TO)?.active?.fingerprint as string
+    const h = machine(sim, {
+      deviceToken: true,
+      secrets: [fingerprint],
+      lines: ["confirm"],
+      store: { [walletSignerRef("W1")]: pemToStoredSigner(legacy.pem) },
+    })
+    expect(await run(["tee", "rebind", "W1", "--to-key", TO], h.deps)).toBe(0)
+    expect(sim.rebinds.map((b) => (b.dryRun === true ? "preview" : b.owner ? "signed" : "unsigned"))).toEqual([
+      "preview",
+      "unsigned",
+      "signed",
+      "signed",
+    ])
+    expect(sim.confirms).toHaveLength(1)
+    expect(sim.confirms[0]?.redeemed).toBe(true)
+    expect(JSON.parse(sim.confirms[0]?.body ?? "{}").owner).toHaveProperty("W1")
+    expect(h.stderr.text.match(/Code: /g)).toHaveLength(1)
+    expect(sim.wallets[0]).toMatchObject({ boundKeyPrefix: TO, owner: "q-to", recorded: "q-to" })
+  })
+
   test("owner landed, bind failed: the re-run completes from the GET without a new signature", async () => {
     const sim = new SignerSim(() => 0)
     const target = pair()

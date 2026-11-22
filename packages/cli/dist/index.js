@@ -208,7 +208,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.45";
+var CLI_VERSION = "0.13.46";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
@@ -484,6 +484,10 @@ async function apiRequest(path, opts) {
       ...opts,
       headers: { ...opts.headers ?? {}, [OWNER_CONFIRM_HEADER]: challenge.confirmId }
     });
+    if (!result.ok && !ownerConfirmChallengeOf(result)) {
+      const before = result.raw?.error?.beforeOwnerConfirm;
+      result = { ...result, ownerConfirmed: before === true ? "unspent" : "spent" };
+    }
   }
   return result;
 }
@@ -49797,6 +49801,26 @@ async function commitRebind(ctx, deviceToken, body, opts) {
     return { ok: true, result: first, signed: [] };
   if (first.code !== "KEY_SIGNER_SIGNATURE_REQUIRED")
     return { ok: false, result: first };
+  if (first.ownerConfirmed === "spent") {
+    return {
+      ok: false,
+      result: {
+        ...first,
+        code: REBIND_CONFIRM_SPENT,
+        message: "Approved, but the server then asked for the wallets' owner signatures, which would need a second approval; nothing changed and nothing more was sent."
+      }
+    };
+  }
+  if (first.ownerConfirmed === "unspent") {
+    return {
+      ok: false,
+      result: {
+        ...first,
+        code: REBIND_OWNERS_CHANGED,
+        message: "Approved, but a wallet's owner changed while the approval was pending, so the server refused before using it; nothing changed and nothing more was sent."
+      }
+    };
+  }
   const details = errorDetails(first);
   const owners = Array.isArray(details.owners) ? details.owners : [];
   const keySigner = details.keySigner ?? {};
@@ -49865,6 +49889,10 @@ function rebindFailureDetails(result2, context) {
     suggestion = "Run the same command again; nothing changed.";
   } else if (result2.code === "REBIND_STALE") {
     suggestion = "Run the command again; the preview will show the current binding.";
+  } else if (result2.code === REBIND_CONFIRM_SPENT) {
+    suggestion = "Do not run it again yet: this Candle API uses the approval before asking for the signatures, so each run would spend another approval and stop here. Once the API carries the BE-4315 fix (an unsigned rebind is refused before any approval), run the same command again and one approval finishes it.";
+  } else if (result2.code === REBIND_OWNERS_CHANGED) {
+    suggestion = "Run the same command again; the preview and the approval will cover the current owners.";
   }
   return {
     code: code ?? `HTTP ${result2.status}`,
@@ -50246,7 +50274,7 @@ async function teeRebinds(args, ctx) {
 `.trim());
   return 0;
 }
-var REBIND_PATH = "/api/v1/agent/tee-wallets/rebind", REBINDS_PATH = "/api/v1/agent/tee-wallets/rebinds", KEYS_PATH = "/api/v1/agent/keys", USAGE_REBIND = "Usage: candle tee rebind <wallet...> --to-key <prefix|label> [--label-prefix <p>] [--json]", USAGE_REBINDS = "Usage: candle tee rebinds [wallet] [--json]", DEVICE_TOKEN_REQUIRED, KEY_PREFIX_RE2, REBIND_NOTHING_PINNED = "Nothing was signed, nothing moved and nothing was pinned.", RELAY_SIGNER_LINE = "The relay signer does not move: trade these wallets from the machine that promoted them.", PORTAL_REVOKE_LINE = "A device token cannot revoke devices: revoke a device you do not recognise from the portal, with a signed-in session.";
+var REBIND_PATH = "/api/v1/agent/tee-wallets/rebind", REBINDS_PATH = "/api/v1/agent/tee-wallets/rebinds", KEYS_PATH = "/api/v1/agent/keys", USAGE_REBIND = "Usage: candle tee rebind <wallet...> --to-key <prefix|label> [--label-prefix <p>] [--json]", USAGE_REBINDS = "Usage: candle tee rebinds [wallet] [--json]", DEVICE_TOKEN_REQUIRED, KEY_PREFIX_RE2, REBIND_NOTHING_PINNED = "Nothing was signed, nothing moved and nothing was pinned.", RELAY_SIGNER_LINE = "The relay signer does not move: trade these wallets from the machine that promoted them.", REBIND_CONFIRM_SPENT = "REBIND_CONFIRM_SPENT", REBIND_OWNERS_CHANGED = "REBIND_OWNERS_CHANGED", PORTAL_REVOKE_LINE = "A device token cannot revoke devices: revoke a device you do not recognise from the portal, with a signed-in session.";
 var init_tee_rebind = __esm(() => {
   init_args();
   init_client();

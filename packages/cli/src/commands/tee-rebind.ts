@@ -292,6 +292,17 @@ export function signerChangedFailure(keyPrefix: string, now: string | undefined)
 }
 
 /**
+ * BE-4315: CLI-local code. The commit's approved owner confirm was spent on a
+ * KEY_SIGNER_SIGNATURE_REQUIRED, so the CLI stopped instead of asking for a second approval.
+ */
+export const REBIND_CONFIRM_SPENT = "REBIND_CONFIRM_SPENT"
+/**
+ * BE-4315: CLI-local code. The approved resend was refused BEFORE the server used the approval
+ * (the wallets' owners changed while it was pending), so the CLI stopped instead of minting another.
+ */
+export const REBIND_OWNERS_CHANGED = "REBIND_OWNERS_CHANGED"
+
+/**
  * A rebind commit onto a key that may have an active signer (5.5). The commit goes first with no
  * `owner`: the server GETs each wallet, so one whose owner change already landed (a lost record)
  * completes from the GET with no new signature. When the server answers
@@ -322,6 +333,32 @@ export async function commitRebind(
   const first = await postRebind(ctx, deviceToken, body)
   if (first.ok) return { ok: true, result: first, signed: [] }
   if (first.code !== "KEY_SIGNER_SIGNATURE_REQUIRED") return { ok: false, result: first }
+  // BE-4315: the owner already approved this commit and the server spent that approval before it
+  // asked for the owner signatures (an API older than BE-4315). The signed request would be a
+  // different request needing a second approval, which reads as a loop. Stop and say so.
+  if (first.ownerConfirmed === "spent") {
+    return {
+      ok: false,
+      result: {
+        ...first,
+        code: REBIND_CONFIRM_SPENT,
+        message:
+          "Approved, but the server then asked for the wallets' owner signatures, which would need a second approval; nothing changed and nothing more was sent.",
+      },
+    }
+  }
+  // A current API refused before using the approval: an owner changed while it was pending.
+  if (first.ownerConfirmed === "unspent") {
+    return {
+      ok: false,
+      result: {
+        ...first,
+        code: REBIND_OWNERS_CHANGED,
+        message:
+          "Approved, but a wallet's owner changed while the approval was pending, so the server refused before using it; nothing changed and nothing more was sent.",
+      },
+    }
+  }
   const details = errorDetails(first)
   const owners = Array.isArray(details.owners)
     ? (details.owners as Array<{ walletId: string; privyWalletId: string; ownerId: string | null }>)
@@ -424,6 +461,13 @@ export function rebindFailureDetails(
     suggestion = "Run the same command again; nothing changed."
   } else if (result.code === "REBIND_STALE") {
     suggestion = "Run the command again; the preview will show the current binding."
+  } else if (result.code === REBIND_CONFIRM_SPENT) {
+    // Only an API without the BE-4315 fix answers this way, and against it every run spends another
+    // approval and stops here; so the advice is to wait for the fix, never to repeat now.
+    suggestion =
+      "Do not run it again yet: this Candle API uses the approval before asking for the signatures, so each run would spend another approval and stop here. Once the API carries the BE-4315 fix (an unsigned rebind is refused before any approval), run the same command again and one approval finishes it."
+  } else if (result.code === REBIND_OWNERS_CHANGED) {
+    suggestion = "Run the same command again; the preview and the approval will cover the current owners."
   }
   return {
     code: code ?? `HTTP ${result.status}`,
