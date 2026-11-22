@@ -1,4 +1,4 @@
-import { CandleApiError, candleApiErrorFromResponse } from "./errors"
+import { CandleApiError, candleApiErrorFromResponse, requestIdOf } from "./errors"
 import type {
   AboutBurnHistory,
   AboutCapabilities,
@@ -140,8 +140,11 @@ export function createTokenPagesClient(io: {
     for (let attempt = 0; attempt < attempts; attempt++) {
       let response: Response
       let text: string
+      // BE-4297: taken the moment the response arrives, so a body that then fails still names it.
+      let arrivedId: string | undefined
       try {
         response = await io.fetch(`${io.apiUrl()}${url}`, init)
+        arrivedId = requestIdOf(response)
         text = await response.text()
       } catch {
         if (attempt + 1 < attempts) continue
@@ -153,11 +156,13 @@ export function createTokenPagesClient(io: {
               ? "No complete answer; replay the same body with this idempotency key."
               : "No complete answer from Candle.",
             retryable: true,
+            ...(arrivedId !== undefined ? { requestId: arrivedId } : {}),
           }),
           { idempotencyKey },
         )
       }
       if (!response.ok) {
+        const requestId = requestIdOf(response)
         let refusal: { success?: unknown; error?: unknown; latest?: { revision: string; versionId: string | null } } =
           {}
         try {
@@ -172,8 +177,9 @@ export function createTokenPagesClient(io: {
                 message: `Token page request refused (${refusal.error}).`,
                 status: response.status,
                 retryable: false,
+                ...(requestId !== undefined ? { requestId } : {}),
               })
-            : candleApiErrorFromResponse(response.status, text)
+            : candleApiErrorFromResponse(response.status, text, requestId)
         throw new TokenPageError(error, {
           idempotencyKey,
           latest: refusal?.latest,
@@ -192,6 +198,7 @@ export function createTokenPagesClient(io: {
             message: "Candle returned an invalid response.",
             status: response.status,
             retryable: false,
+            ...(arrivedId !== undefined ? { requestId: arrivedId } : {}),
           }),
           { idempotencyKey },
         )

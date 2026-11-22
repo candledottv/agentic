@@ -285,6 +285,8 @@ export {
   JsonRpcError,
   OWNER_CONFIRM_ERROR_CODES,
   operationIds,
+  REQUEST_ID_HEADER,
+  requestIdOf,
   SelfLaunchOutcomeError,
   type SignedTradeLeg,
   TradeLandedFeeLegError,

@@ -1826,6 +1826,25 @@ describe("atomic launch (build/submit request shapes, no linked signing)", () =>
     expect(result).toEqual(failed as never)
   })
 
+  test("BE-4297: a returned failed or timeout outcome carries the submit response's request id, once, and only then", async () => {
+    const withId = (body: unknown) =>
+      new Response(JSON.stringify(body), { status: 502, headers: { "x-candle-request-id": "submit-fixture-123" } })
+    const failed = { status: "failed", bundleId: "bundle-2", retryable: false }
+    const a = makeClient(KEYED, [withId(failed)])
+    expect(await a.client.submitAtomicLaunch({ bundleId: "bundle-2", signedTxsBase64: [] })).toEqual({
+      ...failed,
+      requestId: "submit-fixture-123",
+    } as never)
+    expect(a.calls).toHaveLength(1)
+    const timeout = { status: "timeout", bundleId: "bundle-3", retryable: true }
+    const b = makeClient(KEYED, [withId(timeout)])
+    expect(await b.client.submitAtomicLaunch({ bundleId: "bundle-3", signedTxsBase64: [] })).toMatchObject({
+      requestId: "submit-fixture-123",
+    })
+    const c = makeClient(KEYED, [json(502, timeout)])
+    expect(await c.client.submitAtomicLaunch({ bundleId: "bundle-3", signedTxsBase64: [] })).toEqual(timeout as never)
+  })
+
   test("submitAtomicLaunch: a 502 timeout outcome is RETURNED, not thrown, retryable reflects the resolution", async () => {
     const timeoutRetryable = { status: "timeout", bundleId: "bundle-3", retryable: true }
     const { client: client1 } = makeClient(KEYED, [json(502, timeoutRetryable)])
@@ -3251,6 +3270,76 @@ describe("linked-wallet signing relay + one-shot flows", () => {
       expect(operationIds(error)).toEqual({ clientLaunchId: LAUNCH_REQ.clientLaunchId, bundleId: built.bundleId })
       expect(calls).toHaveLength(4)
       expect(calls.some((c) => c.url === SOLANA_RPC)).toBe(false)
+    })
+
+    test.each([
+      {
+        name: "timeout, valid header",
+        status: 502,
+        outcome: "timeout",
+        header: "submit-fixture-123",
+        id: "submit-fixture-123",
+      },
+      {
+        name: "failed, valid header",
+        status: 502,
+        outcome: "failed",
+        header: "submit-fixture-123",
+        id: "submit-fixture-123",
+      },
+      { name: "timeout, no header, body-only id", status: 502, outcome: "timeout", header: undefined, id: undefined },
+      {
+        name: "failed, too-short header, body-only id",
+        status: 502,
+        outcome: "failed",
+        header: "short",
+        id: undefined,
+      },
+      {
+        name: "landed without launch, valid header",
+        status: 200,
+        outcome: "landed",
+        header: "submit-fixture-123",
+        id: "submit-fixture-123",
+      },
+    ])("BE-4297: creator bundle $name: the error's request id comes only from the validated header", async (t) => {
+      const store = await keyedSecretStore()
+      const built = {
+        bundleId: "creator-bundle",
+        mint: "Mint111",
+        legs: [
+          { index: 0, signer: "client", unsignedTxBase64: "bGF1bmNo" },
+          { index: 1, signer: "client", unsignedTxBase64: "YnV5" },
+        ],
+      }
+      const body = {
+        status: t.outcome,
+        bundleId: built.bundleId,
+        retryable: false,
+        requestId: "body-only-id-999",
+        ...(t.outcome === "landed" ? { mint: built.mint, signatures: ["a", "b"] } : {}),
+      }
+      const submit = new Response(JSON.stringify(body), {
+        status: t.status,
+        headers: t.header ? { "x-candle-request-id": t.header } : {},
+      })
+      const { client, calls } = makeClient(
+        { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, solanaRpcUrl: SOLANA_RPC },
+        [json(200, built), json(200, SIGN_RELAY_OK), json(200, SIGN_RELAY_OK), submit],
+      )
+      const error = await launchSelf(client, {
+        ...LAUNCH_REQ,
+        buyAmount: "10000000",
+        linkedWalletId: LINKED_WALLET_ID,
+        privyWalletId: PRIVY_WALLET_ID,
+      }).catch((e) => e)
+      expect(error).toBeInstanceOf(CandleApiError)
+      expect(error.requestId).toBe(t.id)
+      expect(error.message.includes("body-only-id-999")).toBe(false)
+      expect(error.message.match(/request id/g)?.length ?? 0).toBe(t.id ? 1 : 0)
+      expect(operationIds(error)).toEqual({ clientLaunchId: LAUNCH_REQ.clientLaunchId, bundleId: built.bundleId })
+      expect(calls).toHaveLength(4)
+      expect(calls.filter((c) => String(c.url).endsWith("/launch/atomic/submit"))).toHaveLength(1)
     })
 
     test("BE-1847: an older API's combined creator transaction is never signed or broadcast", async () => {

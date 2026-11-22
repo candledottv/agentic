@@ -185,8 +185,15 @@ var OWNER_CONFIRM_ERROR_CODES = [
   "OWNER_CONFIRM_NOT_FOUND",
   "OWNER_CONFIRM_EXPIRED"
 ];
+var REQUEST_ID_HEADER = "x-candle-request-id";
+function requestIdOf(res) {
+  const value = res.headers?.get?.(REQUEST_ID_HEADER);
+  return value && SAFE_REQUEST_ID.test(value) ? value : undefined;
+}
+var SAFE_REQUEST_ID = /^[A-Za-z0-9._-]{8,64}$/;
 
 class CandleApiError extends Error {
+  requestId;
   legs;
   code;
   status;
@@ -224,8 +231,11 @@ class CandleApiError extends Error {
   legKind;
   statusKind;
   constructor(args) {
-    super(args.message);
+    const suffix = args.requestId ? ` (request id ${args.requestId})` : "";
+    super(suffix && !args.message.endsWith(suffix) ? args.message + suffix : args.message);
     this.name = "CandleApiError";
+    if (args.requestId !== undefined)
+      this.requestId = args.requestId;
     this.legs = args.legs;
     this.code = args.code;
     this.status = args.status;
@@ -524,7 +534,7 @@ function recoveryEvidenceOf(top, error) {
   }
   return out;
 }
-function candleApiErrorFromResponse(status, bodyText) {
+function candleApiErrorFromResponse(status, bodyText, requestId) {
   let parsed;
   try {
     parsed = JSON.parse(bodyText);
@@ -539,6 +549,7 @@ function candleApiErrorFromResponse(status, bodyText) {
       message: payload.message,
       status,
       retryable: payload.retryable === true,
+      ...requestId !== undefined ? { requestId } : {},
       ...payload.field !== undefined ? { field: payload.field } : {}
     });
   }
@@ -546,7 +557,8 @@ function candleApiErrorFromResponse(status, bodyText) {
     code: `HTTP_${status}`,
     message: bodyText || `HTTP ${status}`,
     status,
-    retryable: false
+    retryable: false,
+    ...requestId !== undefined ? { requestId } : {}
   });
 }
 
@@ -697,6 +709,7 @@ class HolderExitError extends CandleApiError {
   body;
   constructor(args) {
     super({
+      ...args.requestId !== undefined ? { requestId: args.requestId } : {},
       code: args.code,
       message: args.message,
       status: args.status,
@@ -726,14 +739,15 @@ var stringRecord = (value) => {
       out[key] = entry;
   return out;
 };
-function holderExitErrorFromResponse(status, text) {
+function holderExitErrorFromResponse(status, text, requestId) {
+  const rid = requestId !== undefined ? { requestId } : {};
   let body;
   try {
     body = JSON.parse(text);
   } catch {
     body = undefined;
   }
-  const fallback = { code: `HTTP_${status}`, message: text || `HTTP ${status}`, status, retryable: false, body };
+  const fallback = { code: `HTTP_${status}`, message: text || `HTTP ${status}`, status, retryable: false, body, ...rid };
   if (!isObject(body))
     return new HolderExitError(fallback);
   const top = body;
@@ -754,7 +768,8 @@ function holderExitErrorFromResponse(status, text) {
       ...typeof error.reason === "string" ? { reason: error.reason } : {},
       ...details ? { details } : {},
       ...sequence,
-      body
+      body,
+      ...rid
     });
   }
   if (top.success === false && typeof top.error === "string" && typeof top.code === "string") {
@@ -765,7 +780,8 @@ function holderExitErrorFromResponse(status, text) {
       status,
       retryable: top.retryable === true,
       ...details ? { details } : {},
-      body
+      body,
+      ...rid
     });
   }
   if (top.error === true && typeof top.payload === "string") {
@@ -774,7 +790,8 @@ function holderExitErrorFromResponse(status, text) {
       message: top.payload,
       status,
       retryable: status === 503 || status === 429,
-      body
+      body,
+      ...rid
     });
   }
   return new HolderExitError(fallback);
@@ -6060,8 +6077,10 @@ function createTokenPagesClient(io) {
     for (let attempt = 0;attempt < attempts; attempt++) {
       let response;
       let text;
+      let arrivedId;
       try {
         response = await io.fetch(`${io.apiUrl()}${url}`, init);
+        arrivedId = requestIdOf(response);
         text = await response.text();
       } catch {
         if (attempt + 1 < attempts)
@@ -6070,10 +6089,12 @@ function createTokenPagesClient(io) {
           code: idempotencyKey ? "OUTCOME_UNKNOWN" : "NETWORK_ERROR",
           status: 0,
           message: idempotencyKey ? "No complete answer; replay the same body with this idempotency key." : "No complete answer from Candle.",
-          retryable: true
+          retryable: true,
+          ...arrivedId !== undefined ? { requestId: arrivedId } : {}
         }), { idempotencyKey });
       }
       if (!response.ok) {
+        const requestId = requestIdOf(response);
         let refusal = {};
         try {
           refusal = JSON.parse(text);
@@ -6082,8 +6103,9 @@ function createTokenPagesClient(io) {
           code: refusal.error,
           message: `Token page request refused (${refusal.error}).`,
           status: response.status,
-          retryable: false
-        }) : candleApiErrorFromResponse(response.status, text);
+          retryable: false,
+          ...requestId !== undefined ? { requestId } : {}
+        }) : candleApiErrorFromResponse(response.status, text, requestId);
         throw new TokenPageError(error, {
           idempotencyKey,
           latest: refusal?.latest,
@@ -6100,7 +6122,8 @@ function createTokenPagesClient(io) {
           code: idempotencyKey ? "OUTCOME_UNKNOWN" : "BAD_RESPONSE",
           message: "Candle returned an invalid response.",
           status: response.status,
-          retryable: false
+          retryable: false,
+          ...arrivedId !== undefined ? { requestId: arrivedId } : {}
         }), { idempotencyKey });
       }
     }
@@ -6664,7 +6687,7 @@ class CandleClient {
     noteLatestSdkVersion(res.headers?.get?.("x-candle-sdk-latest") ?? null);
     const text = await res.text();
     if (!res.ok)
-      throw holderExitErrorFromResponse(res.status, text);
+      throw holderExitErrorFromResponse(res.status, text, requestIdOf(res));
     return JSON.parse(text);
   }
   async getQuote(chain, mint, q) {
@@ -7401,7 +7424,8 @@ class CandleClient {
         message: "Creator bundle did not report a completed launch; recover this same clientLaunchId before starting another",
         retryable: false,
         stage: outcome.status === "failed" ? "reverted" : "unconfirmed",
-        mint: built.mint
+        mint: built.mint,
+        ...outcome.requestId !== undefined ? { requestId: outcome.requestId } : {}
       });
     }
     if ((body.chain ?? "solana") === "solana" && Number(body.buyAmount ?? 0) > 0) {
@@ -7549,10 +7573,13 @@ class CandleClient {
     } catch {
       parsed = undefined;
     }
-    if (isAtomicSubmitOutcome(parsed))
-      return parsed;
+    if (isAtomicSubmitOutcome(parsed)) {
+      const { requestId: _fromBody, ...outcome } = parsed;
+      const requestId = requestIdOf(res);
+      return requestId !== undefined ? { ...outcome, requestId } : outcome;
+    }
     if (!res.ok)
-      throw candleApiErrorFromResponse(res.status, text);
+      throw candleApiErrorFromResponse(res.status, text, requestIdOf(res));
     throw new Error(`submitAtomicLaunch(): unexpected 200 response shape: ${text}`);
   }
   async launchAtomic(req) {
@@ -8601,7 +8628,7 @@ class CandleClient {
     noteLatestSdkVersion(res.headers?.get?.("x-candle-sdk-latest") ?? null);
     const text = await res.text();
     if (!res.ok)
-      throw candleApiErrorFromResponse(res.status, text);
+      throw candleApiErrorFromResponse(res.status, text, requestIdOf(res));
     return JSON.parse(text);
   }
   async jsonRpcCall(url, method, params) {
@@ -8749,7 +8776,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.37";
+var SDK_VERSION = "0.6.38";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))
@@ -9445,6 +9472,7 @@ export {
   QUANT_CALL_TIMEOUT_MS,
   QUANT_DEFAULT_MAX_TEXT_CHARS,
   QUANT_POLL_TIMEOUT_MS,
+  REQUEST_ID_HEADER,
   SelfLaunchOutcomeError,
   TokenPageError,
   TradeLandedFeeLegError,
@@ -9495,6 +9523,7 @@ export {
   readHyperliquidPerpDexs,
   readPerpsHistoryPage,
   readPerpsRisk,
+  requestIdOf,
   transferAmountMicros,
   verifyOwnTransferBuild,
   verifyPerpsBuild,

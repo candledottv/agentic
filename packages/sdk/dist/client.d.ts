@@ -4165,15 +4165,18 @@ export type SubmitAtomicLaunchResult = {
     pool?: string;
     signatures: string[];
     launch?: Omit<LaunchResult, "clientLaunchId">;
+    requestId?: string;
 } | {
     status: "failed";
     bundleId: string;
     retryable: false;
     revertedSignature?: string;
+    requestId?: string;
 } | {
     status: "timeout";
     bundleId: string;
     retryable: boolean;
+    requestId?: string;
 };
 /**
  * What `launchAtomic()` returns: `submitAtomicLaunch()`'s outcome plus the `clientLaunchId` the
@@ -5523,7 +5526,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.37";
+export declare const SDK_VERSION = "0.6.38";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

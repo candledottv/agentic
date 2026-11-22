@@ -591,7 +591,10 @@ Hidden orders (`@candledottv/agent-sdk` 0.6.23). `swap()`, `buildTrade()`, `trad
 
 Every non-2xx response throws `CandleApiError` with `code`, `status`, `retryable`, and
 (for field-level validation) `field`, plus `routing`, `discovery`, `coverage`, `uiHint` and
-`docsPath` when the envelope carries them. A refused build (`reason: "presign_refused"`) also carries `refusal` (the pre-sign check that fired) and `detail` (its sentence for why, for example that the price moved past `maxSlippageBps`) from 0.6.37; nothing was signed or sent, so it is safe to build again. Structured envelopes map straight through; the few
+`docsPath` when the envelope carries them. A refused build (`reason: "presign_refused"`) also carries `refusal` (the pre-sign check that fired) and `detail` (its sentence for why, for example that the price moved past `maxSlippageBps`) from 0.6.37; nothing was signed or sent, so it is safe to build again. `requestId` (SDK 0.6.38) is the API's
+`X-Candle-Request-Id` for the failed response, also on non-envelope errors, and the message ends with
+`(request id <id>)`: quote it when reporting a failed call, since it finds the exact log line. It is
+absent from an older API. `REQUEST_ID_HEADER` and `requestIdOf(response)` are exported. Structured envelopes map straight through; the few
 legacy endpoints without envelopes (activity, users) surface as `code: "HTTP_<status>"`. A
 Solana or EVM JSON-RPC failure throws `JsonRpcError`, with the RPC's numeric `code` and its
 `data` (for a failed simulation, `{ err, logs }`). The one-call write methods also put the

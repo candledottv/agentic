@@ -273,6 +273,7 @@ export declare class HolderExitError extends CandleApiError {
         calls?: AgentHolderExitCallResult[];
         warnings?: string[];
         body: unknown;
+        requestId?: string;
     });
 }
 /**
@@ -282,6 +283,6 @@ export declare class HolderExitError extends CandleApiError {
  *   - the reads: `{ error: true, code?, payload: "<message>" }`.
  * Anything else is `HTTP_<status>` with the text as the message.
  */
-export declare function holderExitErrorFromResponse(status: number, text: string): HolderExitError;
+export declare function holderExitErrorFromResponse(status: number, text: string, requestId?: string): HolderExitError;
 export {};
 //# sourceMappingURL=holder-exit.d.ts.map

@@ -336,3 +336,17 @@ test("an unparseable error body is HTTP_<status>", () => {
     retryable: false,
   })
 })
+
+test("BE-4297: a holder-exit error keeps the request id and names it once", () => {
+  const err = holderExitErrorFromResponse(502, "bad gateway", "req-12345678")
+  expect(err.requestId).toBe("req-12345678")
+  expect(err.message).toBe("bad gateway (request id req-12345678)")
+  const env = holderExitErrorFromResponse(
+    409,
+    JSON.stringify({ success: false, error: { code: "HOOD_EXIT_FAILED", message: "Nope", retryable: false } }),
+    "req-12345678",
+  )
+  expect(env.requestId).toBe("req-12345678")
+  expect(env.message).toBe("Nope (request id req-12345678)")
+  expect(holderExitErrorFromResponse(502, "bad gateway").requestId).toBeUndefined()
+})

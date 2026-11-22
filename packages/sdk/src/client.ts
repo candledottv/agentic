@@ -51,6 +51,7 @@ import {
   JsonRpcError,
   type OperationFlow,
   type OperationIds,
+  requestIdOf,
   SelfLaunchOutcomeError,
   type SignedTradeLeg,
   TradeLandedFeeLegError,
@@ -4467,9 +4468,10 @@ export type SubmitAtomicLaunchResult =
       pool?: string
       signatures: string[]
       launch?: Omit<LaunchResult, "clientLaunchId">
+      requestId?: string
     }
-  | { status: "failed"; bundleId: string; retryable: false; revertedSignature?: string }
-  | { status: "timeout"; bundleId: string; retryable: boolean }
+  | { status: "failed"; bundleId: string; retryable: false; revertedSignature?: string; requestId?: string }
+  | { status: "timeout"; bundleId: string; retryable: boolean; requestId?: string }
 
 /**
  * What `launchAtomic()` returns: `submitAtomicLaunch()`'s outcome plus the `clientLaunchId` the
@@ -5160,7 +5162,7 @@ export class CandleClient {
     })
     noteLatestSdkVersion(res.headers?.get?.("x-candle-sdk-latest") ?? null)
     const text = await res.text()
-    if (!res.ok) throw holderExitErrorFromResponse(res.status, text)
+    if (!res.ok) throw holderExitErrorFromResponse(res.status, text, requestIdOf(res))
     return JSON.parse(text) as T
   }
 
@@ -6800,6 +6802,7 @@ export class CandleClient {
         retryable: false,
         stage: outcome.status === "failed" ? "reverted" : "unconfirmed",
         mint: built.mint,
+        ...(outcome.requestId !== undefined ? { requestId: outcome.requestId } : {}),
       })
     }
 
@@ -7076,8 +7079,15 @@ export class CandleClient {
     // is not, because isAtomicSubmitOutcome is strict enough that no error body satisfies it: it
     // requires a string bundleId AND either failed/timeout with a boolean retryable, or landed
     // with a mint and a signatures array.
-    if (isAtomicSubmitOutcome(parsed)) return parsed
-    if (!res.ok) throw candleApiErrorFromResponse(res.status, text)
+    if (isAtomicSubmitOutcome(parsed)) {
+      // BE-4297: the request id on an outcome comes only from the submit response's validated header, never
+      // from the body (a body `requestId` is dropped). It rides the returned value for the CandleApiError
+      // selfLaunch() builds from it. Nothing else about the outcome changes.
+      const { requestId: _fromBody, ...outcome } = parsed as SubmitAtomicLaunchResult
+      const requestId = requestIdOf(res)
+      return (requestId !== undefined ? { ...outcome, requestId } : outcome) as SubmitAtomicLaunchResult
+    }
+    if (!res.ok) throw candleApiErrorFromResponse(res.status, text, requestIdOf(res))
     throw new Error(`submitAtomicLaunch(): unexpected 200 response shape: ${text}`)
   }
 
@@ -8648,7 +8658,7 @@ export class CandleClient {
   private async parseResponse<T>(res: Response): Promise<T> {
     noteLatestSdkVersion(res.headers?.get?.("x-candle-sdk-latest") ?? null)
     const text = await res.text()
-    if (!res.ok) throw candleApiErrorFromResponse(res.status, text)
+    if (!res.ok) throw candleApiErrorFromResponse(res.status, text, requestIdOf(res))
     return JSON.parse(text) as T
   }
 
@@ -8873,7 +8883,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.37"
+export const SDK_VERSION = "0.6.38"
 
 let sdkUpdateWarned = false
 

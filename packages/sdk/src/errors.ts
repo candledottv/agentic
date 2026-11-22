@@ -194,7 +194,24 @@ export interface OwnerConfirmDetail {
     | "grant_unknown"
 }
 
+/** The response header carrying the API's per-request id (BE-4297). */
+export const REQUEST_ID_HEADER = "x-candle-request-id"
+
+/** Reads the request id off a response's headers, when the API sent one. */
+export function requestIdOf(res: { headers?: { get?: (name: string) => string | null } }): string | undefined {
+  const value = res.headers?.get?.(REQUEST_ID_HEADER)
+  // A proxy's header is untrusted: only a bounded token (what the API itself emits) reaches a message.
+  return value && SAFE_REQUEST_ID.test(value) ? value : undefined
+}
+
+const SAFE_REQUEST_ID = /^[A-Za-z0-9._-]{8,64}$/
+
 export class CandleApiError extends Error {
+  /**
+   * BE-4297: the API's `X-Candle-Request-Id` for the response that produced this error. Quote it when
+   * reporting a failed call; it finds the exact log line. Absent from an older API or a proxy page.
+   */
+  readonly requestId?: string
   readonly legs?: SignedTradeLeg[]
   /** The envelope's `error.code`, or `"HTTP_" + status` for non-envelope responses. */
   readonly code: string
@@ -254,9 +271,12 @@ export class CandleApiError extends Error {
   /** See `OperationIds.bundleId`. */
   declare readonly bundleId?: string
 
-  constructor(args: CandleErrorPayload & { status: number; retryable: boolean }) {
-    super(args.message)
+  constructor(args: CandleErrorPayload & { status: number; retryable: boolean; requestId?: string }) {
+    // `TokenPageError` and the like re-run this constructor with an already suffixed error: do not suffix twice.
+    const suffix = args.requestId ? ` (request id ${args.requestId})` : ""
+    super(suffix && !args.message.endsWith(suffix) ? args.message + suffix : args.message)
     this.name = "CandleApiError"
+    if (args.requestId !== undefined) this.requestId = args.requestId
     this.legs = args.legs
     this.code = args.code
     this.status = args.status
@@ -796,7 +816,7 @@ function recoveryEvidenceOf(top: Record<string, unknown>, error: Record<string, 
 }
 
 /** Builds the `CandleApiError` for a non-2xx response body (envelope-aware, see module doc). */
-export function candleApiErrorFromResponse(status: number, bodyText: string): CandleApiError {
+export function candleApiErrorFromResponse(status: number, bodyText: string, requestId?: string): CandleApiError {
   let parsed: unknown
   try {
     parsed = JSON.parse(bodyText)
@@ -811,6 +831,7 @@ export function candleApiErrorFromResponse(status: number, bodyText: string): Ca
       message: payload.message,
       status,
       retryable: payload.retryable === true,
+      ...(requestId !== undefined ? { requestId } : {}),
       ...(payload.field !== undefined ? { field: payload.field } : {}),
     })
   }
@@ -819,5 +840,6 @@ export function candleApiErrorFromResponse(status: number, bodyText: string): Ca
     message: bodyText || `HTTP ${status}`,
     status,
     retryable: false,
+    ...(requestId !== undefined ? { requestId } : {}),
   })
 }

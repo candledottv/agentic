@@ -283,8 +283,10 @@ export class HolderExitError extends CandleApiError {
     calls?: AgentHolderExitCallResult[]
     warnings?: string[]
     body: unknown
+    requestId?: string
   }) {
     super({
+      ...(args.requestId !== undefined ? { requestId: args.requestId } : {}),
       code: args.code,
       message: args.message,
       status: args.status,
@@ -318,14 +320,15 @@ const stringRecord = (value: unknown): Record<string, string> | undefined => {
  *   - the reads: `{ error: true, code?, payload: "<message>" }`.
  * Anything else is `HTTP_<status>` with the text as the message.
  */
-export function holderExitErrorFromResponse(status: number, text: string): HolderExitError {
+export function holderExitErrorFromResponse(status: number, text: string, requestId?: string): HolderExitError {
+  const rid = requestId !== undefined ? { requestId } : {}
   let body: unknown
   try {
     body = JSON.parse(text)
   } catch {
     body = undefined
   }
-  const fallback = { code: `HTTP_${status}`, message: text || `HTTP ${status}`, status, retryable: false, body }
+  const fallback = { code: `HTTP_${status}`, message: text || `HTTP ${status}`, status, retryable: false, body, ...rid }
   if (!isObject(body)) return new HolderExitError(fallback)
   const top = body
   const sequence = {
@@ -348,6 +351,7 @@ export function holderExitErrorFromResponse(status: number, text: string): Holde
       ...(details ? { details } : {}),
       ...sequence,
       body,
+      ...rid,
     })
   }
   if (top.success === false && typeof top.error === "string" && typeof top.code === "string") {
@@ -359,6 +363,7 @@ export function holderExitErrorFromResponse(status: number, text: string): Holde
       retryable: top.retryable === true,
       ...(details ? { details } : {}),
       body,
+      ...rid,
     })
   }
   if (top.error === true && typeof top.payload === "string") {
@@ -368,6 +373,7 @@ export function holderExitErrorFromResponse(status: number, text: string): Holde
       status,
       retryable: status === 503 || status === 429,
       body,
+      ...rid,
     })
   }
   return new HolderExitError(fallback)

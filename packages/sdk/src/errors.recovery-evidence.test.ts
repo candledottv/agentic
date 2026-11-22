@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { candleApiErrorFromResponse } from "./errors"
+import { CandleApiError, candleApiErrorFromResponse } from "./errors"
 
 const evidence = {
   operationId: "op-1",
@@ -79,4 +79,45 @@ describe("BE-3072: CandleApiError keeps the recovery evidence", () => {
     )
     expect(old.legEvidence).toBeUndefined()
   })
+})
+
+test("BE-4297: CandleApiError keeps the response's request id and names it in the message", async () => {
+  const { CandleClient } = await import("./client")
+  const body = { success: false, error: { code: "FEE_LEG_MISSING", message: "No fee leg", retryable: false } }
+  const withId = (async () =>
+    Response.json(body, {
+      status: 409,
+      headers: { "X-Candle-Request-Id": "req-abc-12345" },
+    })) as unknown as typeof fetch
+  const client = new CandleClient({ apiUrl: "https://api.test", apiKey: "k", fetch: withId })
+  const err = await client.getOwnProfile().catch((e) => e)
+  expect(err).toBeInstanceOf(CandleApiError)
+  expect(err.requestId).toBe("req-abc-12345")
+  expect(err.code).toBe("FEE_LEG_MISSING")
+  expect(err.message).toBe("No fee leg (request id req-abc-12345)")
+  const without = (async () => Response.json(body, { status: 409 })) as unknown as typeof fetch
+  const err2 = await new CandleClient({ apiUrl: "https://api.test", apiKey: "k", fetch: without })
+    .getOwnProfile()
+    .catch((e) => e)
+  expect(err2.requestId).toBeUndefined()
+  expect(err2.message).toBe("No fee leg")
+  const proxy = (async () =>
+    new Response("bad gateway", {
+      status: 502,
+      headers: { "x-candle-request-id": "req-proxy-9999" },
+    })) as unknown as typeof fetch
+  const err3 = await new CandleClient({ apiUrl: "https://api.test", apiKey: "k", fetch: proxy })
+    .getOwnProfile()
+    .catch((e) => e)
+  expect(err3.code).toBe("HTTP_502")
+  expect(err3.requestId).toBe("req-proxy-9999")
+})
+
+test("BE-4297: requestIdOf ignores an unbounded or unsafe proxy header", async () => {
+  const { requestIdOf } = await import("./errors")
+  const res = (v: string) => ({ headers: new Headers({ "x-candle-request-id": v }) })
+  expect(requestIdOf(res("req-12345678"))).toBe("req-12345678")
+  for (const bad of ["short", "a".repeat(65), "has space in it", "\u001b[31mred-escape-1", "<script>alert1</script>"])
+    expect(requestIdOf(res(bad))).toBeUndefined()
+  expect(requestIdOf({})).toBeUndefined()
 })

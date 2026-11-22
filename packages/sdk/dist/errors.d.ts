@@ -185,7 +185,20 @@ export interface OwnerConfirmDetail {
     };
     reason: "required" | "grant_pending" | "grant_denied" | "grant_expired" | "grant_consumed" | "grant_mismatch" | "grant_unknown";
 }
+/** The response header carrying the API's per-request id (BE-4297). */
+export declare const REQUEST_ID_HEADER = "x-candle-request-id";
+/** Reads the request id off a response's headers, when the API sent one. */
+export declare function requestIdOf(res: {
+    headers?: {
+        get?: (name: string) => string | null;
+    };
+}): string | undefined;
 export declare class CandleApiError extends Error {
+    /**
+     * BE-4297: the API's `X-Candle-Request-Id` for the response that produced this error. Quote it when
+     * reporting a failed call; it finds the exact log line. Absent from an older API or a proxy page.
+     */
+    readonly requestId?: string;
     readonly legs?: SignedTradeLeg[];
     /** The envelope's `error.code`, or `"HTTP_" + status` for non-envelope responses. */
     readonly code: string;
@@ -250,6 +263,7 @@ export declare class CandleApiError extends Error {
     constructor(args: CandleErrorPayload & {
         status: number;
         retryable: boolean;
+        requestId?: string;
     });
 }
 /**
@@ -501,5 +515,5 @@ export declare function operationIds(error: unknown): OperationIds;
  */
 export declare function withOperationIds(error: unknown, ids: OperationIds, flow: OperationFlow): unknown;
 /** Builds the `CandleApiError` for a non-2xx response body (envelope-aware, see module doc). */
-export declare function candleApiErrorFromResponse(status: number, bodyText: string): CandleApiError;
+export declare function candleApiErrorFromResponse(status: number, bodyText: string, requestId?: string): CandleApiError;
 //# sourceMappingURL=errors.d.ts.map

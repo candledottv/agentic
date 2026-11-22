@@ -332,3 +332,48 @@ test("all private calls require a key before transport; public reads remain usab
   await client.tokenPages.about(token)
   expect(calls).toBe(1)
 })
+
+test("BE-4297: token-page errors carry the request id once, from refusals and non-envelope answers", async () => {
+  const refusal = fixture(() =>
+    Response.json(
+      { success: false, error: "revision_conflict" },
+      { status: 409, headers: { "X-Candle-Request-Id": "req-87654321" } },
+    ),
+  )
+  const a = await refusal.client.tokenPages.updates(token).catch((e) => e)
+  expect(a).toBeInstanceOf(TokenPageError)
+  expect(a.requestId).toBe("req-87654321")
+  expect(a.message).toBe("Token page request refused (revision_conflict). (request id req-87654321)")
+  const proxy = fixture(
+    () => new Response("bad gateway", { status: 502, headers: { "X-Candle-Request-Id": "req-12345678" } }),
+  )
+  const b = await proxy.client.tokenPages.updates(token).catch((e) => e)
+  expect(b).toBeInstanceOf(TokenPageError)
+  expect(b.requestId).toBe("req-12345678")
+  expect(b.message).toBe("bad gateway (request id req-12345678)")
+})
+
+test("BE-4297: a request id received with an unusable body is still on the error", async () => {
+  const headers = { "X-Candle-Request-Id": "req-body-0001" }
+  const bad = fixture(() => new Response("not json", { status: 200, headers }))
+  const a = await bad.client.tokenPages.updates(token).catch((e) => e)
+  expect(a.code).toBe("BAD_RESPONSE")
+  expect(a.requestId).toBe("req-body-0001")
+  expect(a.message).toBe("Candle returned an invalid response. (request id req-body-0001)")
+  const write = fixture(() => new Response("not json", { status: 200, headers }))
+  const b = await write.client.tokenPages.postUpdate(token, { text: "hi" }, { idempotencyKey: "k-1" }).catch((e) => e)
+  expect(b.code).toBe("OUTCOME_UNKNOWN")
+  expect(b.requestId).toBe("req-body-0001")
+  expect(write.calls).toHaveLength(1)
+  const broken = fixture(() => {
+    const body = new ReadableStream({
+      pull() {
+        throw new Error("stream failed")
+      },
+    })
+    return new Response(body, { status: 200, headers })
+  })
+  const c = await broken.client.tokenPages.updates(token).catch((e) => e)
+  expect(c.code).toBe("NETWORK_ERROR")
+  expect(c.requestId).toBe("req-body-0001")
+})
