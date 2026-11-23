@@ -62,6 +62,7 @@ async function fixture(
     /** BE-1397: a Candle error the token trade's /execute (after the build) or /submit answers. */
     tradeExecuteError?: Record<string, unknown>
     tradeSubmitError?: Record<string, unknown>
+    waitSentResponse?: boolean
     swapJob?: Record<string, unknown>
     swapSubmit?: unknown
     /** BE-503: `embeddedWalletPermission` on GET /wallets/embedded. Absent by default (an older API). */
@@ -220,6 +221,9 @@ async function fixture(
     if (path === "/api/v1/agent/swap/submit" && opts.swapSubmit !== undefined) return ok(opts.swapSubmit)
     if (path === "/api/v1/trade/agent/submit" && opts.tradeSubmitError)
       return Response.json({ error: opts.tradeSubmitError }, { status: 500 })
+    if (path === "/api/v1/trade/agent/submit" && opts.waitSentResponse) {
+      return Response.json({ success: true, status: "broadcast", chain: "solana", signature }, { status: 202 })
+    }
     if (path.endsWith("/submit") || path.endsWith("/confirm"))
       return ok({ success: true, status: "executed", signature })
     if (path === "/rpc") {
@@ -931,6 +935,32 @@ describe("TEE CLI trading", () => {
       expect(humanText(f.stderr.text)).toContain(humanText("Do not automatically retry"))
       expect(f.calls.filter((call) => call.path === "/api/v1/agent/swap/submit")).toHaveLength(1)
     })
+  test("--wait-sent returns the trade's broadcast status and original signature", async () => {
+    const f = await fixture({ waitSentResponse: true })
+    expect(
+      await run(
+        [
+          "swap",
+          "SOL",
+          mint,
+          "--amount",
+          "1",
+          "--wallet",
+          "tee",
+          "--client-trade-id",
+          "t-sent",
+          "--yes",
+          "--wait-sent",
+          "--json",
+        ],
+        f.deps,
+      ),
+    ).toBe(0)
+    const call = f.calls.find((entry) => entry.path === "/api/v1/trade/agent/submit")
+    expect(call?.body).toMatchObject({ clientTradeId: "t-sent", wait: "sent" })
+    expect(JSON.parse(f.stdout.text)).toMatchObject({ status: "broadcast", clientTradeId: "t-sent", signature })
+  })
+
   // ── BE-1397 (BE-1123 item 12): a token trade that may have landed ──────────────────────────
   for (const [rail, wallet, option, path] of [
     ["embedded /execute", embedded, "tradeExecuteError", "/api/v1/trade/agent/execute"],

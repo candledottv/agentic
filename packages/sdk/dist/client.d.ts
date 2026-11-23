@@ -2754,15 +2754,25 @@ export interface TradeJob {
     operation?: HoodTeeOperation;
     guard?: HoodTeeOperation["guard"];
 }
+type TradeWaitMode = "sent" | "confirmed";
 /**
  * POST /api/v1/trade/agent/submit request body. `signedTransactions` is the ordered signed legs:
  * one for Solana; one to four for Hood in the fixed approval, permit2Approval, trade, feeTransfer
- * order (omitting a leg that was not built). The server broadcasts them itself and confirms
- * inline, so there is no separate confirmTrade() call after this one.
+ * order (omitting a leg that was not built). The server broadcasts and books the trade.
+ * The default returns once it is booked.
  */
-export interface SubmitTradeRequest {
+export interface SubmitTradeRequest<Wait extends TradeWaitMode = "confirmed"> {
     clientTradeId: string;
     signedTransactions: string[];
+    /** Defaults to confirmed. Sent is available for linked Solana trades. */
+    wait?: Wait;
+}
+export interface BroadcastTradeResult {
+    success: true;
+    status: "broadcast";
+    clientTradeId: string;
+    chain: "solana";
+    signature: string;
 }
 /**
  * The exact fields Privy's `eth_signTransaction` RPC expects under `params.transaction`. The
@@ -3983,9 +3993,11 @@ export interface CloseEmptyAccountsJob {
     result?: CloseEmptyAccountsResult | Record<string, unknown>;
 }
 /** trade()'s one-call request: mirrors BuildTradeRequest minus clientTradeId/payer, plus who signs. */
-export interface TradeRequest {
+export interface TradeRequest<Wait extends TradeWaitMode = "confirmed"> {
     mint: string;
     side: TradeSide;
+    /** Defaults to confirmed. Sent is available for linked Solana trades. */
+    wait?: Wait;
     /** Buy: quote-asset raw units to spend. Sell: base-token raw units to sell. */
     amountRaw: string;
     /** "main": the account's own delegated wallet, executed inline. A linked wallet: signed and broadcast by the caller via the sign relay. */
@@ -4838,6 +4850,11 @@ export declare class CandleClient {
         candidateHash?: string;
     }): Promise<HoodTeeOperation>;
     getTradeJob(clientTradeId: string): Promise<TradeJob>;
+    /** Poll a trade until booked or failed. A timeout leaves the server-side trade running. */
+    waitForTrade(clientTradeId: string, opts?: {
+        timeoutMs?: number;
+        pollMs?: number;
+    }): Promise<TradeJob>;
     /**
      * Confirm a LINKED payer's own broadcast trade: Candle verifies it landed on-chain, that it was
      * actually signed/sent by the declared linked wallet, that it moved this trade's own mint in
@@ -4852,9 +4869,11 @@ export declare class CandleClient {
      * Server-side alternative to the sign-then-confirmTrade() round trip above: hand the server the
      * already-signed legs (produced by signLinkedTransaction(), still unbroadcast) and it broadcasts
      * them itself, then confirms inline. One call instead of two; no client-side broadcast, no
-     * separate confirmTrade() call.
+     * separate confirmTrade() call. With `wait: "sent"`, a linked Solana trade can return
+     * `status: "broadcast"` and the signature. Read `waitForTrade(clientTradeId)` for the outcome.
      */
     submit(req: SubmitTradeRequest): Promise<ExecutedTradeResult>;
+    submit(req: SubmitTradeRequest<TradeWaitMode>): Promise<ExecutedTradeResult | BroadcastTradeResult>;
     /**
      * Signs an unsigned transaction (or, for EVM, an already-assembled transaction) with a linked
      * wallet's OWN Privy signer, without Candle ever holding the key: loads the agent's P-256
@@ -4964,6 +4983,7 @@ export declare class CandleClient {
      * - **Linked Solana payer**: read getTradeJob(id) and check the wallet before sending again.
      */
     trade(req: TradeRequest): Promise<ExecutedTradeResult>;
+    trade(req: TradeRequest<TradeWaitMode>): Promise<ExecutedTradeResult | BroadcastTradeResult>;
     /** trade()'s steps. Every error leaves through trade()'s runOperation(), which adds the id. */
     private tradeSteps;
     /**
@@ -5526,7 +5546,8 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.38";
+export declare const SDK_VERSION = "0.6.39";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
+export {};
 //# sourceMappingURL=client.d.ts.map

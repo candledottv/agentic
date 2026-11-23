@@ -673,7 +673,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
   if (args.includes("--dry-run")) return swapCheck(args, ctx)
   const parsed = parseArgs(args, {
     valueFlags: ["--amount", "--percent", "--wallet", "--to", "--client-trade-id", "--slippage-bps", "--rpc-url"],
-    booleanFlags: ["--yes", "--wait", "--hide"],
+    booleanFlags: ["--yes", "--wait", "--wait-sent", "--hide"],
   })
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json)
@@ -681,6 +681,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
   }
   const flags = parsed.values
   const hide = parsed.booleans.has("--hide")
+  const waitSent = parsed.booleans.has("--wait-sent")
   const id = flags["--client-trade-id"] ?? `swap-${randomUUID()}`
   const slippage = Number(flags["--slippage-bps"] ?? "50")
   if (!Number.isInteger(slippage) || slippage < 0 || slippage > AGENT_MAX_SLIPPAGE_BPS) {
@@ -696,7 +697,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
       ctx.deps,
       // --wallet is optional since BE-249: an account with exactly one payer does not have to name
       // it, and the payer may now be the embedded wallet as well as a TEE one.
-      "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--to <tee>] [--wait] [--hide] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token. SOL or USDC to ETH or USDG, or back, is a bridge between two TEE wallets.",
+      "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--to <tee>] [--wait | --wait-sent] [--hide] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token. SOL or USDC to ETH or USDG, or back, is a bridge between two TEE wallets.",
       ctx.json,
     )
     return 2
@@ -708,6 +709,16 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
     // Ember 4c (R1): a base asset on each chain is a bridge. Every other cross-chain pair is still
     // CHAIN_MISMATCH below. --to only selects a bridge destination.
     const bridge = bridgePair(fromAsset, toAsset)
+    if (
+      waitSent &&
+      (bridge ||
+        fromAsset.chain !== "solana" ||
+        toAsset.chain !== "solana" ||
+        (fromAsset.base && toAsset.base) ||
+        parsed.booleans.has("--wait"))
+    ) {
+      throw new TradingUsage("--wait-sent requires a Solana TEE token trade and cannot be combined with --wait.")
+    }
     if (hide && (bridge || (fromAsset.base && toAsset.base))) throw new TradingUsage(HIDE_TOKEN_ONLY)
     if (bridge)
       return await bridgeSwap(ctx, {
@@ -773,6 +784,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
     if (decimalsRun.status === "rejected") throw decimalsRun.reason
     if (outDecimalsRun.status === "rejected") throw outDecimalsRun.reason
     const payerWallet = payerRun.value
+    if (waitSent && payerWallet.kind !== "tee") throw new TradingUsage("--wait-sent requires a Solana TEE wallet.")
     const decimals = decimalsRun.value
     const outDecimals = outDecimalsRun.value
     const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address }
@@ -949,7 +961,11 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
             swapId: data.swapId,
             signedTransactionsBase64: [signed],
           })
-        : await request(ctx, key, "/api/v1/trade/agent/submit", { clientTradeId: id, signedTransactions: [signed] })
+        : await request(ctx, key, "/api/v1/trade/agent/submit", {
+            clientTradeId: id,
+            signedTransactions: [signed],
+            ...(waitSent ? { wait: "sent" } : {}),
+          })
     // BE-505 (R8.4): the Solana submit carries `settlement` inside `payload`, beside `hashes`.
     const settled =
       kind === "swap"

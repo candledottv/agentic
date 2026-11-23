@@ -279,6 +279,9 @@ const fill = await candle.trade({ mint: "9dXSV8...CNDL", side: "buy", amountRaw:
   `candle wallet close-empty` reclaims it.
 - `getTradeJob(clientTradeId)` reads one trade from the idempotency ledger without sending
   anything: the read to make after a `trade()` that threw or timed out. Needs `swap:write`.
+- `waitForTrade(clientTradeId, { timeoutMs, pollMs })` (0.6.39 and later) polls `getTradeJob`
+  until the trade is `confirmed` (booked) or `failed`, and returns that job. The defaults are
+  180 s and 2 s. A timeout throws and leaves the trade running on the server.
 - `swap()` converts base assets (`SOL`, `USDC`, `CNDL`, `ETH`, `USDG`); a pair that spans Solana
   and Hood is a bridge.
 - `getPlans()` (no key) returns every plan's price, fees, limits and capabilities as the server
@@ -307,6 +310,29 @@ are refused before signing. Builder rotation requires a reviewed client release.
 
 Limit orders are a REST surface only (`/api/v1/trade/agent/orders`); the SDK has no method for
 them.
+
+### Returning at broadcast (`wait: "sent"`)
+
+`submit()` and `trade()` take `wait?: "confirmed" | "sent"` (0.6.39 and later). The default,
+`"confirmed"`, is unchanged: the call returns the booked `ExecutedTradeResult`. `"sent"` is for a
+linked Solana token trade only. The call returns as soon as the RPC accepts the signed
+transaction, before the trade is booked, with a `BroadcastTradeResult`:
+
+```ts
+const sent = await candle.trade({ mint, side: "buy", amountRaw: "200000000", from: linkedWallet, wait: "sent" })
+if (sent.status === "broadcast") {
+  // { success: true, status: "broadcast", chain: "solana", clientTradeId, signature }
+  const job = await candle.waitForTrade(sent.clientTradeId) // "confirmed" (booked) or "failed"
+}
+```
+
+The API answers HTTP 202 and confirms and books the trade in the background; a worker books any
+trade the request did not. A `failed` job carries its `errorCode`, `TRADE_REVERTED` for a landed
+revert. A repeat submit under the same id once it is booked returns the stored `executed` result.
+With `wait: "sent"`, the return type is `ExecutedTradeResult | BroadcastTradeResult`, so check
+`status`. Any other `wait` value throws before a request. `trade({ wait: "sent" })` with
+`from: "main"` or a Hood (`0x`) mint throws before it builds. The API refuses `"sent"` on a main
+payer or Hood trade with `VALIDATION_FAILED` on `field: "wait"`.
 
 ## Keeping an order out of the public stream (`hide`)
 

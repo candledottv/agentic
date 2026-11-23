@@ -2918,15 +2918,33 @@ export interface TradeJob {
   guard?: HoodTeeOperation["guard"]
 }
 
+type TradeWaitMode = "sent" | "confirmed"
+
+function validateTradeWait(wait: TradeWaitMode | undefined): void {
+  if (wait !== undefined && wait !== "sent" && wait !== "confirmed") {
+    throw new Error('Trade wait must be "sent" or "confirmed"')
+  }
+}
+
 /**
  * POST /api/v1/trade/agent/submit request body. `signedTransactions` is the ordered signed legs:
  * one for Solana; one to four for Hood in the fixed approval, permit2Approval, trade, feeTransfer
- * order (omitting a leg that was not built). The server broadcasts them itself and confirms
- * inline, so there is no separate confirmTrade() call after this one.
+ * order (omitting a leg that was not built). The server broadcasts and books the trade.
+ * The default returns once it is booked.
  */
-export interface SubmitTradeRequest {
+export interface SubmitTradeRequest<Wait extends TradeWaitMode = "confirmed"> {
   clientTradeId: string
   signedTransactions: string[]
+  /** Defaults to confirmed. Sent is available for linked Solana trades. */
+  wait?: Wait
+}
+
+export interface BroadcastTradeResult {
+  success: true
+  status: "broadcast"
+  clientTradeId: string
+  chain: "solana"
+  signature: string
 }
 
 // ---------------------------------------------------------------------------
@@ -4283,9 +4301,11 @@ export interface CloseEmptyAccountsJob {
 }
 
 /** trade()'s one-call request: mirrors BuildTradeRequest minus clientTradeId/payer, plus who signs. */
-export interface TradeRequest {
+export interface TradeRequest<Wait extends TradeWaitMode = "confirmed"> {
   mint: string
   side: TradeSide
+  /** Defaults to confirmed. Sent is available for linked Solana trades. */
+  wait?: Wait
   /** Buy: quote-asset raw units to spend. Sell: base-token raw units to sell. */
   amountRaw: string
   /** "main": the account's own delegated wallet, executed inline. A linked wallet: signed and broadcast by the caller via the sign relay. */
@@ -6294,6 +6314,22 @@ export class CandleClient {
     return body.job
   }
 
+  /** Poll a trade until booked or failed. A timeout leaves the server-side trade running. */
+  async waitForTrade(clientTradeId: string, opts: { timeoutMs?: number; pollMs?: number } = {}): Promise<TradeJob> {
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS
+    const pollMs = opts.pollMs ?? DEFAULT_POLL_MS
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const job = await this.getTradeJob(clientTradeId)
+      if (job.status === "confirmed" || job.status === "failed") return job
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) {
+        throw new Error(`waitForTrade("${clientTradeId}") timed out after ${timeoutMs}ms (last status: ${job.status})`)
+      }
+      await sleep(Math.min(remaining, pollMs))
+    }
+  }
+
   /**
    * Confirm a LINKED payer's own broadcast trade: Candle verifies it landed on-chain, that it was
    * actually signed/sent by the declared linked wallet, that it moved this trade's own mint in
@@ -6312,11 +6348,15 @@ export class CandleClient {
    * Server-side alternative to the sign-then-confirmTrade() round trip above: hand the server the
    * already-signed legs (produced by signLinkedTransaction(), still unbroadcast) and it broadcasts
    * them itself, then confirms inline. One call instead of two; no client-side broadcast, no
-   * separate confirmTrade() call.
+   * separate confirmTrade() call. With `wait: "sent"`, a linked Solana trade can return
+   * `status: "broadcast"` and the signature. Read `waitForTrade(clientTradeId)` for the outcome.
    */
-  async submit(req: SubmitTradeRequest): Promise<ExecutedTradeResult> {
+  async submit(req: SubmitTradeRequest): Promise<ExecutedTradeResult>
+  async submit(req: SubmitTradeRequest<TradeWaitMode>): Promise<ExecutedTradeResult | BroadcastTradeResult>
+  async submit(req: SubmitTradeRequest<TradeWaitMode>): Promise<ExecutedTradeResult | BroadcastTradeResult> {
     this.requireKey("submit()")
-    return this.requestJson<ExecutedTradeResult>("POST", "/api/v1/trade/agent/submit", req)
+    validateTradeWait(req.wait)
+    return this.requestJson<ExecutedTradeResult | BroadcastTradeResult>("POST", "/api/v1/trade/agent/submit", req)
   }
 
   // -- linked-wallet signing relay + one-shot flows --------------------------
@@ -6536,7 +6576,13 @@ export class CandleClient {
    *   TradeLandedUnconfirmedError means all legs landed but booking failed: read the job first.
    * - **Linked Solana payer**: read getTradeJob(id) and check the wallet before sending again.
    */
-  async trade(req: TradeRequest): Promise<ExecutedTradeResult> {
+  async trade(req: TradeRequest): Promise<ExecutedTradeResult>
+  async trade(req: TradeRequest<TradeWaitMode>): Promise<ExecutedTradeResult | BroadcastTradeResult>
+  async trade(req: TradeRequest<TradeWaitMode>): Promise<ExecutedTradeResult | BroadcastTradeResult> {
+    validateTradeWait(req.wait)
+    if (req.wait === "sent" && (req.from === "main" || /^0x/i.test(req.mint))) {
+      throw new Error('trade({ wait: "sent" }) requires a linked Solana trade')
+    }
     const clientTradeId = req.clientTradeId ?? generateClientTradeId()
     const buildReq: BuildTradeRequest = {
       clientTradeId,
@@ -6559,10 +6605,10 @@ export class CandleClient {
 
   /** trade()'s steps. Every error leaves through trade()'s runOperation(), which adds the id. */
   private async tradeSteps(
-    req: TradeRequest,
+    req: TradeRequest<TradeWaitMode>,
     buildReq: BuildTradeRequest,
     op: OperationContext,
-  ): Promise<ExecutedTradeResult> {
+  ): Promise<ExecutedTradeResult | BroadcastTradeResult> {
     if (req.from === "main") {
       const result = await this.postTradeBuild(buildReq, op)
       if (result.status !== "executed") {
@@ -6595,9 +6641,14 @@ export class CandleClient {
         chain: "solana",
         unsignedTransactionBase64: built.artifacts.transactionBase64,
       })
-      return this.submit({ clientTradeId: built.clientTradeId, signedTransactions: [signed.signedTransaction] })
+      return this.submit({
+        clientTradeId: built.clientTradeId,
+        signedTransactions: [signed.signedTransaction],
+        ...(req.wait === "sent" ? { wait: "sent" } : {}),
+      })
     }
 
+    if (req.wait === "sent") throw new Error('trade({ wait: "sent" }) requires a linked Solana trade')
     // Hood (built.chain === "hood"): each leg is its own transaction (see this method's jsdoc for
     // why the order and per-leg receipt wait are load-bearing). Stays on the client-broadcast path
     // (NOT submit()): the trade leg's eth_estimateGas needs the approval leg already mined, which
@@ -8883,7 +8934,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.6.38"
+export const SDK_VERSION = "0.6.39"
 
 let sdkUpdateWarned = false
 

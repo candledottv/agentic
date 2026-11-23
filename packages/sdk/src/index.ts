@@ -55,6 +55,7 @@ export type {
   AtomicFirstBuyRequest,
   AtomicLaunchPayer,
   BaseAssetKey,
+  BroadcastTradeResult,
   BuildAtomicLaunchRequest,
   BuildAtomicLaunchResult,
   BuildSelfLaunchAtomicResult,

@@ -301,6 +301,29 @@ describe("trade() with a linked payer", () => {
     expiresAt: 1692345678000,
   })
 
+  test('trade forwards wait: "sent" and preserves the broadcast signature', async () => {
+    const receipt = {
+      success: true,
+      status: "broadcast",
+      chain: "solana",
+      clientTradeId: "trade-sent",
+      signature: "Sig111",
+    } as const
+    const server = fakeServer((call) => {
+      if (call.url.endsWith("/trade/agent/build")) return json(200, solanaBuilt(String(call.body?.clientTradeId)))
+      if (call.url.endsWith("/sign")) return json(200, { signedTransaction: "signed", encoding: "base64" })
+      if (call.url.endsWith("/trade/agent/submit")) return json(202, receipt)
+      throw new Error(`unrouted ${call.url}`)
+    })
+    const client = await linkedClient(server.impl)
+    expect(await client.trade({ ...REQ, wait: "sent", clientTradeId: "trade-sent" })).toEqual(receipt)
+    expect(server.calls.at(-1)?.body).toEqual({
+      clientTradeId: "trade-sent",
+      signedTransactions: ["signed"],
+      wait: "sent",
+    })
+  })
+
   test("T21a: the sign relay rejecting after the build is a CandleApiError that keeps its class and gains clientTradeId", async () => {
     const server = fakeServer((call) => {
       if (call.url.endsWith("/trade/agent/build")) return json(200, solanaBuilt(String(call.body?.clientTradeId)))
@@ -961,6 +984,19 @@ describe("getTradeJob()", () => {
     expect(server.calls[0]?.method).toBe("GET")
     expect(server.calls[0]?.headers).toEqual({ "x-api-key": "k", "x-candle-client": `sdk/${SDK_VERSION}` })
     expect(server.calls[0]?.body).toBeUndefined()
+  })
+
+  test.each(["confirmed", "failed"] as const)("waitForTrade polls past broadcast until %s", async (status) => {
+    const server = fakeServer((_call, n) =>
+      json(200, { success: true, job: { ...JOB, status: n === 1 ? "built" : status } }),
+    )
+    const client = new CandleClient({ apiUrl: API, apiKey: "k", fetch: server.impl })
+    expect(await client.waitForTrade(JOB.clientTradeId, { pollMs: 1 })).toMatchObject({
+      status,
+      signature: JOB.signature,
+    })
+    expect(server.calls.length).toBeGreaterThan(1)
+    expect(server.calls.every((call) => call.method === "GET")).toBe(true)
   })
 
   test("T20: a missing row throws CandleApiError JOB_NOT_FOUND, with no id attached to a plain read", async () => {

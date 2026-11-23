@@ -6240,6 +6240,11 @@ ${lines.join(`
 function historyTime(value) {
   return value instanceof Date ? String(value.getTime()) : String(value);
 }
+function validateTradeWait(wait) {
+  if (wait !== undefined && wait !== "sent" && wait !== "confirmed") {
+    throw new Error('Trade wait must be "sent" or "confirmed"');
+  }
+}
 function refuseEmbeddedSpot(walletId, method) {
   if (walletId === "embedded")
     throw new Error(`${method}: Hyperliquid spot signs only from the key's EVM TEE wallet; the embedded wallet is not offered for spot. Nothing was requested.`);
@@ -7193,12 +7198,28 @@ class CandleClient {
     const body = await this.requestJson("GET", `/api/v1/trade/agent/jobs/${encodeURIComponent(clientTradeId)}`);
     return body.job;
   }
+  async waitForTrade(clientTradeId, opts = {}) {
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS;
+    const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
+    const deadline = Date.now() + timeoutMs;
+    for (;; ) {
+      const job = await this.getTradeJob(clientTradeId);
+      if (job.status === "confirmed" || job.status === "failed")
+        return job;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new Error(`waitForTrade("${clientTradeId}") timed out after ${timeoutMs}ms (last status: ${job.status})`);
+      }
+      await sleep2(Math.min(remaining, pollMs));
+    }
+  }
   async confirmTrade(req) {
     this.requireKey("confirmTrade()");
     return this.requestJson("POST", "/api/v1/trade/agent/confirm", req);
   }
   async submit(req) {
     this.requireKey("submit()");
+    validateTradeWait(req.wait);
     return this.requestJson("POST", "/api/v1/trade/agent/submit", req);
   }
   async signLinkedTransaction(params) {
@@ -7273,6 +7294,10 @@ class CandleClient {
     return submit.payload;
   }
   async trade(req) {
+    validateTradeWait(req.wait);
+    if (req.wait === "sent" && (req.from === "main" || /^0x/i.test(req.mint))) {
+      throw new Error('trade({ wait: "sent" }) requires a linked Solana trade');
+    }
     const clientTradeId = req.clientTradeId ?? generateClientTradeId();
     const buildReq = {
       clientTradeId,
@@ -7310,8 +7335,14 @@ class CandleClient {
         chain: "solana",
         unsignedTransactionBase64: built.artifacts.transactionBase64
       });
-      return this.submit({ clientTradeId: built.clientTradeId, signedTransactions: [signed.signedTransaction] });
+      return this.submit({
+        clientTradeId: built.clientTradeId,
+        signedTransactions: [signed.signedTransaction],
+        ...req.wait === "sent" ? { wait: "sent" } : {}
+      });
     }
+    if (req.wait === "sent")
+      throw new Error('trade({ wait: "sent" }) requires a linked Solana trade');
     if (!this.evmRpcUrlForChain("hood")) {
       throw new Error('trade({ from: <linked> }) on chain "hood" requires evmRpcUrl, because hood is an EVM chain: pass one in CandleClientOptions (new CandleClient({ evmRpcUrl }))');
     }
@@ -8776,7 +8807,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.6.38";
+var SDK_VERSION = "0.6.39";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))
