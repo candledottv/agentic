@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test"
 import { parseArgs, parseExpiresInDays, parseScopesList, parseUsdToMicros } from "./args"
 
+// BE-4400: touched so the staging push publishes the sdk/cli/mcp versions npm is missing.
 describe("parseArgs", () => {
   test("parses a recognized value flag", () => {
     const result = parseArgs(["--scopes", "launch:write"], { valueFlags: ["--scopes"] })
