@@ -293,28 +293,27 @@ describe("T-B4: the typed prefix", () => {
     }
   })
 
-  test.each([
-    "withdraw",
-    "transfer",
-    "read-write-transfer",
-  ])("--access %s commits with the preview's scopes as expectScopes", async (level) => {
-    const { handlers, bodies } = accessApi("widen")
-    const { fetch } = createRoutedFetch({ [ACCESS_PATH]: handlers })
-    const { deps, stdout, stderr } = depsFor(fetch, { answers: [`  ${PREFIX} `] })
-    expect(await run(["keys", "access", PREFIX, "--access", level], deps)).toBe(0)
-    expect(bodies[1]).toEqual({ access: "readwritetransfer", expectScopes: RW })
-    expect(stdout.text).toContain(`✓ Changed ${PREFIX} (cndl) to Withdraw.\n  Change id  j97abc\n`)
-    // The screen: key, account, API, the change, the fund-moving label, the wallets and the caps.
-    expect(stderr.text).toContain(`Key             ${PREFIX}  cndl`)
-    expect(stderr.text).toContain("Candle account  Quant-")
-    expect(stderr.text).toContain("API             https://api.alpha.candle.tv  (production)")
-    expect(stderr.text).toContain("Access          Write  ->  Withdraw   (widen)")
-    expect(stderr.text).toContain("Adds            transfer:bound (moves funds")
-    expect(stderr.text).toContain("Removes         nothing")
-    expect(stderr.text).toContain("TEE wallets on this key: 3  (tr-01, tr-02, tr-03)")
-    expect(stderr.text).toContain("It can move these wallets' funds to their vaults as soon as you confirm.")
-    expect(stderr.text).toContain("No cap for USDC, CNDL (unlimited).")
-  })
+  test.each(["withdraw", "transfer", "read-write-transfer"])(
+    "--access %s commits with the preview's scopes as expectScopes",
+    async (level) => {
+      const { handlers, bodies } = accessApi("widen")
+      const { fetch } = createRoutedFetch({ [ACCESS_PATH]: handlers })
+      const { deps, stdout, stderr } = depsFor(fetch, { answers: [`  ${PREFIX} `] })
+      expect(await run(["keys", "access", PREFIX, "--access", level], deps)).toBe(0)
+      expect(bodies[1]).toEqual({ access: "readwritetransfer", expectScopes: RW })
+      expect(stdout.text).toContain(`✓ Changed ${PREFIX} (cndl) to Withdraw.\n  Change id  j97abc\n`)
+      // The screen: key, account, API, the change, the fund-moving label, the wallets and the caps.
+      expect(stderr.text).toContain(`Key             ${PREFIX}  cndl`)
+      expect(stderr.text).toContain("Candle account  Quant-")
+      expect(stderr.text).toContain("API             https://api.alpha.candle.tv  (production)")
+      expect(stderr.text).toContain("Access          Write  ->  Withdraw   (widen)")
+      expect(stderr.text).toContain("Adds            transfer:bound (moves funds")
+      expect(stderr.text).toContain("Removes         nothing")
+      expect(stderr.text).toContain("TEE wallets on this key: 3  (tr-01, tr-02, tr-03)")
+      expect(stderr.text).toContain("It can move these wallets' funds to their vaults as soon as you confirm.")
+      expect(stderr.text).toContain("No cap for USDC, CNDL (unlimited).")
+    },
+  )
 
   test("a stale commit is refused with the server's code and a rerun suggestion", async () => {
     const { handlers } = accessApi("widen", {

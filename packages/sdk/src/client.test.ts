@@ -2827,53 +2827,52 @@ describe("linked-wallet signing relay + one-shot flows", () => {
       expect((err as Error).message).toContain("execution reverted")
     })
 
-    test.each([
-      "broadcast",
-      "timeout",
-      "reverted",
-    ])("T17/T18: trade %s keeps signed hash and landed approval", async (failure) => {
-      const store = await keyedSecretStore()
-      const setup: (Response | Error)[] = [
-        json(200, HOOD_BUILT_TRADE_WITH_APPROVAL),
-        ...evmSetupResponses(),
-        ...evmLegResponses("0xApprovalTxHash"),
-        evmRpcOk("0x186a0"),
-        json(200, SIGN_RELAY_OK),
-      ]
-      if (failure === "broadcast") setup.push(new Error("lost broadcast response"))
-      else {
-        setup.push(evmRpcOk("0xTradeHash"))
-        setup.push(failure === "reverted" ? evmRpcOk({ status: "0x0" }) : evmRpcOk(null))
-      }
-      __setEvmReceiptWaitForTest({ timeoutMs: 1, pollMs: 1 })
-      try {
-        const { client } = makeClient(
-          { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC },
-          setup,
-        )
-        const error = await client
-          .trade({
-            mint: "0xMint",
-            side: "buy",
-            amountRaw: "500000",
-            from: { linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
-          })
-          .catch((e) => e)
-        expect(error).toBeInstanceOf(TradeLegOutcomeError)
-        expect(error.leg).toBe("trade")
-        expect(error.outcome).toBe(failure === "reverted" ? "reverted" : "unknown")
-        expect(error.txHash).toBe(
-          failure === "broadcast"
-            ? "0x" + Buffer.from(keccak_256(Buffer.from(SIGN_RELAY_OK.signedTransaction, "base64"))).toString("hex")
-            : "0xTradeHash",
-        )
-        expect(error.landedLegs).toEqual([{ leg: "approval", txHash: "0xApprovalTxHash" }])
-        expect(operationIds(error)).toEqual({ clientTradeId: error.clientTradeId })
-        expect(error.cause).toBeInstanceOf(Error)
-      } finally {
-        __setEvmReceiptWaitForTest(null)
-      }
-    })
+    test.each(["broadcast", "timeout", "reverted"])(
+      "T17/T18: trade %s keeps signed hash and landed approval",
+      async (failure) => {
+        const store = await keyedSecretStore()
+        const setup: (Response | Error)[] = [
+          json(200, HOOD_BUILT_TRADE_WITH_APPROVAL),
+          ...evmSetupResponses(),
+          ...evmLegResponses("0xApprovalTxHash"),
+          evmRpcOk("0x186a0"),
+          json(200, SIGN_RELAY_OK),
+        ]
+        if (failure === "broadcast") setup.push(new Error("lost broadcast response"))
+        else {
+          setup.push(evmRpcOk("0xTradeHash"))
+          setup.push(failure === "reverted" ? evmRpcOk({ status: "0x0" }) : evmRpcOk(null))
+        }
+        __setEvmReceiptWaitForTest({ timeoutMs: 1, pollMs: 1 })
+        try {
+          const { client } = makeClient(
+            { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC },
+            setup,
+          )
+          const error = await client
+            .trade({
+              mint: "0xMint",
+              side: "buy",
+              amountRaw: "500000",
+              from: { linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
+            })
+            .catch((e) => e)
+          expect(error).toBeInstanceOf(TradeLegOutcomeError)
+          expect(error.leg).toBe("trade")
+          expect(error.outcome).toBe(failure === "reverted" ? "reverted" : "unknown")
+          expect(error.txHash).toBe(
+            failure === "broadcast"
+              ? "0x" + Buffer.from(keccak_256(Buffer.from(SIGN_RELAY_OK.signedTransaction, "base64"))).toString("hex")
+              : "0xTradeHash",
+          )
+          expect(error.landedLegs).toEqual([{ leg: "approval", txHash: "0xApprovalTxHash" }])
+          expect(operationIds(error)).toEqual({ clientTradeId: error.clientTradeId })
+          expect(error.cause).toBeInstanceOf(Error)
+        } finally {
+          __setEvmReceiptWaitForTest(null)
+        }
+      },
+    )
     test("T19: first-leg pre-sign JsonRpcError retains its class", async () => {
       const store = await keyedSecretStore()
       const { client } = makeClient({ ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC }, [
@@ -2892,38 +2891,38 @@ describe("linked-wallet signing relay + one-shot flows", () => {
       expect(error).toBeInstanceOf(JsonRpcError)
       expect(error).not.toBeInstanceOf(TradeLegOutcomeError)
     })
-    test.each([
-      false,
-      true,
-    ])("T20/T21: all landed, confirm response lost=%s preserves hashes and original cause", async (lost) => {
-      const store = await keyedSecretStore()
-      const cause = new Error("lost confirmation")
-      const { client } = makeClient({ ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC }, [
-        json(200, HOOD_BUILT_TRADE_WITH_APPROVAL),
-        ...evmSetupResponses(),
-        ...evmLegResponses("0xApproval"),
-        ...evmLegResponses("0xTrade"),
-        ...evmLegResponses("0xFee"),
-        lost
-          ? cause
-          : json(404, { success: false, error: { code: "JOB_NOT_FOUND", message: "row failed", retryable: false } }),
-      ])
-      const error = await client
-        .trade({
-          mint: "0xMint",
-          side: "buy",
-          amountRaw: "500000",
-          from: { linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
-        })
-        .catch((e) => e)
-      expect(error).toBeInstanceOf(TradeLandedUnconfirmedError)
-      expect(error).toMatchObject({ tradeTxHash: "0xTrade", feeTxHash: "0xFee", stage: "executed" })
-      expect(error.cause).toBeInstanceOf(lost ? Error : CandleApiError)
-      if (lost) expect(error.cause).toBe(cause)
-      expect(operationIds(error)).toEqual({ clientTradeId: error.clientTradeId })
-      expect(error.message).toContain("Read getTradeJob")
-      expect(error.message).toContain("do not retry or rebuild")
-    })
+    test.each([false, true])(
+      "T20/T21: all landed, confirm response lost=%s preserves hashes and original cause",
+      async (lost) => {
+        const store = await keyedSecretStore()
+        const cause = new Error("lost confirmation")
+        const { client } = makeClient({ ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC }, [
+          json(200, HOOD_BUILT_TRADE_WITH_APPROVAL),
+          ...evmSetupResponses(),
+          ...evmLegResponses("0xApproval"),
+          ...evmLegResponses("0xTrade"),
+          ...evmLegResponses("0xFee"),
+          lost
+            ? cause
+            : json(404, { success: false, error: { code: "JOB_NOT_FOUND", message: "row failed", retryable: false } }),
+        ])
+        const error = await client
+          .trade({
+            mint: "0xMint",
+            side: "buy",
+            amountRaw: "500000",
+            from: { linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
+          })
+          .catch((e) => e)
+        expect(error).toBeInstanceOf(TradeLandedUnconfirmedError)
+        expect(error).toMatchObject({ tradeTxHash: "0xTrade", feeTxHash: "0xFee", stage: "executed" })
+        expect(error.cause).toBeInstanceOf(lost ? Error : CandleApiError)
+        if (lost) expect(error.cause).toBe(cause)
+        expect(operationIds(error)).toEqual({ clientTradeId: error.clientTradeId })
+        expect(error.message).toContain("Read getTradeJob")
+        expect(error.message).toContain("do not retry or rebuild")
+      },
+    )
 
     test("from: linked (Hood) with no approval and no fee leg confirms with just tradeTxHash", async () => {
       const store = await keyedSecretStore()
@@ -3236,41 +3235,41 @@ describe("linked-wallet signing relay + one-shot flows", () => {
       })
     })
 
-    test.each([
-      "timeout",
-      "failed",
-    ])("BE-1847: creator bundle %s retains both ids and never enters the RPC rebuild loop", async (status) => {
-      const store = await keyedSecretStore()
-      const built = {
-        bundleId: "creator-bundle",
-        mint: "Mint111",
-        pool: "Pool111",
-        legs: [
-          { index: 0, signer: "client", unsignedTxBase64: "bGF1bmNo" },
-          { index: 1, signer: "client", unsignedTxBase64: "YnV5" },
-        ],
-      }
-      const { client, calls } = makeClient(
-        { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, solanaRpcUrl: SOLANA_RPC },
-        [
-          json(200, built),
-          json(200, SIGN_RELAY_OK),
-          json(200, SIGN_RELAY_OK),
-          json(502, { status, bundleId: built.bundleId, retryable: false }),
-        ],
-      )
-      const error = await launchSelf(client, {
-        ...LAUNCH_REQ,
-        buyAmount: "10000000",
-        linkedWalletId: LINKED_WALLET_ID,
-        privyWalletId: PRIVY_WALLET_ID,
-      }).catch((e) => e)
-      expect(error).toBeInstanceOf(CandleApiError)
-      expect(error.stage).toBe(status === "failed" ? "reverted" : "unconfirmed")
-      expect(operationIds(error)).toEqual({ clientLaunchId: LAUNCH_REQ.clientLaunchId, bundleId: built.bundleId })
-      expect(calls).toHaveLength(4)
-      expect(calls.some((c) => c.url === SOLANA_RPC)).toBe(false)
-    })
+    test.each(["timeout", "failed"])(
+      "BE-1847: creator bundle %s retains both ids and never enters the RPC rebuild loop",
+      async (status) => {
+        const store = await keyedSecretStore()
+        const built = {
+          bundleId: "creator-bundle",
+          mint: "Mint111",
+          pool: "Pool111",
+          legs: [
+            { index: 0, signer: "client", unsignedTxBase64: "bGF1bmNo" },
+            { index: 1, signer: "client", unsignedTxBase64: "YnV5" },
+          ],
+        }
+        const { client, calls } = makeClient(
+          { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, solanaRpcUrl: SOLANA_RPC },
+          [
+            json(200, built),
+            json(200, SIGN_RELAY_OK),
+            json(200, SIGN_RELAY_OK),
+            json(502, { status, bundleId: built.bundleId, retryable: false }),
+          ],
+        )
+        const error = await launchSelf(client, {
+          ...LAUNCH_REQ,
+          buyAmount: "10000000",
+          linkedWalletId: LINKED_WALLET_ID,
+          privyWalletId: PRIVY_WALLET_ID,
+        }).catch((e) => e)
+        expect(error).toBeInstanceOf(CandleApiError)
+        expect(error.stage).toBe(status === "failed" ? "reverted" : "unconfirmed")
+        expect(operationIds(error)).toEqual({ clientLaunchId: LAUNCH_REQ.clientLaunchId, bundleId: built.bundleId })
+        expect(calls).toHaveLength(4)
+        expect(calls.some((c) => c.url === SOLANA_RPC)).toBe(false)
+      },
+    )
 
     test.each([
       {

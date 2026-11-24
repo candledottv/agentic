@@ -1261,16 +1261,16 @@ describe("pool choices on both launch tools", () => {
   const BASE = { clientLaunchId: "c1", name: "T", symbol: "T", imageUrl: "https://x/y.png" }
   const FALL = { startBps: 2500, endBps: 25, minutes: 30 }
 
-  test.each([
-    "candle_launch_token",
-    "candle_launch_and_seed",
-  ])("%s describes the conditional pool opening default", (name) => {
-    const description = tools[name]?.inputSchema.poolOpen?.description
-    expect(description).toBe(launchFieldHelp("poolOpen"))
-    expect(description).toContain("graduation.maxStakerCarveBps")
-    expect(description).toContain("otherwise legacy")
-    expect(tools[name]?.inputSchema.expPoolShape?.description).toBe(launchFieldHelp("expPoolShape"))
-  })
+  test.each(["candle_launch_token", "candle_launch_and_seed"])(
+    "%s describes the conditional pool opening default",
+    (name) => {
+      const description = tools[name]?.inputSchema.poolOpen?.description
+      expect(description).toBe(launchFieldHelp("poolOpen"))
+      expect(description).toContain("graduation.maxStakerCarveBps")
+      expect(description).toContain("otherwise legacy")
+      expect(tools[name]?.inputSchema.expPoolShape?.description).toBe(launchFieldHelp("expPoolShape"))
+    },
+  )
 
   test.each(["candle_launch_token", "candle_launch_and_seed"])("%s parses a tier, a fall and each shape", (name) => {
     const schema = z.object(tools[name]?.inputSchema ?? {})

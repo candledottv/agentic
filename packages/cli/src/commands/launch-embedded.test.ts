@@ -476,18 +476,17 @@ describe("embedded launch through headless, with an optional first buy", () => {
     expect(f.paths().some((path) => path.includes("uploads") || path.endsWith("dry-run"))).toBe(false)
   })
 
-  test.each([
-    "LAUNCH_DISABLED",
-    "DEV_BUY_TOO_HIGH",
-    "EMBEDDED_WALLET_NOT_PERMITTED",
-  ])("server %s refusal passes through and consumes no id", async (code) => {
-    const f = await fixture({ error: { code, message: "Server refusal" } })
-    expect(await run(buyArgs, f.deps)).toBe(1)
-    expect(json(f.stdout.text).code).toBe(code)
-    expect(json(f.stdout.text).message).toStartWith("Server refusal")
-    expect(f.operations()).toEqual([])
-    expect(f.paths()).not.toContain("/api/v1/launch/headless")
-  })
+  test.each(["LAUNCH_DISABLED", "DEV_BUY_TOO_HIGH", "EMBEDDED_WALLET_NOT_PERMITTED"])(
+    "server %s refusal passes through and consumes no id",
+    async (code) => {
+      const f = await fixture({ error: { code, message: "Server refusal" } })
+      expect(await run(buyArgs, f.deps)).toBe(1)
+      expect(json(f.stdout.text).code).toBe(code)
+      expect(json(f.stdout.text).message).toStartWith("Server refusal")
+      expect(f.operations()).toEqual([])
+      expect(f.paths()).not.toContain("/api/v1/launch/headless")
+    },
+  )
 
   test("a mismatching preview fill never launches", async () => {
     const f = await fixture({ badFill: true })

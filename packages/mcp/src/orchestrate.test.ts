@@ -2147,29 +2147,26 @@ describe("executeTrade: the API converts the amount (BE-3924)", () => {
     { launch: "usdg", quoteDecimals: 6, quoteAsset: "eth", amount: "0.05", raw: "50000000000000000", dec: 18 },
     { launch: "usdg", quoteDecimals: 6, quoteAsset: undefined, amount: "0.05", raw: "50000000000000000", dec: 18 },
     { launch: "usdg", quoteDecimals: 6, quoteAsset: "usdg", amount: "10", raw: "10000000", dec: 6 },
-  ])("the market-read buy on a graduated Hood token ($launch-launched, quoteAsset $quoteAsset) scales at the settlement asset", async ({
-    quoteDecimals,
-    quoteAsset,
-    amount,
-    raw,
-    dec,
-  }) => {
-    const HOOD = "0xAbC1230000000000000000000000000000000000"
-    const { calls, fetch } = fakeFetch({
-      [`https://api.test/api/v1/markets/hood/${HOOD}`]: {
-        body: { success: true, market: { candleLaunched: true, venue: "dex", decimals: 18, quoteDecimals } },
-      },
-      [BUILD]: { body: EXECUTED },
-    })
-    await legacyTrade(
-      { mint: HOOD, side: "buy", amount, ...(quoteAsset ? { quoteAsset } : {}), clientTradeId: "d-10" },
-      CFG,
-      fetch,
-    )
-    const sent = JSON.parse(String(calls[1]?.init?.body))
-    expect(sent.amountRaw).toBe(raw)
-    expect(sent.amountDecimals).toBe(dec)
-  })
+  ])(
+    "the market-read buy on a graduated Hood token ($launch-launched, quoteAsset $quoteAsset) scales at the settlement asset",
+    async ({ quoteDecimals, quoteAsset, amount, raw, dec }) => {
+      const HOOD = "0xAbC1230000000000000000000000000000000000"
+      const { calls, fetch } = fakeFetch({
+        [`https://api.test/api/v1/markets/hood/${HOOD}`]: {
+          body: { success: true, market: { candleLaunched: true, venue: "dex", decimals: 18, quoteDecimals } },
+        },
+        [BUILD]: { body: EXECUTED },
+      })
+      await legacyTrade(
+        { mint: HOOD, side: "buy", amount, ...(quoteAsset ? { quoteAsset } : {}), clientTradeId: "d-10" },
+        CFG,
+        fetch,
+      )
+      const sent = JSON.parse(String(calls[1]?.init?.body))
+      expect(sent.amountRaw).toBe(raw)
+      expect(sent.amountDecimals).toBe(dec)
+    },
+  )
 
   test("an ungraduated Hood Candle market still scales at its launch pair", async () => {
     const HOOD = "0xAbC1230000000000000000000000000000000000"

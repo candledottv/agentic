@@ -1625,14 +1625,14 @@ describe("BE-3360: Hood TEE --wait", () => {
     expect(f.calls.filter((c) => c.path.endsWith("/submit")).map((c) => c.path)).toEqual(["/api/v1/agent/swap/submit"])
   })
 
-  test.each([
-    operation("completed", [trade, { ...fee, status: "broadcast" }]),
-    operation("completed", [trade]),
-  ])("completed parent cannot hide an unfinished or missing fee leg", async (result) => {
-    const f = await fixture({ operationReads: [result] })
-    expect(await run(["swap", "status", "--operation", "op-1", "--wait", "--json"], f.deps)).toBe(3)
-    expect(JSON.parse(f.stdout.text)).toEqual(result)
-  })
+  test.each([operation("completed", [trade, { ...fee, status: "broadcast" }]), operation("completed", [trade])])(
+    "completed parent cannot hide an unfinished or missing fee leg",
+    async (result) => {
+      const f = await fixture({ operationReads: [result] })
+      expect(await run(["swap", "status", "--operation", "op-1", "--wait", "--json"], f.deps)).toBe(3)
+      expect(JSON.parse(f.stdout.text)).toEqual(result)
+    },
+  )
 
   test("a status response for another operation is refused", async () => {
     const f = await fixture({

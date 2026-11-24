@@ -99,16 +99,16 @@ describe("TEE wallet discovery", () => {
     expect(calls[2]?.body).toEqual({ ...fields, chain: "solana", buyAmount: 100000000, linkedWalletId: row.id })
   })
 
-  test.each([
-    { page: [] },
-    { page: [row, { ...row, id: "tee-2" }] },
-  ])("missing or ambiguous wallets never build", async ({ page }) => {
-    const { client, calls } = fixture([{ page, isDone: true }])
-    const error = await client.launch({ ...fields, wallet: "spider-01" }).catch((e) => e)
-    expect(error.code).toBe("TEE_WALLET_REQUIRED")
-    if (page.length) expect(error.message).toContain("tee-2")
-    expect(calls).toHaveLength(1)
-  })
+  test.each([{ page: [] }, { page: [row, { ...row, id: "tee-2" }] }])(
+    "missing or ambiguous wallets never build",
+    async ({ page }) => {
+      const { client, calls } = fixture([{ page, isDone: true }])
+      const error = await client.launch({ ...fields, wallet: "spider-01" }).catch((e) => e)
+      expect(error.code).toBe("TEE_WALLET_REQUIRED")
+      if (page.length) expect(error.message).toContain("tee-2")
+      expect(calls).toHaveLength(1)
+    },
+  )
 
   test("a Hood wallet selects Hood and wei conversion", async () => {
     const { client, calls } = fixture([{ page: [{ ...row, chain: "evm" }], isDone: true }])

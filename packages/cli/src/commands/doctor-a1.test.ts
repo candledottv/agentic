@@ -206,16 +206,16 @@ describe("A1 role-aware doctor", () => {
       expect(embedded?.state).toBe("WARN")
       expect(embedded?.detail).toContain("may not use it (denied)")
     })
-    test.each([
-      "allowed",
-      undefined,
-    ] as const)("permission %s (undefined: an older API) keeps today's PASS", async (permission) => {
-      const f = fixture({ embedded: true, reachable: false, permission })
-      expect(await run(["doctor", "--json"], f.deps)).toBe(0)
-      expect(row(f, "embedded_wallet")).toMatchObject({ state: "PASS", detail: "delegated" })
-      expect(row(f, "trade_path")).toMatchObject({ state: "PASS" })
-      expect(row(f, "trade_path")?.detail).toContain("embedded wallet delegated and permitted")
-    })
+    test.each(["allowed", undefined] as const)(
+      "permission %s (undefined: an older API) keeps today's PASS",
+      async (permission) => {
+        const f = fixture({ embedded: true, reachable: false, permission })
+        expect(await run(["doctor", "--json"], f.deps)).toBe(0)
+        expect(row(f, "embedded_wallet")).toMatchObject({ state: "PASS", detail: "delegated" })
+        expect(row(f, "trade_path")).toMatchObject({ state: "PASS" })
+        expect(row(f, "trade_path")?.detail).toContain("embedded wallet delegated and permitted")
+      },
+    )
   })
   test("old API uses tier and cached scopes; unauthorized does not fall back to key PASS", async () => {
     const f = fixture({ old: true })
@@ -249,22 +249,22 @@ describe("A1 role-aware doctor", () => {
     expect(row(f, "signer_slot")?.detail).toBe("cannot be opened: keychain locked")
     expect(f.stdout.text).not.toContain(keySignerRef(entry.keyPrefix, sha))
   })
-  test.each([
-    true,
-    false,
-  ])("provenance and project .env names never emit 12-character secret slices (json=%s)", async (json) => {
-    const f = fixture({ device: true, embedded: true })
-    f.deps.readFile = async () =>
-      `CANDLE_API_KEY=${API_KEY}\nexport CANDLE_DEVICE_TOKEN='${TOKEN}'\n# CANDLE_IGNORED=x\nOTHER=secret`
-    expect(await run(["doctor", ...(json ? ["--json"] : [])], f.deps)).toBe(0)
-    const output = f.stdout.text + f.stderr.text
-    for (const secret of [API_KEY, TOKEN])
-      for (let i = 0; i <= secret.length - 12; i++) expect(output).not.toContain(secret.slice(i, i + 12))
-    expect(output).toContain("CANDLE_API_KEY")
-    expect(output).not.toContain("CANDLE_IGNORED")
-    expect(output.replace(/\s+/g, " ")).toContain("export them, or store them in a profile")
-    if (json) expect(f.body().provenance.apiKey).toEqual({ source: "CANDLE_API_KEY", prefix: "abcdefgh" })
-  })
+  test.each([true, false])(
+    "provenance and project .env names never emit 12-character secret slices (json=%s)",
+    async (json) => {
+      const f = fixture({ device: true, embedded: true })
+      f.deps.readFile = async () =>
+        `CANDLE_API_KEY=${API_KEY}\nexport CANDLE_DEVICE_TOKEN='${TOKEN}'\n# CANDLE_IGNORED=x\nOTHER=secret`
+      expect(await run(["doctor", ...(json ? ["--json"] : [])], f.deps)).toBe(0)
+      const output = f.stdout.text + f.stderr.text
+      for (const secret of [API_KEY, TOKEN])
+        for (let i = 0; i <= secret.length - 12; i++) expect(output).not.toContain(secret.slice(i, i + 12))
+      expect(output).toContain("CANDLE_API_KEY")
+      expect(output).not.toContain("CANDLE_IGNORED")
+      expect(output.replace(/\s+/g, " ")).toContain("export them, or store them in a profile")
+      if (json) expect(f.body().provenance.apiKey).toEqual({ source: "CANDLE_API_KEY", prefix: "abcdefgh" })
+    },
+  )
 })
 
 for (const [flag, env, profile, legacy, expected, source] of [
