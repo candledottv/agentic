@@ -135,11 +135,12 @@
     },
     "sizing": {
       "retryable": true,
-      "action": "Retry only after changing the amount or slippage. Re-quote first: repeating the same size reproduces the same failure.",
+      "action": "Retry only after changing the amount or slippage. Re-quote first: repeating the same size reproduces the same failure. PRESIGN_SIMULATION_REFUSED: the chain refused the built transaction in simulation and nothing was signed; read error.cause (insufficient_lamports: fund the wallet with SOL or trade less; slippage_exceeded: rebuild at once or raise maxSlippageBps) and error.detail before building again.",
       "codes": [
         "AMOUNT_TOO_LOW",
         "DEV_BUY_TOO_HIGH",
         "SLIPPAGE_EXCEEDED",
+        "PRESIGN_SIMULATION_REFUSED",
         "INSUFFICIENT_OWNER_BALANCE",
         "TRANSFER_AMOUNT_UNAVAILABLE",
         "GAS_INSUFFICIENT"

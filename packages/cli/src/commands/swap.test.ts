@@ -58,6 +58,7 @@ async function fixture(
     readiness?: unknown
     /** BE-505: the body POST /agent/swap/submit answers with. Defaults to one without `settlement`. */
     swapBuildError?: Record<string, unknown>
+    swapBuildStatus?: number
     swapSubmitError?: Record<string, unknown>
     /** BE-1397: a Candle error the token trade's /execute (after the build) or /submit answers. */
     tradeExecuteError?: Record<string, unknown>
@@ -162,7 +163,7 @@ async function fixture(
     }
     if (path.endsWith("/build")) {
       if (path === "/api/v1/agent/swap/build" && opts.swapBuildError)
-        return Response.json({ error: opts.swapBuildError }, { status: 400 })
+        return Response.json({ error: opts.swapBuildError }, { status: opts.swapBuildStatus ?? 400 })
       if (path.includes("launch") && opts.launchBuildError)
         return Response.json({ success: false, error: opts.launchBuildError }, { status: 400 })
       built = true
@@ -780,6 +781,41 @@ describe("TEE CLI trading", () => {
     const bytes = canonicalAuthorizationPayloadBytes({ appId: "app", privyWalletId: "privy", body: result.body })
     expect(verify("sha256", bytes, pair.publicKey, Buffer.from(result.authorizationSignature, "base64"))).toBe(true)
     expect(JSON.stringify(result)).not.toContain(pem)
+  })
+  // BE-4461: the chain refused the built swap in simulation. The structured reason reaches a
+  // --json caller beside the code, nothing is signed or submitted, and a 422 is not retried.
+  test("a 422 PRESIGN_SIMULATION_REFUSED build keeps the structured refusal and signs nothing", async () => {
+    const f = await fixture({
+      swapBuildStatus: 422,
+      swapBuildError: {
+        code: "PRESIGN_SIMULATION_REFUSED",
+        message:
+          "The built transaction failed the pre-sign safety check (simulation_failed); nothing was signed or sent. Retry to build a fresh one.",
+        retryable: true,
+        stage: "not_broadcast",
+        reason: "presign_refused",
+        refusal: "simulation_failed",
+        detail: '{"InstructionError":[3,{"Custom":1}]}; Transfer: insufficient lamports 19000, need 1000000',
+        cause: "insufficient_lamports",
+      },
+    })
+    expect(await run(swapArgs, f.deps)).toBe(1)
+    const out = JSON.parse(f.stdout.text)
+    expect(out).toMatchObject({
+      ok: false,
+      code: "PRESIGN_SIMULATION_REFUSED",
+      details: {
+        retryable: true,
+        stage: "not_broadcast",
+        reason: "presign_refused",
+        refusal: "simulation_failed",
+        detail: '{"InstructionError":[3,{"Custom":1}]}; Transfer: insufficient lamports 19000, need 1000000',
+        cause: "insufficient_lamports",
+      },
+    })
+    expect(out.message).toContain("simulation_failed")
+    expect(f.calls.filter((call) => call.path === "/api/v1/agent/swap/build")).toHaveLength(1)
+    expect(f.calls.some((call) => call.path.endsWith("/submit") || call.path.endsWith("/sign"))).toBe(false)
   })
   test("a lost build response never triggers a second build under the same local id", async () => {
     const f = await fixture({ failure: "/api/v1/agent/swap/build" })

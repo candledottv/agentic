@@ -208,7 +208,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.48";
+var CLI_VERSION = "0.13.49";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
@@ -26373,7 +26373,7 @@ async function request(ctx, key, path, body) {
     const raw2 = result2.raw;
     const error = raw2?.error;
     const details = {};
-    const kept = path === "/api/v1/agent/swap/submit" ? SWAP_SUBMIT_EVIDENCE : TRADE_BROADCAST_PATHS.has(path) ? TRADE_BROADCAST_EVIDENCE : ["field"];
+    const kept = path === "/api/v1/agent/swap/submit" ? SWAP_SUBMIT_EVIDENCE : path === "/api/v1/agent/swap/build" ? SWAP_BUILD_EVIDENCE : TRADE_BROADCAST_PATHS.has(path) ? TRADE_BROADCAST_EVIDENCE : ["field"];
     for (const field of kept) {
       if (error?.[field] !== undefined)
         details[field] = error[field];
@@ -26961,7 +26961,7 @@ function payerSignature(transaction) {
     throw new TradingError("INVALID_RESPONSE", "Missing payer signature.");
   return base58.encode(bytes.subarray(offset, offset + 64));
 }
-var CANCELLED_EXIT = 5, TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, HIDDEN_QUOTE_LINE = "this order will not appear in the public activity stream", BASES, HOOD_BASES, SWAP_SUBMIT_EVIDENCE, TRADE_BROADCAST_PATHS, TRADE_BROADCAST_EVIDENCE, sequencedLegSchema, legKindSchema, landedLegSchema, sequencedSchema, ERC20_TRANSFER_GAS = 65000n, ETH_TRANSFER_GAS = 21000n, RESERVE_FEE_MULTIPLIER = 2n, RESERVE_EXTRA_ERC20_TRANSFERS = 1, TradingUsage, EXECUTE_PROBE_TTL_MS;
+var CANCELLED_EXIT = 5, TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, HIDDEN_QUOTE_LINE = "this order will not appear in the public activity stream", BASES, HOOD_BASES, SWAP_SUBMIT_EVIDENCE, SWAP_BUILD_EVIDENCE, TRADE_BROADCAST_PATHS, TRADE_BROADCAST_EVIDENCE, sequencedLegSchema, legKindSchema, landedLegSchema, sequencedSchema, ERC20_TRANSFER_GAS = 65000n, ETH_TRANSFER_GAS = 21000n, RESERVE_FEE_MULTIPLIER = 2n, RESERVE_EXTRA_ERC20_TRANSFERS = 1, TradingUsage, EXECUTE_PROBE_TTL_MS;
 var init_trading = __esm(() => {
   init_sha3();
   init_esm();
@@ -27106,6 +27106,7 @@ var init_trading = __esm(() => {
     "evidenceStored",
     "terminal"
   ];
+  SWAP_BUILD_EVIDENCE = ["field", "stage", "reason", "refusal", "detail", "cause", "retryable"];
   TRADE_BROADCAST_PATHS = new Set(["/api/v1/trade/agent/execute", "/api/v1/trade/agent/submit"]);
   TRADE_BROADCAST_EVIDENCE = ["field", "stage", "signature", "priorSignatures", "retryable"];
   sequencedLegSchema = exports_external.object({

@@ -363,6 +363,12 @@ const SWAP_SUBMIT_EVIDENCE = [
   "evidenceStored",
   "terminal",
 ]
+/**
+ * BE-4461: a swap build's pre-sign refusal (`PRESIGN_SIMULATION_REFUSED`, or `SWAP_FAILED` with
+ * `reason: "presign_refused"`) names the check that fired and why. Kept so a `--json` caller reads
+ * the structured reason instead of parsing the message. `detail` is already redacted by the server.
+ */
+const SWAP_BUILD_EVIDENCE = ["field", "stage", "reason", "refusal", "detail", "cause", "retryable"]
 /** The token-trade calls that sign and broadcast, so the only ones whose refusal can name a stage. */
 const TRADE_BROADCAST_PATHS = new Set(["/api/v1/trade/agent/execute", "/api/v1/trade/agent/submit"])
 const TRADE_BROADCAST_EVIDENCE = ["field", "stage", "signature", "priorSignatures", "retryable"]
@@ -392,9 +398,11 @@ export async function request(ctx: CommandContext, key: string, path: string, bo
     const kept =
       path === "/api/v1/agent/swap/submit"
         ? SWAP_SUBMIT_EVIDENCE
-        : TRADE_BROADCAST_PATHS.has(path)
-          ? TRADE_BROADCAST_EVIDENCE
-          : ["field"]
+        : path === "/api/v1/agent/swap/build"
+          ? SWAP_BUILD_EVIDENCE
+          : TRADE_BROADCAST_PATHS.has(path)
+            ? TRADE_BROADCAST_EVIDENCE
+            : ["field"]
     for (const field of kept) {
       if (error?.[field] !== undefined) details[field] = error[field]
     }
