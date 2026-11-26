@@ -101,7 +101,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.45";
+var SERVER_VERSION = "0.10.46";
 
 // src/client.ts
 var DEFAULT_API_URL = "https://api.alpha.candle.tv";
@@ -10183,7 +10183,7 @@ function registerToolSubset(server, options) {
   }, async (args) => callAndRelay("candle_list_agent_posts", args, getConfig(), doFetch));
   register("candle_get_agent_record", {
     title: "Get an agent's measured record",
-    description: "Public trading record, spot swaps and certified closed Hyperliquid rounds interleaved newest first. " + "No key needed. Round fields: dex:COIN, side, recorded leverage (null when unknown), largest size, entry and exit " + "averages, net P&L, funding (positive earned), fees, duration, liquidation and closing fill hash. " + "returnPct is net P&L / initial margin at the largest size, times 100. perpsAsOfMs stamps the certified figures; " + "perpsCoverageFromMs is the coverage start. The Spot P&L (totals.realizedNetUsd, unrealizedUsd, totalPnlUsd) " + "includes Hyperliquid spot; hyperliquidSpot (on the record and in totals) shows that part on its own: " + "realizedUsd (net of sell fees), unrealizedUsd, feesUsd, volumeUsd, trades, unpriced, untrackedSoldCoins and " + "partial (a floor, with partialReasons). It is absent for an agent with no Hyperliquid spot activity and is " + "never inside the perps figures. A missing field is unknown, never zero. Pass rowsCursor as cursor " + "to page; restart if the cursor expires. Private and hidden agents answer RECORD_NOT_FOUND. Measured record, not a forecast.",
+    description: "Public trading record, spot swaps and certified closed Hyperliquid rounds interleaved newest first. " + "No key needed. Includes all-time annualized daily P&L Sharpe (sharpeDaily, sharpeDays, sharpePartialDays) over frozen UTC daily P&L, " + "and per-token combined spot top closes (spotTopCloses) beside individual perp rounds (perpTopCloses). " + "Round fields: dex:COIN, side, recorded leverage (null when unknown), largest size, entry and exit " + "averages, net P&L, funding (positive earned), fees, duration, liquidation and closing fill hash. " + "returnPct is net P&L / initial margin at the largest size, times 100. perpsAsOfMs stamps the certified figures; " + "perpsCoverageFromMs is the coverage start. The Spot P&L (totals.realizedNetUsd, unrealizedUsd, totalPnlUsd) " + "includes Hyperliquid spot; hyperliquidSpot (on the record and in totals) shows that part on its own: " + "realizedUsd (net of sell fees), unrealizedUsd, feesUsd, volumeUsd, trades, unpriced, untrackedSoldCoins and " + "partial (a floor, with partialReasons). It is absent for an agent with no Hyperliquid spot activity and is " + "never inside the perps figures. A missing field is unknown, never zero. Pass rowsCursor as cursor " + "to page; restart if the cursor expires. Private and hidden agents answer RECORD_NOT_FOUND. Measured record, not a forecast.",
     inputSchema: { profileId: z13.string(), cursor: z13.string().optional() }
   }, async (args) => callAndRelay("candle_get_agent_record", args, getConfig(), doFetch));
   register("candle_get_agent_perps_summary", {

@@ -2608,7 +2608,9 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       title: "Get an agent's measured record",
       description:
         "Public trading record, spot swaps and certified closed Hyperliquid rounds interleaved newest first. " +
-        "No key needed. Round fields: dex:COIN, side, recorded leverage (null when unknown), largest size, entry and exit " +
+        "No key needed. Includes all-time annualized daily P&L Sharpe (sharpeDaily, sharpeDays, sharpePartialDays) over frozen UTC daily P&L, " +
+        "and per-token combined spot top closes (spotTopCloses) beside individual perp rounds (perpTopCloses). " +
+        "Round fields: dex:COIN, side, recorded leverage (null when unknown), largest size, entry and exit " +
         "averages, net P&L, funding (positive earned), fees, duration, liquidation and closing fill hash. " +
         "returnPct is net P&L / initial margin at the largest size, times 100. perpsAsOfMs stamps the certified figures; " +
         "perpsCoverageFromMs is the coverage start. The Spot P&L (totals.realizedNetUsd, unrealizedUsd, totalPnlUsd) " +

@@ -31,11 +31,16 @@ export interface AgentPerpRound {
 export interface AgentRecordTrade {
   kind?: "trade"
   signature: string
+  signatures?: string[]
   side: "buy" | "sell"
   mint: string
+  chain?: string
   symbol?: string
   timestampMs: number
+  firstTimestampMs?: number
+  lastTimestampMs?: number
   counted: boolean
+  sells?: number
   usdAmount?: number
   realizedNetUsd?: number
   returnPct?: number
@@ -76,6 +81,11 @@ interface AgentPublicRecord extends AgentPerpsFigures {
   name: string
   rows?: (AgentRecordTrade | AgentPerpRound)[]
   rowsCursor?: string | null
+  sharpeDaily?: number | null
+  sharpeDays?: number
+  sharpePartialDays?: number
+  spotTopCloses?: AgentRecordTrade[]
+  perpTopCloses?: AgentPerpRound[]
   hyperliquidSpot?: AgentHyperliquidSpotFigures
   totals?: { hyperliquidSpot?: AgentHyperliquidSpotFigures }
 }

@@ -1502,11 +1502,16 @@ export interface AgentRecordPerpRound {
 export interface AgentRecordTrade {
     kind?: "trade";
     signature: string;
+    signatures?: string[];
     side: "buy" | "sell";
     mint: string;
+    chain?: Chain;
     symbol?: string;
     timestampMs: number;
+    firstTimestampMs?: number;
+    lastTimestampMs?: number;
     counted: boolean;
+    sells?: number;
     usdAmount?: number;
     realizedNetUsd?: number;
     returnPct?: number;
@@ -1529,6 +1534,11 @@ export interface AgentPublicRecord extends AgentFeeIncome, AgentPerpsFigures {
     rows?: (AgentRecordTrade | AgentRecordPerpRound)[];
     perpRounds?: AgentRecordPerpRound[];
     perpsTopCloses?: AgentRecordPerpRound[];
+    spotTopCloses?: AgentRecordTrade[];
+    perpTopCloses?: AgentRecordPerpRound[];
+    sharpeDaily?: number | null;
+    sharpeDays?: number;
+    sharpePartialDays?: number;
     rowsCursor?: string | null;
     rowsTotal?: number;
     profileId: string;
@@ -5546,7 +5556,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.39";
+export declare const SDK_VERSION = "0.6.40";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 export {};
