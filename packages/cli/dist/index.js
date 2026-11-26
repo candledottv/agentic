@@ -208,7 +208,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.49";
+var CLI_VERSION = "0.13.50";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
@@ -11013,7 +11013,7 @@ var init_chain_registry = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.46";
+var SERVER_VERSION = "0.10.48";
 
 // ../mcp/src/client.ts
 function isLoopbackHost2(hostname) {
@@ -11927,6 +11927,11 @@ var init_launch_definition = __esm(() => {
         }
       }
     },
+    hoodGen2: {
+      curveFeeBps: 100,
+      maxCreatorFeeBps: 9999,
+      maxTeamBps: 500
+    },
     surfacesIntro: [
       "CLI: scripts and terminals. Agents always pass --json.",
       "MCP: chat agents (Claude, the connector). The same launch fields and results as the CLI's --json.",
@@ -12292,18 +12297,26 @@ var init_launch_definition = __esm(() => {
       },
       {
         key: "creatorFeeBps",
-        type: "enum",
-        help: "An exp- mode's extra creator fee: 0, 100 or 200 bps on the curve and pool, paid to the creator in full.",
-        values: [
-          0,
-          100,
-          200
-        ],
+        type: "integer",
+        help: "Extra creator fee in bps: on Solana exp- modes, 0, 100 or 200 on the curve and pool; on Hood generation 2 (while HOOD_GEN2_LAUNCH_ENABLED is on), a whole number from 0 to the factory's maxCreatorFeeBps, with curve fee + creatorFeeBps + snipeFeeStartBps under 10000.",
+        wireType: "number | null",
+        valuesByChain: {
+          solana: [
+            0,
+            100,
+            200
+          ]
+        },
+        range: {
+          min: "0",
+          max: "9999",
+          unit: "bps"
+        },
         default: 0,
         surfaces: {
           cli: {
             flag: "--creator-fee-bps",
-            value: "0|100|200"
+            value: "<bps>"
           },
           mcp: {
             key: "creatorFeeBps"
@@ -12545,10 +12558,7 @@ var init_launch_definition = __esm(() => {
       {
         key: "feeWallet",
         type: "string",
-        help: "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the wallet that launches the token (the account wallet on a server without LAUNCH_FEE_WALLET_FROM_LAUNCHER, except an embedded launch).",
-        chains: [
-          "solana"
-        ],
+        help: "The launch fee wallet: on Solana, an on-curve wallet or a Squads v4 vault earning curve and pool fees (defaults to the launching wallet where LAUNCH_FEE_WALLET_FROM_LAUNCHER is on, else the account wallet, except an embedded launch); on Hood generation 2 (while HOOD_GEN2_LAUNCH_ENABLED is on), a non-zero 0x EOA or Safe earning the extra creator fee (send creatorFeeBps above 0 unless it is the creator).",
         surfaces: {
           cli: {
             flag: "--fee-wallet",
@@ -12639,16 +12649,13 @@ var init_launch_definition = __esm(() => {
       {
         key: "launchRules.openDelaySecs",
         type: "duration",
-        help: "Launch rules, Solana only, where the server has CURVE_LAUNCH_RULES_ENABLED on: how long after the launch buys open, at most 7 days (604800 seconds); before then only the launching wallet may buy. The CLI takes a duration (90m, 6h, 2d, or seconds); the request field is whole seconds.",
+        help: "Launch rules (Solana where CURVE_LAUNCH_RULES_ENABLED is on; Hood generation 2 where HOOD_GEN2_LAUNCH_ENABLED is on): how long after the launch buys open, at most 7 days (604800 seconds); before then only the launching wallet may buy. The CLI takes a duration (90m, 6h, 2d, or seconds); the request field is whole seconds.",
         wireType: "number",
         range: {
           min: "0",
           max: "604800",
           unit: "seconds"
         },
-        chains: [
-          "solana"
-        ],
         surfaces: {
           cli: {
             flag: "--open-in",
@@ -12665,13 +12672,11 @@ var init_launch_definition = __esm(() => {
       {
         key: "launchRules.maxBuyPerWalletRaw",
         type: "decimal",
-        help: "The most quote one wallet may spend on the curve during --cap-window, curve fee included and Candle's fee not; needs --cap-window. The CLI takes whole quote units; the request field is raw units as a decimal string.",
+        help: "The most quote one wallet may spend on the curve during --cap-window, curve fee included and Candle's fee not; needs --cap-window. The CLI takes whole quote units; the request field is raw units as a decimal string (fits u64 on Solana, uint256 on Hood).",
+        wireType: "string | number",
         range: {
           unit: "whole quote units"
         },
-        chains: [
-          "solana"
-        ],
         requires: [
           "launchRules.capWindowSecs"
         ],
@@ -12698,9 +12703,6 @@ var init_launch_definition = __esm(() => {
           max: "86400",
           unit: "seconds"
         },
-        chains: [
-          "solana"
-        ],
         requires: [
           "launchRules.maxBuyPerWalletRaw"
         ],
@@ -12720,16 +12722,23 @@ var init_launch_definition = __esm(() => {
       {
         key: "launchRules.allowlist",
         type: "file",
-        help: "Only these wallets may buy during --allowlist-window: 1 to 4,096 distinct Solana addresses; needs --allowlist-window. The CLI reads a file, one address per line or comma separated; the request field is the list.",
+        help: "Only these wallets may buy during --allowlist-window: 1 to 4,096 distinct Solana addresses, or on Hood generation 2 1 to 10,000 distinct non-zero 0x EVM addresses; needs --allowlist-window. The CLI reads a file, one address per line or comma separated; the request field is the list.",
         wireType: "string[]",
         range: {
           min: "1",
           max: "4096",
-          unit: "wallets"
+          unit: "wallets",
+          byChain: {
+            solana: {
+              min: "1",
+              max: "4096"
+            },
+            hood: {
+              min: "1",
+              max: "10000"
+            }
+          }
         },
-        chains: [
-          "solana"
-        ],
         requires: [
           "launchRules.allowlistWindowSecs"
         ],
@@ -12756,9 +12765,6 @@ var init_launch_definition = __esm(() => {
           max: "86400",
           unit: "seconds"
         },
-        chains: [
-          "solana"
-        ],
         requires: [
           "launchRules.allowlist"
         ],
@@ -12778,13 +12784,11 @@ var init_launch_definition = __esm(() => {
       {
         key: "launchRules.devBuyMaxRaw",
         type: "decimal",
-        help: "The most the launching wallet may buy before the open, only with --open-in: at least the launch's own buy, at most the dev-buy ceiling, and the buy by default. That spend counts toward the per-wallet cap after the open. The CLI takes whole quote units; the request field is raw units as a decimal string.",
+        help: "The most the launching wallet may buy before the open, only with --open-in above 0: at least the launch's own buy (and at most the dev-buy ceiling on Solana, where it defaults to the buy and counts toward the per-wallet cap after the open). The CLI takes whole quote units; the request field is raw units as a decimal string.",
+        wireType: "string | number",
         range: {
           unit: "whole quote units"
         },
-        chains: [
-          "solana"
-        ],
         requires: [
           "launchRules.openDelaySecs"
         ],
@@ -12798,6 +12802,200 @@ var init_launch_definition = __esm(() => {
           },
           sdk: {
             key: "launchRules.devBuyMaxRaw"
+          }
+        }
+      },
+      {
+        key: "launchRules.snipeFeeStartBps",
+        type: "integer",
+        help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): starting sniper fee on buys, 0 to 2500 bps; needs --snipe-fee-decay above 0 when non-zero, and curve fee + creatorFeeBps + snipeFeeStartBps must stay under 10000.",
+        wireType: "number | null",
+        range: {
+          min: "0",
+          max: "2500",
+          unit: "bps"
+        },
+        chains: [
+          "hood"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--snipe-fee-start-bps",
+            value: "<bps>"
+          },
+          mcp: {
+            key: "launchRules.snipeFeeStartBps"
+          },
+          sdk: {
+            key: "launchRules.snipeFeeStartBps"
+          }
+        }
+      },
+      {
+        key: "launchRules.snipeFeeDecaySecs",
+        type: "duration",
+        help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): how long the sniper fee decays from snipeFeeStartBps to 0 after the open, 0 to 600 seconds (or a duration such as 2m or 10m); must be above 0 when snipeFeeStartBps is above 0.",
+        wireType: "number | null",
+        range: {
+          min: "0",
+          max: "600",
+          unit: "seconds"
+        },
+        chains: [
+          "hood"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--snipe-fee-decay",
+            value: "<duration>"
+          },
+          mcp: {
+            key: "launchRules.snipeFeeDecaySecs"
+          },
+          sdk: {
+            key: "launchRules.snipeFeeDecaySecs"
+          }
+        }
+      },
+      {
+        key: "snipeExempt",
+        type: "string",
+        help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): up to 32 distinct non-zero 0x EVM bundle wallets exempt from the sniper fee. Comma-separated on the CLI; an array on MCP and the SDK.",
+        wireType: "string[]",
+        range: {
+          min: "0",
+          max: "32",
+          unit: "wallets"
+        },
+        chains: [
+          "hood"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--snipe-exempt",
+            value: "<0x,...>"
+          },
+          mcp: {
+            key: "snipeExempt"
+          },
+          sdk: {
+            key: "snipeExempt"
+          }
+        }
+      },
+      {
+        key: "teamAllocation.recipient",
+        type: "string",
+        help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): the non-zero 0x EVM recipient of the team vesting escrow; takes --team-percent, --team-cliff-days and optional --team-vesting-days.",
+        chains: [
+          "hood"
+        ],
+        requires: [
+          "teamAllocation.percent",
+          "teamAllocation.cliffDays"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--team-recipient",
+            value: "<0x-address>"
+          },
+          mcp: {
+            key: "teamAllocation.recipient"
+          },
+          sdk: {
+            key: "teamAllocation.recipient"
+          }
+        }
+      },
+      {
+        key: "teamAllocation.percent",
+        type: "decimal",
+        help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): team supply share above 0 and at most 5%, with at most two decimals; takes --team-recipient and --team-cliff-days.",
+        wireType: "number",
+        range: {
+          min: "0.01",
+          max: "5",
+          unit: "percent"
+        },
+        chains: [
+          "hood"
+        ],
+        requires: [
+          "teamAllocation.recipient",
+          "teamAllocation.cliffDays"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--team-percent",
+            value: "<percent>"
+          },
+          mcp: {
+            key: "teamAllocation.percent"
+          },
+          sdk: {
+            key: "teamAllocation.percent"
+          }
+        }
+      },
+      {
+        key: "teamAllocation.cliffDays",
+        type: "integer",
+        help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): whole days before team vesting begins, 30 to 3650; required with --team-recipient and --team-percent.",
+        wireType: "number",
+        range: {
+          min: "30",
+          max: "3650",
+          unit: "days"
+        },
+        chains: [
+          "hood"
+        ],
+        requires: [
+          "teamAllocation.recipient",
+          "teamAllocation.percent"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--team-cliff-days",
+            value: "<days>"
+          },
+          mcp: {
+            key: "teamAllocation.cliffDays"
+          },
+          sdk: {
+            key: "teamAllocation.cliffDays"
+          }
+        }
+      },
+      {
+        key: "teamAllocation.vestingDays",
+        type: "integer",
+        help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): whole days of linear team vesting after the cliff, 0 to 3650 (defaults to 0, unlocking at the cliff).",
+        wireType: "number | null",
+        range: {
+          min: "0",
+          max: "3650",
+          unit: "days"
+        },
+        default: 0,
+        chains: [
+          "hood"
+        ],
+        requires: [
+          "teamAllocation.recipient",
+          "teamAllocation.percent",
+          "teamAllocation.cliffDays"
+        ],
+        surfaces: {
+          cli: {
+            flag: "--team-vesting-days",
+            value: "<days>"
+          },
+          mcp: {
+            key: "teamAllocation.vestingDays"
+          },
+          sdk: {
+            key: "teamAllocation.vestingDays"
           }
         }
       },
@@ -12943,6 +13141,8 @@ var init_launch_preflight = __esm(() => {
 // ../mcp/src/launch-check.ts
 async function launchCheck(args, cfg, fetch2) {
   try {
+    if ("hoodGen2Options" in args && args.hoodGen2Options !== undefined)
+      throw new LaunchCheckError("VALIDATION_FAILED", HOOD_GEN2_WRAPPER_MESSAGE, "hoodGen2Options");
     if (!cfg.apiKey)
       throw new LaunchCheckError("UNAUTHORIZED", "An API key is required for launch checks.");
     const input = args;
@@ -12982,11 +13182,14 @@ function launchControlError(error) {
   };
 }
 function launchExecutionArgs(args) {
+  if ("hoodGen2Options" in args && args.hoodGen2Options !== undefined)
+    throw new LaunchCheckError("VALIDATION_FAILED", HOOD_GEN2_WRAPPER_MESSAGE, "hoodGen2Options");
   const { quote, check: _check, ...body } = args;
   const quoteAsset = fixedLaunchQuote({ quote, quoteAsset: args.quoteAsset, chain: args.chain });
   const chain = quote === undefined || body.chain !== undefined ? body.chain : LAUNCH_DEFINITION.quoteChains[quoteAsset];
   return { ...body, ...quoteAsset === undefined ? {} : { quoteAsset }, ...chain === undefined ? {} : { chain } };
 }
+var HOOD_GEN2_WRAPPER_MESSAGE = "Send Hood generation 2 options as top-level fields (launchRules, snipeExempt, creatorFeeBps, teamAllocation), not hoodGen2Options.";
 var init_launch_check = __esm(() => {
   init_launch_definition();
   init_launch_preflight();
@@ -13119,11 +13322,81 @@ function launchRulesSchema() {
     if (!key?.startsWith("launchRules."))
       continue;
     const wire = "wireType" in field ? field.wireType : undefined;
-    const schema = wire === "number" ? exports_external.number().int() : wire === "string[]" ? exports_external.array(exports_external.string()) : exports_external.string();
+    const schema = wire === "number | null" ? exports_external.number().int().nullable() : field.type === "integer" || wire === "number" ? exports_external.number().int() : wire === "string | number" ? exports_external.union([exports_external.string(), exports_external.number().int().safe()]) : wire === "string[]" ? exports_external.array(exports_external.string()) : exports_external.string();
     shape[key.slice("launchRules.".length)] = schema.optional().describe(field.help);
     helps.push(field.help);
   }
-  return exports_external.object(shape).passthrough().optional().describe(helps.join(" "));
+  return exports_external.object(shape).strict().optional().describe(helps.join(" "));
+}
+function teamAllocationSchema() {
+  const recipient = launchFieldHelp("teamAllocation.recipient");
+  const percent = launchFieldHelp("teamAllocation.percent");
+  const cliffDays = launchFieldHelp("teamAllocation.cliffDays");
+  const vestingDays = launchFieldHelp("teamAllocation.vestingDays");
+  return exports_external.object({
+    recipient: exports_external.string().describe(recipient),
+    percent: exports_external.number().describe(percent),
+    cliffDays: exports_external.number().int().describe(cliffDays),
+    vestingDays: exports_external.number().int().nullable().optional().describe(vestingDays)
+  }).strict().optional().describe([recipient, percent, cliffDays, vestingDays].join(" "));
+}
+function chainLaunchOptionsRefusal(args) {
+  const quote = typeof args.quoteAsset === "string" ? args.quoteAsset.toLowerCase() : undefined;
+  const quoteChain = quote ? LAUNCH_DEFINITION.quoteChains[quote] : undefined;
+  const resolvedChain = (typeof args.chain === "string" ? args.chain : undefined) ?? quoteChain ?? "solana";
+  const rules = args.launchRules !== null && typeof args.launchRules === "object" && !Array.isArray(args.launchRules) ? args.launchRules : undefined;
+  if (resolvedChain === "solana") {
+    if (args.teamAllocation !== undefined)
+      return {
+        code: "VALIDATION_FAILED",
+        message: "teamAllocation is only available on Hood launches.",
+        field: "teamAllocation"
+      };
+    if (args.snipeExempt !== undefined)
+      return {
+        code: "VALIDATION_FAILED",
+        message: "snipeExempt is only available on Hood launches.",
+        field: "snipeExempt"
+      };
+    if (rules?.snipeFeeStartBps !== undefined)
+      return {
+        code: "VALIDATION_FAILED",
+        message: "launchRules.snipeFeeStartBps is only available on Hood launches.",
+        field: "launchRules.snipeFeeStartBps"
+      };
+    if (rules?.snipeFeeDecaySecs !== undefined)
+      return {
+        code: "VALIDATION_FAILED",
+        message: "launchRules.snipeFeeDecaySecs is only available on Hood launches.",
+        field: "launchRules.snipeFeeDecaySecs"
+      };
+    const creatorField = fieldByKey("creatorFeeBps");
+    const solanaAllowed = "valuesByChain" in creatorField && creatorField.valuesByChain?.solana ? creatorField.valuesByChain.solana : [0, 100, 200];
+    if (args.creatorFeeBps !== undefined && args.creatorFeeBps !== null && !solanaAllowed.includes(args.creatorFeeBps)) {
+      return { code: "VALIDATION_FAILED", message: "creatorFeeBps must be 0, 100 or 200.", field: "creatorFeeBps" };
+    }
+    return;
+  }
+  if (args.creatorFeeBps !== undefined && args.creatorFeeBps !== null) {
+    const bps2 = args.creatorFeeBps;
+    const { curveFeeBps, maxCreatorFeeBps } = LAUNCH_DEFINITION.hoodGen2;
+    if (typeof bps2 !== "number" || !Number.isInteger(bps2) || bps2 < 0 || bps2 > maxCreatorFeeBps) {
+      return {
+        code: "VALIDATION_FAILED",
+        message: `creatorFeeBps must be a whole number from 0 to ${maxCreatorFeeBps}.`,
+        field: "creatorFeeBps"
+      };
+    }
+    const snipeStart = typeof rules?.snipeFeeStartBps === "number" ? rules.snipeFeeStartBps : 0;
+    if (curveFeeBps + bps2 + snipeStart >= 1e4) {
+      return {
+        code: "VALIDATION_FAILED",
+        message: "the curve fee, creator fee and sniper fee at its peak must total under 100%",
+        field: "creatorFeeBps"
+      };
+    }
+  }
+  return;
 }
 function scalarSchema(field) {
   const values = "values" in field ? field.values : undefined;
@@ -13134,8 +13407,16 @@ function scalarSchema(field) {
     schema = exports_external.enum(stringValues(field.key));
   else if (field.type === "boolean")
     schema = exports_external.boolean();
-  else if (field.type === "integer" || "wireType" in field && field.wireType === "number")
+  else if ("wireType" in field && field.wireType === "number | null")
+    schema = exports_external.number().int().nullable();
+  else if (field.type === "integer")
+    schema = exports_external.number().int();
+  else if ("wireType" in field && field.wireType === "number")
     schema = exports_external.number();
+  else if ("wireType" in field && field.wireType === "string | number")
+    schema = exports_external.union([exports_external.string(), exports_external.number().int().safe()]);
+  else if ("wireType" in field && field.wireType === "string[]")
+    schema = exports_external.array(exports_external.string());
   else
     schema = exports_external.string();
   return described(schema, field.help, isRequired(field));
@@ -13157,6 +13438,7 @@ function buildLaunchTokenShape() {
   shape.curve = curveSchema();
   shape.poolFee = poolFeeSchema();
   shape.launchRules = launchRulesSchema();
+  shape.teamAllocation = teamAllocationSchema();
   shape.buyAmount = exports_external.union([exports_external.string(), exports_external.number()]).optional().describe(BUY_AMOUNT_DESCRIPTION);
   return shape;
 }
@@ -13168,7 +13450,7 @@ var init_launch_schema = __esm(() => {
   init_zod();
   init_launch_definition();
   M2_TOP_KEYS = new Set(["wallet", "buy", "feeWallet", "feeWalletMultisig"]);
-  GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee", "launchRules"]);
+  GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee", "launchRules", "teamAllocation"]);
   MCP_QUOTE_CONTROL_KEYS = [
     LAUNCH_DEFINITION.quoteSelection.key,
     LAUNCH_DEFINITION.quoteSelection.checkKey
@@ -13532,6 +13814,9 @@ async function executeTrade(args, cfg, doFetch, forceMarketRead = false) {
 async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs, opts = {}) {
   const apiKey = requireApiKey(cfg);
   const clientLaunchId = args.clientLaunchId ?? randomUUID();
+  const chainProblem = chainLaunchOptionsRefusal(args);
+  if (chainProblem)
+    return { text: imageRefusalBody(chainProblem, { clientLaunchId }), isError: true };
   const socialsProblem = socialsRefusal(args.socials);
   if (socialsProblem)
     return { text: imageRefusalBody(socialsProblem, { clientLaunchId }), isError: true };
@@ -15287,8 +15572,15 @@ function registerToolSubset(server, options) {
   const register = (name, definition, handler) => {
     if (!allowed.has(name))
       return;
-    const inputSchema = isSignalRecordTool(name) ? exports_external.object(definition.inputSchema, { errorMap: signalRecordValidationErrorMap }).strict() : isProfileEditTool(name) || isTokenPageTool(name) ? exports_external.object(definition.inputSchema).strict() : definition.inputSchema;
-    const registered = server.registerTool(name, { ...definition, inputSchema, ...options.metadata?.[name] }, handler);
+    const inputSchema = isSignalRecordTool(name) ? exports_external.object(definition.inputSchema, { errorMap: signalRecordValidationErrorMap }).strict() : isProfileEditTool(name) || isTokenPageTool(name) ? exports_external.object(definition.inputSchema).strict() : isLaunchTool(name) ? exports_external.object(definition.inputSchema).passthrough() : definition.inputSchema;
+    const wrappedHandler = isLaunchTool(name) && !imageDir ? (args, extra) => {
+      if (extra !== undefined && args && typeof args === "object") {
+        const { imagePath: _ip, bannerPath: _bp, ...rest } = args;
+        return handler(rest);
+      }
+      return handler(args);
+    } : handler;
+    const registered = server.registerTool(name, { ...definition, inputSchema, ...options.metadata?.[name] }, wrappedHandler);
     if (isProfileEditTool(name) && registered) {
       const tools = localProfileTools.get(server) ?? new Map;
       localProfileTools.set(server, tools.set(name, registered));
@@ -15396,17 +15688,30 @@ function registerToolSubset(server, options) {
     description: "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything. " + LAUNCH_SHARED_SENTENCES + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
     inputSchema: checkableLaunchShape(imageDir ? localLaunchTokenShape : launchTokenShape)
   }, async (args) => {
-    if ("check" in args && args.check === true)
+    if ("check" in args && args.check === true) {
+      if ("hoodGen2Options" in args && args.hoodGen2Options !== undefined)
+        return launchCheck(args, getConfig(), doFetch);
+      const checkParsed = exports_external.object(checkableLaunchShape(localLaunchTokenShape)).strict().safeParse(args);
+      if (!checkParsed.success)
+        return launchControlError(new LaunchCheckError("VALIDATION_FAILED", checkParsed.error.message));
+      const checkChainProblem = chainLaunchOptionsRefusal(args);
+      if (checkChainProblem)
+        return { content: [{ type: "text", text: imageRefusalBody(checkChainProblem) }], isError: true };
       return launchCheck(args, getConfig(), doFetch);
+    }
     try {
       args = launchExecutionArgs(args);
       if (!imageDir && args.imageUrl === undefined && !("imagePath" in args))
         return launchControlError(new LaunchCheckError("VALIDATION_FAILED", "imageUrl is required for a launch."));
-      const parsed = exports_external.object(imageDir ? localLaunchTokenShape : launchTokenShape).omit({ imageUrl: true }).safeParse(args);
+      const parsed = exports_external.object(localLaunchTokenShape).extend({ imageUrl: exports_external.string().optional() }).strict().safeParse(args);
       if (!parsed.success)
         return launchControlError(new LaunchCheckError("VALIDATION_FAILED", parsed.error.message));
     } catch (error) {
       return launchControlError(error);
+    }
+    const chainProblem = chainLaunchOptionsRefusal(args);
+    if (chainProblem) {
+      return { content: [{ type: "text", text: imageRefusalBody(chainProblem) }], isError: true };
     }
     const socialsProblem = socialsRefusal("socials" in args ? args.socials : undefined);
     if (socialsProblem) {
@@ -15853,13 +16158,22 @@ function registerToolSubset(server, options) {
     description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed, then " + "return the fresh market state and token links in one result. On solana a seed makes this " + (options.headlessSeed === true ? "the seed is a separate first-buy transaction in the same Jito bundle as the launch, so " + "both land or neither does. That works on every plan, Free included, and needs no " + "swap:write. On hood the seed is " : "the atomic launch: the launch and the seed are two transactions Candle signs and sends as " + "one Jito bundle, so both land or neither does. That needs Pro or Max (TIER_REQUIRED " + "otherwise) and swap:write on the key, and the result carries bundleId. On hood the seed is ") + "a best-effort follow-up. A launch with no seed works on every plan, Free included. MOVES " + "REAL FUNDS unless dryRun; dry-run first, which spends nothing. Seeds above the platform " + "dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH): at most 0.5 SOL / 500 USDC / 2,000,000 " + "CNDL, or on an exp- curve 10% of the threshold when that is lower; the server holds the " + "creator's own seed to the effective ceiling, so launch with the largest devBuy it allows " + "and top up with candle_trade. " + LAUNCH_SHARED_SENTENCES + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
     inputSchema: checkableLaunchShape(imageDir ? localLaunchAndSeedShape : launchAndSeedShape)
   }, async (args) => {
-    if ("check" in args && args.check === true)
+    if ("check" in args && args.check === true) {
+      if ("hoodGen2Options" in args && args.hoodGen2Options !== undefined)
+        return launchCheck(args, getConfig(), doFetch);
+      const checkParsed = exports_external.object(checkableLaunchShape(localLaunchAndSeedShape)).strict().safeParse(args);
+      if (!checkParsed.success)
+        return launchControlError(new LaunchCheckError("VALIDATION_FAILED", checkParsed.error.message));
+      const checkChainProblem = chainLaunchOptionsRefusal(args);
+      if (checkChainProblem)
+        return { content: [{ type: "text", text: imageRefusalBody(checkChainProblem) }], isError: true };
       return launchCheck(args, getConfig(), doFetch);
+    }
     try {
       args = launchExecutionArgs(args);
       if (!imageDir && args.imageUrl === undefined && !("imagePath" in args))
         return launchControlError(new LaunchCheckError("VALIDATION_FAILED", "imageUrl is required for a launch."));
-      const parsed = exports_external.object(imageDir ? localLaunchAndSeedShape : launchAndSeedShape).omit({ imageUrl: true }).safeParse(args);
+      const parsed = exports_external.object(localLaunchAndSeedShape).extend({ imageUrl: exports_external.string().optional() }).strict().safeParse(args);
       if (!parsed.success)
         return launchControlError(new LaunchCheckError("VALIDATION_FAILED", parsed.error.message));
     } catch (error) {
@@ -16121,7 +16435,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   }
   return eligible;
 }
-var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, SIGNAL_RECORD_TOOL_NAMES, isSignalRecordTool = (name) => SIGNAL_RECORD_TOOL_NAMES.includes(name), PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), OPERATION_NOT_FOUND_RULE, SWAP_RECEIPT_DESCRIPTION, SWAP_SETTLEMENT_REREAD, getMarketShape, quoteShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getAgentPerpsSummaryShape, getAgentPerpRoundShape, getAgentOpenOrdersShape, getPerpCandlesShape, getPerpMarketShape, getOperationShape, getSwapReceiptShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, HOOD_ADDRESS, holderExitShape, claimHolderExitShape, resolveTokenShape, tradingWalletsShape, spendableBalancesShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID, localServerConfigs;
+var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, LAB_TOOL_NAMES, SIGNAL_RECORD_TOOL_NAMES, isSignalRecordTool = (name) => SIGNAL_RECORD_TOOL_NAMES.includes(name), PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name), isLaunchTool = (name) => name === "candle_launch_token" || name === "candle_launch_and_seed", OPERATION_NOT_FOUND_RULE, SWAP_RECEIPT_DESCRIPTION, SWAP_SETTLEMENT_REREAD, getMarketShape, quoteShape, priceHistoryShape, TOKEN_EVENTS_LIMIT_MESSAGE = "limit must be a whole number from 1 to 1000", tokenEventsLimit, TOKEN_EVENTS_KIND_NOTE = "kept back from the request and applied to the returned page by this server, so a filtered page can be shorter than limit while older events of other kinds remain: page with nextCursor as before until it is null", tokenCardShape, tokenEventsShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getAgentPositionsShape, getAgentPerpsSummaryShape, getAgentPerpRoundShape, getAgentOpenOrdersShape, getPerpCandlesShape, getPerpMarketShape, getOperationShape, getSwapReceiptShape, vampCandidatesShape, getFeesShape, atomicPayerShape, atomicLaunchDryRunShape, claimFeesShape, HOOD_ADDRESS, holderExitShape, claimHolderExitShape, resolveTokenShape, tradingWalletsShape, spendableBalancesShape, profileWalletsShape, profilePnlShape, profileTradesShape, noArgsShape, setProfileWalletsShape, swapShape, tradeShape, tradeExecuteShape, tokenImageUrl, tokenBannerUrl, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape, PROFILE_PNL_HYPERLIQUID, localServerConfigs;
 var init_tools = __esm(() => {
   init_perps_transfer();
   init_zod();
@@ -79965,6 +80279,11 @@ var LAUNCH_DEFINITION2 = {
       }
     }
   },
+  hoodGen2: {
+    curveFeeBps: 100,
+    maxCreatorFeeBps: 9999,
+    maxTeamBps: 500
+  },
   surfacesIntro: [
     "CLI: scripts and terminals. Agents always pass --json.",
     "MCP: chat agents (Claude, the connector). The same launch fields and results as the CLI's --json.",
@@ -80330,18 +80649,26 @@ var LAUNCH_DEFINITION2 = {
     },
     {
       key: "creatorFeeBps",
-      type: "enum",
-      help: "An exp- mode's extra creator fee: 0, 100 or 200 bps on the curve and pool, paid to the creator in full.",
-      values: [
-        0,
-        100,
-        200
-      ],
+      type: "integer",
+      help: "Extra creator fee in bps: on Solana exp- modes, 0, 100 or 200 on the curve and pool; on Hood generation 2 (while HOOD_GEN2_LAUNCH_ENABLED is on), a whole number from 0 to the factory's maxCreatorFeeBps, with curve fee + creatorFeeBps + snipeFeeStartBps under 10000.",
+      wireType: "number | null",
+      valuesByChain: {
+        solana: [
+          0,
+          100,
+          200
+        ]
+      },
+      range: {
+        min: "0",
+        max: "9999",
+        unit: "bps"
+      },
       default: 0,
       surfaces: {
         cli: {
           flag: "--creator-fee-bps",
-          value: "0|100|200"
+          value: "<bps>"
         },
         mcp: {
           key: "creatorFeeBps"
@@ -80583,10 +80910,7 @@ var LAUNCH_DEFINITION2 = {
     {
       key: "feeWallet",
       type: "string",
-      help: "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the wallet that launches the token (the account wallet on a server without LAUNCH_FEE_WALLET_FROM_LAUNCHER, except an embedded launch).",
-      chains: [
-        "solana"
-      ],
+      help: "The launch fee wallet: on Solana, an on-curve wallet or a Squads v4 vault earning curve and pool fees (defaults to the launching wallet where LAUNCH_FEE_WALLET_FROM_LAUNCHER is on, else the account wallet, except an embedded launch); on Hood generation 2 (while HOOD_GEN2_LAUNCH_ENABLED is on), a non-zero 0x EOA or Safe earning the extra creator fee (send creatorFeeBps above 0 unless it is the creator).",
       surfaces: {
         cli: {
           flag: "--fee-wallet",
@@ -80677,16 +81001,13 @@ var LAUNCH_DEFINITION2 = {
     {
       key: "launchRules.openDelaySecs",
       type: "duration",
-      help: "Launch rules, Solana only, where the server has CURVE_LAUNCH_RULES_ENABLED on: how long after the launch buys open, at most 7 days (604800 seconds); before then only the launching wallet may buy. The CLI takes a duration (90m, 6h, 2d, or seconds); the request field is whole seconds.",
+      help: "Launch rules (Solana where CURVE_LAUNCH_RULES_ENABLED is on; Hood generation 2 where HOOD_GEN2_LAUNCH_ENABLED is on): how long after the launch buys open, at most 7 days (604800 seconds); before then only the launching wallet may buy. The CLI takes a duration (90m, 6h, 2d, or seconds); the request field is whole seconds.",
       wireType: "number",
       range: {
         min: "0",
         max: "604800",
         unit: "seconds"
       },
-      chains: [
-        "solana"
-      ],
       surfaces: {
         cli: {
           flag: "--open-in",
@@ -80703,13 +81024,11 @@ var LAUNCH_DEFINITION2 = {
     {
       key: "launchRules.maxBuyPerWalletRaw",
       type: "decimal",
-      help: "The most quote one wallet may spend on the curve during --cap-window, curve fee included and Candle's fee not; needs --cap-window. The CLI takes whole quote units; the request field is raw units as a decimal string.",
+      help: "The most quote one wallet may spend on the curve during --cap-window, curve fee included and Candle's fee not; needs --cap-window. The CLI takes whole quote units; the request field is raw units as a decimal string (fits u64 on Solana, uint256 on Hood).",
+      wireType: "string | number",
       range: {
         unit: "whole quote units"
       },
-      chains: [
-        "solana"
-      ],
       requires: [
         "launchRules.capWindowSecs"
       ],
@@ -80736,9 +81055,6 @@ var LAUNCH_DEFINITION2 = {
         max: "86400",
         unit: "seconds"
       },
-      chains: [
-        "solana"
-      ],
       requires: [
         "launchRules.maxBuyPerWalletRaw"
       ],
@@ -80758,16 +81074,23 @@ var LAUNCH_DEFINITION2 = {
     {
       key: "launchRules.allowlist",
       type: "file",
-      help: "Only these wallets may buy during --allowlist-window: 1 to 4,096 distinct Solana addresses; needs --allowlist-window. The CLI reads a file, one address per line or comma separated; the request field is the list.",
+      help: "Only these wallets may buy during --allowlist-window: 1 to 4,096 distinct Solana addresses, or on Hood generation 2 1 to 10,000 distinct non-zero 0x EVM addresses; needs --allowlist-window. The CLI reads a file, one address per line or comma separated; the request field is the list.",
       wireType: "string[]",
       range: {
         min: "1",
         max: "4096",
-        unit: "wallets"
+        unit: "wallets",
+        byChain: {
+          solana: {
+            min: "1",
+            max: "4096"
+          },
+          hood: {
+            min: "1",
+            max: "10000"
+          }
+        }
       },
-      chains: [
-        "solana"
-      ],
       requires: [
         "launchRules.allowlistWindowSecs"
       ],
@@ -80794,9 +81117,6 @@ var LAUNCH_DEFINITION2 = {
         max: "86400",
         unit: "seconds"
       },
-      chains: [
-        "solana"
-      ],
       requires: [
         "launchRules.allowlist"
       ],
@@ -80816,13 +81136,11 @@ var LAUNCH_DEFINITION2 = {
     {
       key: "launchRules.devBuyMaxRaw",
       type: "decimal",
-      help: "The most the launching wallet may buy before the open, only with --open-in: at least the launch's own buy, at most the dev-buy ceiling, and the buy by default. That spend counts toward the per-wallet cap after the open. The CLI takes whole quote units; the request field is raw units as a decimal string.",
+      help: "The most the launching wallet may buy before the open, only with --open-in above 0: at least the launch's own buy (and at most the dev-buy ceiling on Solana, where it defaults to the buy and counts toward the per-wallet cap after the open). The CLI takes whole quote units; the request field is raw units as a decimal string.",
+      wireType: "string | number",
       range: {
         unit: "whole quote units"
       },
-      chains: [
-        "solana"
-      ],
       requires: [
         "launchRules.openDelaySecs"
       ],
@@ -80836,6 +81154,200 @@ var LAUNCH_DEFINITION2 = {
         },
         sdk: {
           key: "launchRules.devBuyMaxRaw"
+        }
+      }
+    },
+    {
+      key: "launchRules.snipeFeeStartBps",
+      type: "integer",
+      help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): starting sniper fee on buys, 0 to 2500 bps; needs --snipe-fee-decay above 0 when non-zero, and curve fee + creatorFeeBps + snipeFeeStartBps must stay under 10000.",
+      wireType: "number | null",
+      range: {
+        min: "0",
+        max: "2500",
+        unit: "bps"
+      },
+      chains: [
+        "hood"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--snipe-fee-start-bps",
+          value: "<bps>"
+        },
+        mcp: {
+          key: "launchRules.snipeFeeStartBps"
+        },
+        sdk: {
+          key: "launchRules.snipeFeeStartBps"
+        }
+      }
+    },
+    {
+      key: "launchRules.snipeFeeDecaySecs",
+      type: "duration",
+      help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): how long the sniper fee decays from snipeFeeStartBps to 0 after the open, 0 to 600 seconds (or a duration such as 2m or 10m); must be above 0 when snipeFeeStartBps is above 0.",
+      wireType: "number | null",
+      range: {
+        min: "0",
+        max: "600",
+        unit: "seconds"
+      },
+      chains: [
+        "hood"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--snipe-fee-decay",
+          value: "<duration>"
+        },
+        mcp: {
+          key: "launchRules.snipeFeeDecaySecs"
+        },
+        sdk: {
+          key: "launchRules.snipeFeeDecaySecs"
+        }
+      }
+    },
+    {
+      key: "snipeExempt",
+      type: "string",
+      help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): up to 32 distinct non-zero 0x EVM bundle wallets exempt from the sniper fee. Comma-separated on the CLI; an array on MCP and the SDK.",
+      wireType: "string[]",
+      range: {
+        min: "0",
+        max: "32",
+        unit: "wallets"
+      },
+      chains: [
+        "hood"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--snipe-exempt",
+          value: "<0x,...>"
+        },
+        mcp: {
+          key: "snipeExempt"
+        },
+        sdk: {
+          key: "snipeExempt"
+        }
+      }
+    },
+    {
+      key: "teamAllocation.recipient",
+      type: "string",
+      help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): the non-zero 0x EVM recipient of the team vesting escrow; takes --team-percent, --team-cliff-days and optional --team-vesting-days.",
+      chains: [
+        "hood"
+      ],
+      requires: [
+        "teamAllocation.percent",
+        "teamAllocation.cliffDays"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--team-recipient",
+          value: "<0x-address>"
+        },
+        mcp: {
+          key: "teamAllocation.recipient"
+        },
+        sdk: {
+          key: "teamAllocation.recipient"
+        }
+      }
+    },
+    {
+      key: "teamAllocation.percent",
+      type: "decimal",
+      help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): team supply share above 0 and at most 5%, with at most two decimals; takes --team-recipient and --team-cliff-days.",
+      wireType: "number",
+      range: {
+        min: "0.01",
+        max: "5",
+        unit: "percent"
+      },
+      chains: [
+        "hood"
+      ],
+      requires: [
+        "teamAllocation.recipient",
+        "teamAllocation.cliffDays"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--team-percent",
+          value: "<percent>"
+        },
+        mcp: {
+          key: "teamAllocation.percent"
+        },
+        sdk: {
+          key: "teamAllocation.percent"
+        }
+      }
+    },
+    {
+      key: "teamAllocation.cliffDays",
+      type: "integer",
+      help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): whole days before team vesting begins, 30 to 3650; required with --team-recipient and --team-percent.",
+      wireType: "number",
+      range: {
+        min: "30",
+        max: "3650",
+        unit: "days"
+      },
+      chains: [
+        "hood"
+      ],
+      requires: [
+        "teamAllocation.recipient",
+        "teamAllocation.percent"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--team-cliff-days",
+          value: "<days>"
+        },
+        mcp: {
+          key: "teamAllocation.cliffDays"
+        },
+        sdk: {
+          key: "teamAllocation.cliffDays"
+        }
+      }
+    },
+    {
+      key: "teamAllocation.vestingDays",
+      type: "integer",
+      help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): whole days of linear team vesting after the cliff, 0 to 3650 (defaults to 0, unlocking at the cliff).",
+      wireType: "number | null",
+      range: {
+        min: "0",
+        max: "3650",
+        unit: "days"
+      },
+      default: 0,
+      chains: [
+        "hood"
+      ],
+      requires: [
+        "teamAllocation.recipient",
+        "teamAllocation.percent",
+        "teamAllocation.cliffDays"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--team-vesting-days",
+          value: "<days>"
+        },
+        mcp: {
+          key: "teamAllocation.vestingDays"
+        },
+        sdk: {
+          key: "teamAllocation.vestingDays"
         }
       }
     },
@@ -80878,6 +81390,7 @@ var LAUNCH_DEFINITION2 = {
 
 // src/launch-rules.ts
 init_zod();
+init_evm_lite();
 import { readFile as readFile9, stat as stat5 } from "node:fs/promises";
 init_solana_lite();
 init_trading();
@@ -80887,9 +81400,13 @@ var LAUNCH_RULES_FLAGS = [
   "--cap-window",
   "--allowlist",
   "--allowlist-window",
-  "--dev-buy-max"
+  "--dev-buy-max",
+  "--snipe-fee-start-bps",
+  "--snipe-fee-decay"
 ];
 var U64_MAX = 0xffffffffffffffffn;
+var U256_MAX = (1n << 256n) - 1n;
+var ZERO_EVM_ADDRESS = "0x0000000000000000000000000000000000000000";
 var UNITS = { s: 1, m: 60, h: 3600, d: 86400 };
 var MAX_ALLOWLIST_FILE_BYTES = 1e6;
 var rulesField = (key) => {
@@ -80898,7 +81415,10 @@ var rulesField = (key) => {
     throw new Error(`Missing launch rules field ${key}`);
   return found.range;
 };
-var maxAllowlist = Number(rulesField("allowlist").max);
+var maxAllowlistFor = (chain2) => {
+  const range = rulesField("allowlist");
+  return Number(range.byChain?.[chain2]?.max ?? range.max);
+};
 function launchRulesGiven(flags) {
   return LAUNCH_RULES_FLAGS.some((flag) => flags[flag] !== undefined);
 }
@@ -80924,6 +81444,9 @@ function launchRulesFlagProblem(flags) {
     return "--allowlist and --allowlist-window go together: pass both or neither.";
   if (given(flags, "--dev-buy-max") && openDelay(flags) === 0)
     return "--dev-buy-max needs --open-in above 0: it only applies before the open.";
+  const snipeStart = flags["--snipe-fee-start-bps"];
+  if (snipeStart !== undefined && Number(snipeStart) > 0 && (parseDuration(flags["--snipe-fee-decay"] ?? "0") ?? 0) === 0)
+    return "--snipe-fee-start-bps needs --snipe-fee-decay above 0.";
   for (const flag of ["--max-buy-per-wallet", "--dev-buy-max"]) {
     const value = flags[flag];
     if (value !== undefined && !/^\d+(\.\d+)?$/.test(value))
@@ -80933,47 +81456,63 @@ function launchRulesFlagProblem(flags) {
   }
   return;
 }
-var amountFormat = (flag) => `${flag} must be a positive amount in whole quote units, at most the quote asset's decimals, that fits in u64.`;
-function parseAllowlist(text, path) {
+var amountFormat = (flag, chain2 = "solana") => `${flag} must be a positive amount in whole quote units, at most the quote asset's decimals, that fits in ${chain2 === "solana" ? "u64" : "uint256"}.`;
+function parseAllowlist(text, path, chain2 = "solana") {
+  const max = maxAllowlistFor(chain2);
   const wallets2 = new Set;
   for (const [index, line] of text.split(/\r?\n/).entries()) {
     for (const cell of line.split(",")) {
       const entry2 = cell.trim().replace(/^"(.*)"$/, "$1");
       if (entry2 === "")
         continue;
-      let canonical3;
-      try {
-        canonical3 = encodePubkey(decodePubkey(entry2));
-      } catch {}
-      if (canonical3 !== entry2)
-        throw new Error(`--allowlist ${safeText(path)}, line ${index + 1}: ${safeText(entry2.slice(0, 64))} is not a base58 Solana address.`);
-      wallets2.add(entry2);
+      if (chain2 === "solana") {
+        let canonical3;
+        try {
+          canonical3 = encodePubkey(decodePubkey(entry2));
+        } catch {}
+        if (canonical3 !== entry2)
+          throw new Error(`--allowlist ${safeText(path)}, line ${index + 1}: ${safeText(entry2.slice(0, 64))} is not a base58 Solana address.`);
+        wallets2.add(entry2);
+      } else {
+        if (!looksLikeEvmAddress(entry2) || entry2.toLowerCase() === ZERO_EVM_ADDRESS)
+          throw new Error(`--allowlist ${safeText(path)}, line ${index + 1}: ${safeText(entry2.slice(0, 64))} is not a non-zero 0x EVM address.`);
+        wallets2.add(toChecksumAddress(entry2));
+      }
     }
   }
-  if (wallets2.size < 1 || wallets2.size > maxAllowlist)
-    throw new Error(`--allowlist holds 1 to ${maxAllowlist} distinct wallets; ${safeText(path)} has ${wallets2.size}.`);
+  if (wallets2.size < 1 || wallets2.size > max)
+    throw new Error(`--allowlist holds 1 to ${max} distinct wallets; ${safeText(path)} has ${wallets2.size}.`);
   return [...wallets2];
 }
-async function readAllowlist(path) {
+async function readAllowlist(path, chain2 = "solana") {
+  const max = maxAllowlistFor(chain2);
   let text;
   try {
     const info2 = await stat5(path);
     if (!info2.isFile())
       throw new Error("not a file");
     if (info2.size > MAX_ALLOWLIST_FILE_BYTES)
-      throw new Error(`--allowlist ${safeText(path)} is over 1MB, far more than ${maxAllowlist} addresses.`);
+      throw new Error(`--allowlist ${safeText(path)} is over 1MB, far more than ${max} addresses.`);
     text = await readFile9(path, "utf8");
   } catch (error) {
     if (error.message.startsWith("--allowlist"))
       throw error;
     throw new Error(`--allowlist ${safeText(path)} could not be read as a file.`);
   }
-  return parseAllowlist(text, path);
+  return parseAllowlist(text, path, chain2);
 }
 function launchRulesRequest(flags, launch) {
+  const chain2 = launch.chain ?? "solana";
+  if (chain2 === "solana") {
+    for (const flag of ["--snipe-fee-start-bps", "--snipe-fee-decay"]) {
+      if (flags[flag] !== undefined)
+        throw new Error(`${flag} is only available on Hood launches.`);
+    }
+  }
   const problem = launchRulesFlagProblem(flags);
   if (problem)
     throw new Error(problem);
+  const maxRaw = chain2 === "solana" ? U64_MAX : U256_MAX;
   const symbol = launch.quote.toUpperCase();
   const whole = (raw3) => `${shortAmount(raw3.toString(), launch.decimals)} ${symbol}`;
   const raw2 = (flag, value) => {
@@ -80983,10 +81522,10 @@ function launchRulesRequest(flags, launch) {
     try {
       amount = BigInt(rawAmount(value, launch.decimals));
     } catch {
-      throw new Error(amountFormat(flag));
+      throw new Error(amountFormat(flag, chain2));
     }
-    if (amount > U64_MAX)
-      throw new Error(amountFormat(flag));
+    if (amount > maxRaw)
+      throw new Error(amountFormat(flag, chain2));
     return amount;
   };
   const body = {};
@@ -81006,11 +81545,17 @@ function launchRulesRequest(flags, launch) {
   if (devBuyMax !== undefined) {
     if (devBuyMax < launch.buyRaw)
       throw new Error(`--dev-buy-max (${whole(devBuyMax)}) is below this launch's own dev buy, --buy (${whole(launch.buyRaw)}).`);
-    if (devBuyMax > launch.ceilingRaw)
+    if (launch.ceilingRaw !== null && devBuyMax > launch.ceilingRaw)
       throw new Error(`--dev-buy-max is above the dev-buy ceiling for this launch (${whole(launch.ceilingRaw)}).`);
     body.devBuyMaxRaw = devBuyMax.toString();
   }
-  if (cap !== undefined && delay === 0 && launch.buyRaw > cap)
+  if (chain2 !== "solana") {
+    if (flags["--snipe-fee-start-bps"] !== undefined)
+      body.snipeFeeStartBps = Number(flags["--snipe-fee-start-bps"]);
+    if (flags["--snipe-fee-decay"] !== undefined)
+      body.snipeFeeDecaySecs = parseDuration(flags["--snipe-fee-decay"]) ?? 0;
+  }
+  if (chain2 === "solana" && cap !== undefined && delay === 0 && launch.buyRaw > cap)
     throw new Error(`This launch's dev buy (--buy ${whole(launch.buyRaw)}) is over --max-buy-per-wallet (${whole(cap)}); with no open delay the dev buy is held to the cap.`);
   return Object.keys(body).length ? body : undefined;
 }
@@ -81726,7 +82271,7 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
-    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, launch:write, a bound key and verified authority; a server with TEE_LAUNCH_BY_SCOPE_ENABLED off also asks for the owner's allowLaunch (deprecated), and with it on a TEE first buy also needs swap:write. TEE buys are on by default; a server turns them off with TEE_LAUNCH_BUYS_ENABLED=0; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined; --dry-run checks the files and uploads nothing. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the wallet that launches the token where the server has LAUNCH_FEE_WALLET_FROM_LAUNCHER on (an embedded launch already earns to its embedded wallet), otherwise to the account wallet, and the preview, the confirm and --check all say which; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. On Solana, where the server has CURVE_LAUNCH_RULES_ENABLED on, launch rules are fixed at launch and enforced by the curve program: --open-in delays the open (until then only the launching wallet may buy, up to --dev-buy-max, which defaults to the buy), --max-buy-per-wallet with --cap-window caps what each wallet spends on the curve after the open, and --allowlist <file> with --allowlist-window lets only the listed wallets buy; durations are seconds or 90m, 6h, 2d and amounts are whole quote units, each is checked here before any request, and the preview prints a Launch rules block. Nobody can change the rules after the launch. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works. status reads one launch by its mint or clientLaunchId: build, signed, confirmed, trading, bonded, then migrated, with the market's lifecycle and migration fields. --wait follows it until the token is trading, the launch has failed, or ten minutes pass. An embedded Solana launch that Candle could not confirm in time is read on chain over the Solana RPC before anything is reported: finalized without an error prints status landed (exit 0), finalized with an error is LAUNCH_FAILED (exit 1), and anything else is LAUNCH_UNCONFIRMED (exit 3); never launch it again under a new id.",
+    description: "Creates a token from the wallet you name, with an optional first buy. Embedded launches use /launch/headless on every plan, with the key's embedded-wallet allowance and launch:write; no swap:write is needed. A Solana first buy is a creator bundle, signed by Candle. A Hood first buy is best effort after creation. TEE launches use /launch/self and require Pro or Max, launch:write, a bound key and verified authority; a server with TEE_LAUNCH_BY_SCOPE_ENABLED off also asks for the owner's allowLaunch (deprecated), and with it on a TEE first buy also needs swap:write. TEE buys are on by default; a server turns them off with TEE_LAUNCH_BUYS_ENABLED=0; Solana buys also need AGENT_TRADING_ENABLED and Jito. Existing server gates and ceilings apply. The embedded path previews the launch before confirmation; --dry-run stops at the preview. No buy creates only the token. Local image and banner uploads happen before confirmation and are public and permanent even if the launch is declined; --dry-run checks the files and uploads nothing. Reuse --client-trade-id for recovery. On Solana, --fee-wallet <address> sets the wallet the launch's curve and pool fees earn to, an on-curve wallet by itself or a Squads v4 vault with --fee-wallet-multisig <address> and --fee-wallet-multisig-vault-index <n>; without it the fees earn to the wallet that launches the token where the server has LAUNCH_FEE_WALLET_FROM_LAUNCHER on (an embedded launch already earns to its embedded wallet), otherwise to the account wallet, and the preview, the confirm and --check all say which; a live launch also warns on stderr when it defaults, and --require-fee-wallet refuses the launch without one. On Solana, where the server has CURVE_LAUNCH_RULES_ENABLED on, launch rules are fixed at launch and enforced by the curve program: --open-in delays the open (until then only the launching wallet may buy, up to --dev-buy-max, which defaults to the buy), --max-buy-per-wallet with --cap-window caps what each wallet spends on the curve after the open, and --allowlist <file> with --allowlist-window lets only the listed wallets buy; durations are seconds or 90m, 6h, 2d and amounts are whole quote units, each is checked here before any request, and the preview prints a Launch rules block. On Hood generation 2 (while HOOD_GEN2_LAUNCH_ENABLED is on), the same launch-rule flags apply (allowlist up to 10,000 non-zero 0x EVM addresses) plus --snipe-fee-start-bps (0 to 2500) with --snipe-fee-decay (0 to 600s), --snipe-exempt (up to 32 comma-separated 0x bundle wallets), --fee-wallet (a non-zero 0x EOA or Safe earning the extra creator fee), --creator-fee-bps (whole bps up to the factory's maxCreatorFeeBps, with curve fee + creatorFeeBps + snipeFeeStartBps under 10000), and team vesting (--team-recipient, --team-percent up to 5%, --team-cliff-days 30 to 3650, optional --team-vesting-days 0 to 3650), sent as top-level request fields. Nobody can change the rules after the launch. --check answers first, before any of it: which launch path works on this key and server (embedded allowance, tier, allowLaunch, TEE_LAUNCH_BUYS_ENABLED) in one call, with nothing uploaded, built or sent; name a wallet with --wallet to narrow it, and it exits 1 when no path works. status reads one launch by its mint or clientLaunchId: build, signed, confirmed, trading, bonded, then migrated, with the market's lifecycle and migration fields. --wait follows it until the token is trading, the launch has failed, or ten minutes pass. An embedded Solana launch that Candle could not confirm in time is read on chain over the Solana RPC before anything is reported: finalized without an error prints status landed (exit 0), finalized with an error is LAUNCH_FAILED (exit 1), and anything else is LAUNCH_UNCONFIRMED (exit 3); never launch it again under a new id.",
     usage: [LAUNCH_USAGE, "candle launch status <mint-or-client-launch-id> [--wait]"],
     rows: [
       {
@@ -97789,6 +98334,128 @@ function feeWalletQuoteLine(selection, echo) {
   return `${selection.feeWallet}${selection.feeWalletMultisig ? ` (Squads vault of ${selection.feeWalletMultisig.address}, vault ${selection.feeWalletMultisig.vaultIndex})` : ""}`;
 }
 
+// src/hood-launch-options.ts
+init_evm_lite();
+init_trading();
+var ZERO_EVM_ADDRESS2 = "0x0000000000000000000000000000000000000000";
+var HOOD_ONLY_LAUNCH_FLAGS = [
+  "--snipe-fee-start-bps",
+  "--snipe-fee-decay",
+  "--snipe-exempt",
+  "--team-recipient",
+  "--team-percent",
+  "--team-cliff-days",
+  "--team-vesting-days"
+];
+var TEAM_FLAGS = ["--team-recipient", "--team-percent", "--team-cliff-days", "--team-vesting-days"];
+var solanaCreatorFeeValues = () => {
+  const found = LAUNCH_DEFINITION2.fields.find((field) => field.key === "creatorFeeBps");
+  return found && "valuesByChain" in found && found.valuesByChain?.solana ? found.valuesByChain.solana : [0, 100, 200];
+};
+function nonZeroEvmAddress(value, label) {
+  const trimmed = value.trim();
+  if (!looksLikeEvmAddress(trimmed))
+    throw new Error(`${label} must be a 0x EVM address.`);
+  if (trimmed.toLowerCase() === ZERO_EVM_ADDRESS2)
+    throw new Error(`${label} cannot be the zero address.`);
+  return toChecksumAddress(trimmed);
+}
+function isNonZeroEvmAddress(value) {
+  const trimmed = value.trim();
+  return looksLikeEvmAddress(trimmed) && trimmed.toLowerCase() !== ZERO_EVM_ADDRESS2;
+}
+function hoodOnlyFlagOnSolanaProblem(flags) {
+  for (const flag of HOOD_ONLY_LAUNCH_FLAGS) {
+    if (flags[flag] !== undefined)
+      return `${flag} is only available on Hood launches.`;
+  }
+  return;
+}
+function creatorFeeProblemForChain(flags, chain2) {
+  const raw2 = flags["--creator-fee-bps"];
+  if (raw2 === undefined)
+    return;
+  const bps2 = Number(raw2);
+  if (chain2 === "solana") {
+    const allowed = solanaCreatorFeeValues();
+    if (!allowed.includes(bps2))
+      return `--creator-fee-bps takes ${allowed.join(", ")}.`;
+    if (!flags["--mode"]?.startsWith("exp-"))
+      return "--creator-fee-bps takes an exp- --mode.";
+    return;
+  }
+  const { curveFeeBps, maxCreatorFeeBps } = LAUNCH_DEFINITION2.hoodGen2;
+  if (!Number.isInteger(bps2) || bps2 < 0 || bps2 > maxCreatorFeeBps)
+    return `--creator-fee-bps must be a whole number from 0 to ${maxCreatorFeeBps}.`;
+  const snipeStart = flags["--snipe-fee-start-bps"] !== undefined ? Number(flags["--snipe-fee-start-bps"]) : 0;
+  if (curveFeeBps + bps2 + snipeStart >= 1e4)
+    return "the curve fee, creator fee and sniper fee at its peak must total under 100%";
+  return;
+}
+function parseSnipeExemptFlag(raw2) {
+  if (raw2 === undefined)
+    return;
+  const parts = raw2.split(",").map((entry2) => entry2.trim()).filter((entry2) => entry2.length > 0);
+  const max = Number(LAUNCH_DEFINITION2.fields.find((field) => field.key === "snipeExempt").range.max);
+  if (parts.length > max)
+    throw new Error(`--snipe-exempt takes 0 to ${max} comma-separated 0x EVM addresses.`);
+  const out = [];
+  for (const [index, part] of parts.entries()) {
+    const address2 = nonZeroEvmAddress(part, `--snipe-exempt[${index}]`);
+    if (out.includes(address2))
+      throw new Error(`--snipe-exempt lists ${safeText(address2)} twice.`);
+    out.push(address2);
+  }
+  return out;
+}
+function parseHoodTeamAllocationFlags(flags) {
+  if (!TEAM_FLAGS.some((flag) => flags[flag] !== undefined))
+    return;
+  if (flags["--team-recipient"] === undefined || flags["--team-percent"] === undefined || flags["--team-cliff-days"] === undefined) {
+    throw new Error("--team-recipient, --team-percent and --team-cliff-days go together (with optional --team-vesting-days).");
+  }
+  const recipient = nonZeroEvmAddress(flags["--team-recipient"], "--team-recipient");
+  const percent = Number(flags["--team-percent"]);
+  const { maxTeamBps } = LAUNCH_DEFINITION2.hoodGen2;
+  const bps2 = Number.isFinite(percent) ? Math.round(percent * 100) : Number.NaN;
+  if (!(bps2 > 0 && bps2 <= maxTeamBps) || Math.abs(bps2 - percent * 100) > 0.000001) {
+    throw new Error(`--team-percent must be above 0 and at most ${maxTeamBps / 100}, with at most two decimals.`);
+  }
+  const cliffDays = Number(flags["--team-cliff-days"]);
+  if (!Number.isInteger(cliffDays) || cliffDays < 30 || cliffDays > 3650) {
+    throw new Error("--team-cliff-days must be a whole number of days from 30 to 3650.");
+  }
+  const vestingRaw = flags["--team-vesting-days"];
+  const vestingDays = vestingRaw === undefined || vestingRaw.trim() === "" || vestingRaw.trim().toLowerCase() === "null" ? 0 : Number(vestingRaw);
+  if (!Number.isInteger(vestingDays) || vestingDays < 0 || vestingDays > 3650) {
+    throw new Error("--team-vesting-days must be a whole number of days from 0 to 3650.");
+  }
+  return { recipient, percent, cliffDays, vestingDays };
+}
+function hoodFeeWalletFromFlags(flags) {
+  if (flags["--fee-wallet-multisig"] !== undefined || flags["--fee-wallet-multisig-vault-index"] !== undefined) {
+    throw new Error("--fee-wallet-multisig is Solana's Squads vault: on Hood, pass the Safe's address as --fee-wallet");
+  }
+  if (flags["--fee-wallet"] === undefined)
+    return;
+  return nonZeroEvmAddress(flags["--fee-wallet"], "--fee-wallet");
+}
+function hoodGen2TopRequestFields(flags) {
+  const snipeStart = flags["--snipe-fee-start-bps"];
+  const snipeDecay = flags["--snipe-fee-decay"];
+  if (snipeStart !== undefined && Number(snipeStart) > 0 && (parseDuration(snipeDecay ?? "0") ?? 0) === 0) {
+    throw new Error("--snipe-fee-start-bps needs --snipe-fee-decay above 0.");
+  }
+  const snipeExempt = parseSnipeExemptFlag(flags["--snipe-exempt"]);
+  const feeWallet = hoodFeeWalletFromFlags(flags);
+  const teamAllocation = parseHoodTeamAllocationFlags(flags);
+  return {
+    ...snipeExempt !== undefined ? { snipeExempt } : {},
+    ...feeWallet ? { feeWallet } : {},
+    ...teamAllocation ? { teamAllocation } : {}
+  };
+}
+
 // src/commands/launch.ts
 init_hood_legs();
 init_human_output();
@@ -98350,9 +99017,6 @@ function curveFlagProblem(flags) {
     return "--curve-v and --curve-g take --mode exp-custom.";
   if (mode === "exp-custom" && v === undefined)
     return "--mode exp-custom needs --curve-v and --curve-g: the curve's V and G in whole units of the quote asset.";
-  const fee = flags["--creator-fee-bps"];
-  if (fee !== undefined && !mode?.startsWith("exp-"))
-    return "--creator-fee-bps takes an exp- --mode.";
   return;
 }
 function launchCurveFields(flags) {
@@ -98392,7 +99056,15 @@ function flagChain(flags) {
   return first?.[1];
 }
 async function launch(args, ctx) {
-  const parsed = parseArgs(args.map((arg, index) => args[index - 1] === "--buy" && arg.trim() === "" ? "0" : arg), LAUNCH_ARG_SPEC);
+  const parsed = parseArgs(args.map((arg, index) => {
+    if (args[index - 1] === "--buy" && arg.trim() === "")
+      return "0";
+    if (args[index - 1] === "--snipe-exempt" && arg.trim() === "")
+      return ",";
+    if (args[index - 1] === "--team-vesting-days" && (arg.trim() === "" || arg.trim().toLowerCase() === "null"))
+      return "0";
+    return arg;
+  }), LAUNCH_ARG_SPEC);
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
     return 2;
@@ -98469,14 +99141,7 @@ async function launch(args, ctx) {
     writeUsageFailure(ctx.deps, `${error.message}. ${USAGE13}`, ctx.json);
     return 2;
   }
-  let feeWallet;
-  try {
-    feeWallet = feeWalletSelection(flags);
-  } catch (error) {
-    writeUsageFailure(ctx.deps, `${error.message}. ${USAGE13}`, ctx.json);
-    return 2;
-  }
-  if (parsed.booleans.has("--require-fee-wallet") && !feeWallet) {
+  if (parsed.booleans.has("--require-fee-wallet") && flags["--fee-wallet"] === undefined) {
     writeUsageFailure(ctx.deps, `--require-fee-wallet needs --fee-wallet <address>: pass the wallet this launch's fees earn to. ${USAGE13}`, ctx.json);
     return 2;
   }
@@ -98486,12 +99151,37 @@ async function launch(args, ctx) {
     const hinted = flagChain(flags);
     if (selectedQuote !== undefined && !check2 && !flags["--quote-asset"])
       return tradingFailure(ctx, new TradingError("QUOTE_LAUNCH_UNAVAILABLE", "Launching against this quote is not enabled: only a Solana token mint or a listed pair can launch today. Run candle launch --quote <symbol|address> --check to inspect admission and economics; nothing was uploaded or built."));
-    if (hinted === "hood" && feeWalletGiven(flags)) {
-      writeUsageFailure(ctx.deps, `--fee-wallet is Solana only; a Hood launch cannot take it. ${USAGE13}`, ctx.json);
-      return 2;
-    }
     if (!check2 && hinted === "hood" && flags["--dex-version"] === undefined) {
       writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE13}`, ctx.json);
+      return 2;
+    }
+    const optionChain = hinted ?? "solana";
+    let feeWallet;
+    let hoodOptions = {};
+    if (!check2 && optionChain === "solana") {
+      const hoodFlag = hoodOnlyFlagOnSolanaProblem(flags);
+      if (hoodFlag) {
+        writeUsageFailure(ctx.deps, `${hoodFlag} ${USAGE13}`, ctx.json);
+        return 2;
+      }
+    }
+    if (!check2) {
+      const creatorProblem = creatorFeeProblemForChain(flags, optionChain);
+      if (creatorProblem) {
+        writeUsageFailure(ctx.deps, `${creatorProblem} ${USAGE13}`, ctx.json);
+        return 2;
+      }
+    }
+    try {
+      if (optionChain === "solana") {
+        if (!check2 || flags["--fee-wallet-multisig"] !== undefined || !isNonZeroEvmAddress(flags["--fee-wallet"] ?? "")) {
+          feeWallet = feeWalletSelection(flags);
+        }
+      } else {
+        hoodOptions = hoodGen2TopRequestFields(flags);
+      }
+    } catch (error) {
+      writeUsageFailure(ctx.deps, `${error.message}. ${USAGE13}`, ctx.json);
       return 2;
     }
     let image;
@@ -98508,12 +99198,8 @@ async function launch(args, ctx) {
     }
     let rules;
     if (!check2 && launchRulesGiven(flags)) {
-      if (hinted === "hood") {
-        writeUsageFailure(ctx.deps, `${LAUNCH_RULES_SOLANA_ONLY} ${USAGE13}`, ctx.json);
-        return 2;
-      }
       try {
-        rules = await launchRulesFor(ctx, flags);
+        rules = await launchRulesFor(ctx, flags, optionChain);
       } catch (error) {
         if (error instanceof TradingError)
           throw error;
@@ -98574,7 +99260,8 @@ async function launch(args, ctx) {
         retry,
         yes: parsed.booleans.has("--yes"),
         dryRun,
-        rules
+        rules,
+        hoodOptions
       });
     const wallet3 = await tradingWallet(ctx, key, flags["--wallet"] ?? "", "launch:write", hinted ?? "any");
     const chain2 = wallet3.chain === "evm" ? "hood" : "solana";
@@ -98583,10 +99270,8 @@ async function launch(args, ctx) {
     if (chain2 === "solana" && !dryRun && !feeWallet)
       notice(ctx.deps, "stderr", "warning", FEE_WALLET_DEFAULT_WARNING);
     const buy = launchBuy(flags, chain2);
-    if (chain2 === "hood" && (Object.keys(poolRequestFields(flags)).length || feeWalletGiven(flags)))
-      throw new TradingUsage("Pool fee and pool shape choices are Solana only, and so is --fee-wallet; a Hood launch cannot take them.");
-    if (chain2 === "hood" && launchRulesGiven(flags))
-      throw new TradingUsage(LAUNCH_RULES_SOLANA_ONLY);
+    if (chain2 === "hood" && Object.keys(poolRequestFields(flags)).length)
+      throw new TradingUsage("Pool fee and pool shape choices are Solana only; a Hood launch cannot take them.");
     const atomic = chain2 === "solana" && buy !== undefined;
     if (atomic)
       firstBuyCeiling(ctx, flags, buy);
@@ -98607,6 +99292,7 @@ async function launch(args, ctx) {
         imageChecked: uploaded.imageChecked,
         bannerChecked: uploaded.bannerChecked,
         rules,
+        hoodOptions,
         used
       });
     if (atomic)
@@ -98630,6 +99316,8 @@ async function launch(args, ctx) {
         buy,
         imageUrl,
         bannerUrl,
+        rules,
+        hoodOptions,
         used,
         yes: parsed.booleans.has("--yes")
       });
@@ -98802,6 +99490,7 @@ function hoodBody(args) {
   const quoteAsset = args.flags["--quote-asset"];
   return {
     ...launchFields(args),
+    ...args.hoodOptions,
     chain: "hood",
     buyAmount: args.buy ? args.buy.raw : 0,
     linkedWalletId: args.wallet.id,
@@ -98868,19 +99557,19 @@ function rulesBlock(answer2, chain2, flags) {
 `)}
 ` : "";
 }
-var LAUNCH_RULES_SOLANA_ONLY = "Launch rules (--open-in, --max-buy-per-wallet, --cap-window, --allowlist, --allowlist-window, --dev-buy-max) are only available on Solana launches.";
-async function launchRulesFor(ctx, flags) {
-  const quote = flags["--quote-asset"] ?? LAUNCH_DEFINITION2.defaultQuote.solana;
+async function launchRulesFor(ctx, flags, chain2 = "solana") {
+  const quote = (flags["--quote-asset"] ?? LAUNCH_DEFINITION2.defaultQuote[chain2]).toLowerCase();
   const decimals = LAUNCH_DEFINITION2.quoteDecimals[quote];
-  if (decimals === undefined || QUOTE_CHAIN[quote] !== "solana")
-    throw new Error(LAUNCH_RULES_SOLANA_ONLY);
-  const buy = launchBuy(flags, "solana");
-  const allowlist = flags["--allowlist"] !== undefined ? await readAllowlist(flags["--allowlist"]) : undefined;
+  if (decimals === undefined || QUOTE_CHAIN[quote] !== chain2)
+    throw new Error(`--quote-asset ${safeText(quote)} is not a ${chainName(chain2)} quote asset.`);
+  const buy = launchBuy(flags, chain2);
+  const allowlist = flags["--allowlist"] !== undefined ? await readAllowlist(flags["--allowlist"], chain2) : undefined;
   return launchRulesRequest(flags, {
+    chain: chain2,
     quote,
     decimals,
     buyRaw: buy ? BigInt(buy.raw) : 0n,
-    ceilingRaw: effectiveDevBuyCeiling(ctx, flags, quote),
+    ceilingRaw: chain2 === "solana" ? effectiveDevBuyCeiling(ctx, flags, quote) : null,
     ...allowlist ? { allowlist } : {}
   });
 }
@@ -98891,8 +99580,9 @@ async function dryRunLaunch(ctx, key, args) {
   const answer2 = await request(ctx, key, path, body).catch((error) => {
     throw buyRefusal(error);
   }).then((answered) => requireHideEcho(args.flags, answered));
+  const solanaFeeWallet = chain2 === "solana" ? feeWalletSelection(args.flags) : undefined;
   ctx.deps.stderr.write(`Dry run: nothing was built, signed or recorded, and launch id ${args.id} is unused.
-${previewLines(answer2, chain2, feeWalletSelection(args.flags))}`);
+${previewLines(answer2, chain2, solanaFeeWallet)}`);
   return printTradingResult(ctx, { ...answer2, clientTradeId: args.id, kind: "launch", ...args.used });
 }
 var DEV_BUY_CEILINGS = LAUNCH_DEFINITION2.buyLimits.defaults;
@@ -99131,8 +99821,8 @@ async function embeddedLaunch(ctx, key, args) {
   const buy = launchBuy(flags, chain2);
   if (buy && chain2 === "solana")
     firstBuyCeiling(ctx, flags, buy);
-  if (chain2 === "hood" && (Object.keys(poolRequestFields(flags)).length || feeWalletGiven(flags)))
-    throw new TradingUsage("Pool fee and pool shape choices are Solana only, and so is --fee-wallet; a Hood launch cannot take them.");
+  if (chain2 === "hood" && Object.keys(poolRequestFields(flags)).length)
+    throw new TradingUsage("Pool fee and pool shape choices are Solana only; a Hood launch cannot take them.");
   if (chain2 === "solana" && !args.dryRun && !feeWalletGiven(flags))
     notice(ctx.deps, "stderr", "warning", FEE_WALLET_DEFAULT_WARNING);
   const wallet3 = await embeddedLaunchWallet(ctx, key, chain2);
@@ -99155,19 +99845,20 @@ async function embeddedLaunch(ctx, key, args) {
     ...launchCurveFields(flags),
     ...launchMetadataFields(flags),
     ...poolRequestFields(flags),
-    ...feeWalletRequestFields(flags),
+    ...chain2 === "solana" ? feeWalletRequestFields(flags) : args.hoodOptions,
     ...args.rules ? { launchRules: args.rules } : {},
     ...hideBodyField(flags),
     ...buy ? { buyAmount: chain2 === "hood" || BigInt(buy.raw) > BigInt(Number.MAX_SAFE_INTEGER) ? buy.raw : Number(buy.raw) } : {}
   };
   const answer2 = requireHideEcho(flags, await request(ctx, key, "/api/v1/launch/headless/dry-run", body));
+  const solanaFeeWallet = chain2 === "solana" ? feeWalletSelection(flags) : undefined;
   let quote = {
     intent: `Launch ${flags["--name"]} (${flags["--symbol"]})${buy ? ` with a first buy of ${buy.display}` : ""} from the embedded wallet`,
     wallet: wallet3,
     venue: "curve launch (signed by Candle)",
     priceImpactPct: null,
     minimumReceived: "0 tokens (no first buy)",
-    ...chain2 === "solana" ? { feeWallet: feeWalletQuoteLine(feeWalletSelection(flags), feeWalletEchoOf(answer2)) } : {},
+    ...chain2 === "solana" ? { feeWallet: feeWalletQuoteLine(solanaFeeWallet, feeWalletEchoOf(answer2)) } : {},
     tokenRisks: []
   };
   if (buy && chain2 === "solana") {
@@ -99191,7 +99882,7 @@ async function embeddedLaunch(ctx, key, args) {
     if (buy)
       quote.minimumReceived = "not quoted (best-effort first buy after creation)";
   }
-  ctx.deps.stderr.write(previewLines(answer2, chain2, feeWalletSelection(flags)));
+  ctx.deps.stderr.write(previewLines(answer2, chain2, solanaFeeWallet));
   if (args.dryRun) {
     ctx.deps.stderr.write(`Dry run: nothing was built, signed or recorded, and launch id ${id} is unused.
 `);

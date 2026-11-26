@@ -191,3 +191,187 @@ describe("launchRules and allowlistProof", () => {
     expect((error as CandleApiError).status).toBe(404)
   })
 })
+
+describe("Hood generation 2 launch options (BE-4350)", () => {
+  const hoodGen2 = {
+    launchRules: {
+      openDelaySecs: 600,
+      maxBuyPerWalletRaw: "100000000000000000",
+      capWindowSecs: 3600,
+      allowlist: ["0x1111111111111111111111111111111111111111"],
+      allowlistWindowSecs: 1800,
+      devBuyMaxRaw: "50000000000000000",
+      snipeFeeStartBps: 1500,
+      snipeFeeDecaySecs: 300,
+    },
+    snipeExempt: ["0x2222222222222222222222222222222222222222"],
+    feeWallet: "0x3333333333333333333333333333333333333333",
+    creatorFeeBps: 150,
+    teamAllocation: {
+      recipient: "0x4444444444444444444444444444444444444444",
+      percent: 2.5,
+      cliffDays: 30,
+      vestingDays: 365,
+    },
+  } satisfies Partial<LaunchRequest>
+
+  test("Hood launch and dry-run send the five generation 2 options as top-level keys, never hoodGen2Options", async () => {
+    const { client, calls } = fixture([
+      { success: true, dryRun: true },
+      { success: true, mint: "0x5555555555555555555555555555555555555555" },
+      { page: [{ ...row, chain: "evm" }], isDone: true },
+      { success: true, dryRun: true },
+    ])
+    await client.dryRunLaunch({ ...fields, chain: "hood", dexVersion: "v4", ...hoodGen2 })
+    await client.launch({ ...fields, chain: "hood", dexVersion: "v4", ...hoodGen2 })
+    await client.dryRunLaunch({ ...fields, wallet: "spider-01", dexVersion: "v4", ...hoodGen2 })
+
+    expect(calls[0]?.url).toEndWith("/launch/headless/dry-run")
+    expect(calls[0]?.body).toEqual({ ...fields, chain: "hood", dexVersion: "v4", ...hoodGen2 })
+    expect(calls[0]?.body).not.toHaveProperty("hoodGen2Options")
+
+    expect(calls[1]?.url).toEndWith("/launch/headless")
+    expect(calls[1]?.body).toEqual({ ...fields, chain: "hood", dexVersion: "v4", ...hoodGen2 })
+    expect(calls[1]?.body).not.toHaveProperty("hoodGen2Options")
+
+    expect(calls[3]?.url).toEndWith("/launch/self/dry-run")
+    expect(calls[3]?.body).toEqual({
+      ...fields,
+      chain: "hood",
+      dexVersion: "v4",
+      linkedWalletId: row.id,
+      ...hoodGen2,
+    })
+    expect(calls[3]?.body).not.toHaveProperty("hoodGen2Options")
+  })
+
+  test("Hood launch without gen 2 options and Solana launch keep their wire bodies unchanged", async () => {
+    const { client, calls } = fixture()
+    await client.launch({ ...fields, chain: "hood", dexVersion: "v4" })
+    expect(calls[0]?.body).toEqual({ ...fields, chain: "hood", dexVersion: "v4" })
+    for (const key of [
+      "launchRules",
+      "snipeExempt",
+      "feeWallet",
+      "creatorFeeBps",
+      "teamAllocation",
+      "hoodGen2Options",
+    ]) {
+      expect(calls[0]?.body).not.toHaveProperty(key)
+    }
+
+    await client.launch({ ...fields, mode: "exp-a", creatorFeeBps: 100 })
+    expect(calls[1]?.body).toEqual({ ...fields, mode: "exp-a", creatorFeeBps: 100 })
+
+    await client.launch({ ...fields, mode: "exp-a", creatorFeeBps: null })
+    expect(calls[2]?.body).toEqual({ ...fields, mode: "exp-a", creatorFeeBps: null })
+  })
+
+  test.each([
+    [{ teamAllocation: hoodGen2.teamAllocation }, "teamAllocation"],
+    [{ teamAllocation: null }, "teamAllocation"],
+    [{ snipeExempt: hoodGen2.snipeExempt }, "snipeExempt"],
+    [{ snipeExempt: null }, "snipeExempt"],
+    [{ launchRules: { snipeFeeStartBps: 500, snipeFeeDecaySecs: 60 } }, "launchRules.snipeFeeStartBps"],
+    [{ launchRules: { openDelaySecs: 60, snipeFeeStartBps: null } }, "launchRules.snipeFeeStartBps"],
+    [{ launchRules: { snipeFeeDecaySecs: 60 } }, "launchRules.snipeFeeDecaySecs"],
+    [{ launchRules: { openDelaySecs: 60, snipeFeeDecaySecs: null } }, "launchRules.snipeFeeDecaySecs"],
+    [{ mode: "exp-a", creatorFeeBps: 150 }, "creatorFeeBps"],
+    [{ chain: "hood", dexVersion: "v4", hoodGen2Options: {} }, "hoodGen2Options"],
+    [{ chain: "hood", dexVersion: "v4", launchRules: { hoodGen2Options: {} } }, "launchRules.hoodGen2Options"],
+    [
+      {
+        chain: "hood",
+        dexVersion: "v4",
+        teamAllocation: { ...hoodGen2.teamAllocation, extra: 1 },
+      },
+      "teamAllocation.extra",
+    ],
+    [{ chain: "hood", dexVersion: "v4", creatorFeeBps: -1 }, "creatorFeeBps"],
+    [{ chain: "hood", dexVersion: "v4", creatorFeeBps: 1.5 }, "creatorFeeBps"],
+    [{ chain: "hood", dexVersion: "v4", creatorFeeBps: 9900 }, "creatorFeeBps"],
+    [
+      {
+        chain: "hood",
+        dexVersion: "v4",
+        creatorFeeBps: 8500,
+        launchRules: { snipeFeeStartBps: 1400, snipeFeeDecaySecs: 60 },
+      },
+      "creatorFeeBps",
+    ],
+  ] as const)("refuses %j client-side on %s before any request", async (extra, expectedField) => {
+    for (const method of ["launch", "dryRunLaunch", "launchAsync"] as const) {
+      const { client, calls } = fixture()
+      const error = await client[method]({ ...fields, ...(extra as Record<string, unknown>) } as LaunchRequest).catch(
+        (caught: unknown) => caught,
+      )
+      expect(error).toBeInstanceOf(CandleApiError)
+      expect((error as CandleApiError).code).toBe("VALIDATION_FAILED")
+      expect((error as CandleApiError).field).toBe(expectedField)
+      expect(calls).toHaveLength(0)
+    }
+  })
+
+  test("Hood creatorFeeBps accepts 8499 beside a 1400 bps sniper fee (100 + 8499 + 1400 = 9999 < 10000)", async () => {
+    const { client, calls } = fixture()
+    await client.dryRunLaunch({
+      ...fields,
+      chain: "hood",
+      dexVersion: "v4",
+      creatorFeeBps: 8499,
+      launchRules: { snipeFeeStartBps: 1400, snipeFeeDecaySecs: 60 },
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.body).toMatchObject({
+      creatorFeeBps: 8499,
+      launchRules: { snipeFeeStartBps: 1400, snipeFeeDecaySecs: 60 },
+    })
+  })
+
+  test("Hood accepts explicit empty snipeExempt, safe-integer raw amount fields, and null optional numeric fields", async () => {
+    const { client, calls } = fixture()
+    await client.dryRunLaunch({
+      ...fields,
+      chain: "hood",
+      dexVersion: "v4",
+      creatorFeeBps: null,
+      snipeExempt: [],
+      launchRules: {
+        openDelaySecs: 60,
+        maxBuyPerWalletRaw: 100_000,
+        capWindowSecs: 300,
+        devBuyMaxRaw: 50_000,
+        snipeFeeStartBps: null,
+        snipeFeeDecaySecs: null,
+      },
+      teamAllocation: {
+        recipient: "0x4444444444444444444444444444444444444444",
+        percent: 2,
+        cliffDays: 30,
+        vestingDays: null,
+      },
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.body).toEqual({
+      ...fields,
+      chain: "hood",
+      dexVersion: "v4",
+      creatorFeeBps: null,
+      snipeExempt: [],
+      launchRules: {
+        openDelaySecs: 60,
+        maxBuyPerWalletRaw: 100_000,
+        capWindowSecs: 300,
+        devBuyMaxRaw: 50_000,
+        snipeFeeStartBps: null,
+        snipeFeeDecaySecs: null,
+      },
+      teamAllocation: {
+        recipient: "0x4444444444444444444444444444444444444444",
+        percent: 2,
+        cliffDays: 30,
+        vestingDays: null,
+      },
+    })
+  })
+})

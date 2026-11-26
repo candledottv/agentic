@@ -5556,7 +5556,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.6.40";
+export declare const SDK_VERSION = "0.6.41";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 export {};

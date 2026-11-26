@@ -11,6 +11,7 @@ import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, 
 import { lstat, open, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { z } from "zod"
 import {
   configuredImageDir,
   type ImageFs,
@@ -136,7 +137,9 @@ function launchTools(env: Record<string, string | undefined> | undefined, fetch:
   const tools = new Map<string, Registered>()
   const server = {
     registerTool(name: string, config: Registered["config"], handler: Handler) {
-      tools.set(name, { config, handler })
+      const raw = config.inputSchema as unknown
+      const inputSchema = raw instanceof z.ZodObject ? (raw.shape as Record<string, unknown>) : config.inputSchema
+      tools.set(name, { config: { ...config, inputSchema }, handler })
     },
   } as unknown as Parameters<typeof registerToolSubset>[0]
   registerToolSubset(server, {

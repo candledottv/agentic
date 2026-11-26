@@ -18,7 +18,11 @@ import { createCapture, createFakeStore, createTestDeps } from "../test-support"
 
 const WALLET = Keypair.generate().publicKey.toBase58()
 const EMBEDDED = Keypair.generate().publicKey.toBase58()
+const HOOD_WALLET = "0x1111111111111111111111111111111111111111"
+const HOOD_EMBEDDED = "0x2222222222222222222222222222222222222222"
 const wallets = (count: number) => Array.from({ length: count }, () => new PublicKey(randomBytes(32)).toBase58())
+const evmWallets = (count: number) =>
+  Array.from({ length: count }, (_, index) => `0x${(index + 1).toString(16).padStart(40, "0")}`)
 
 /** The summary a dry run answers for a request with rules (spec 4.1), resolved at a fixed clock. */
 const SUMMARY = {
@@ -61,36 +65,55 @@ async function fixture() {
             allowLaunch: true,
             privyWalletId: "privy",
           },
+          {
+            id: "hood-wallet",
+            address: HOOD_WALLET,
+            label: "hood-tee",
+            chain: "evm",
+            active: true,
+            allowLaunch: true,
+            privyWalletId: "privy-hood",
+          },
         ],
         isDone: true,
       })
     if (path === "/api/v1/agent/wallets/embedded")
-      return ok({ embeddedWalletPermission: "allowed", wallets: { solana: { address: EMBEDDED } } })
+      return ok({
+        embeddedWalletPermission: "allowed",
+        wallets: { solana: { address: EMBEDDED }, evm: { address: HOOD_EMBEDDED } },
+      })
     if (path === "/api/v1/launch/self/dry-run" || path === "/api/v1/launch/headless/dry-run")
       return ok({
         success: true,
         dryRun: true,
-        launchWallet: WALLET,
-        resolved: { chain: "solana", quoteAsset: body.quoteAsset ?? "sol", mode: "open" },
+        launchWallet: body.chain === "hood" ? HOOD_WALLET : WALLET,
+        resolved: {
+          chain: body.chain ?? "solana",
+          quoteAsset: body.quoteAsset ?? (body.chain === "hood" ? "eth" : "sol"),
+          mode: "open",
+        },
         ...(body.launchRules ? { launchRules: SUMMARY } : {}),
       })
+    if (path === "/api/v1/launch/self/build") return ok({ success: true, built: true })
+    if (path === "/api/v1/launch/headless")
+      return ok({ success: true, mint: "0x9999999999999999999999999999999999999999", links: {} })
     if (path.startsWith("/api/v1/launch/headless/jobs/"))
       return ok({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, 404)
     throw new Error(`Unexpected ${path}`)
   }) as typeof fetch
   const stdout = createCapture()
   const stderr = createCapture()
+  const signer = pemToStoredSigner(
+    generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+  )
   const deps = createTestDeps({
     fetch: fetcher,
     env: { CANDLE_CONFIG_DIR: dir, CANDLE_API_KEY: "bound-key", CANDLE_SOLANA_RPC_URL: "http://localhost/rpc" },
     stdout,
     stderr,
     store: createFakeStore({
-      wallet_signer_wallet: pemToStoredSigner(
-        generateKeyPairSync("ec", { namedCurve: "P-256" })
-          .privateKey.export({ type: "pkcs8", format: "pem" })
-          .toString(),
-      ),
+      wallet_signer_wallet: signer,
+      "wallet_signer_hood-wallet": signer,
     }),
     promptLine: async () => "y",
   })
@@ -362,11 +385,301 @@ describe("BE-2794: out-of-range values are refused before any request, in 3.3's 
     expect(missing.text).toContain("could not be read as a file")
   })
 
-  test("rules are Solana only: a Hood quote asset is refused", async () => {
-    const r = await refused(["--quote-asset", "eth", "--dex-version", "v4", "--open-in", "1h"])
-    expect(r.code).toBe(2)
-    expect(r.paths).toEqual([])
-    expect(r.text).toContain("are only available on Solana launches")
+  test("BE-4350: Hood generation 2 options travel as top-level wire keys and Hood-only flags refuse on Solana", async () => {
+    const [allowAddr] = evmWallets(1)
+    const exemptAddr = "0x3333333333333333333333333333333333333333"
+    const feeAddr = "0x4444444444444444444444444444444444444444"
+    const teamAddr = "0x5555555555555555555555555555555555555555"
+
+    const makeFlags = (allowPath: string) => [
+      "--dex-version",
+      "v4",
+      "--open-in",
+      "10m",
+      "--max-buy-per-wallet",
+      "0.01",
+      "--cap-window",
+      "1h",
+      "--allowlist",
+      allowPath,
+      "--allowlist-window",
+      "30m",
+      "--dev-buy-max",
+      "0.005",
+      "--snipe-fee-start-bps",
+      "1500",
+      "--snipe-fee-decay",
+      "5m",
+      "--snipe-exempt",
+      exemptAddr,
+      "--fee-wallet",
+      feeAddr,
+      "--creator-fee-bps",
+      "150",
+      "--team-recipient",
+      teamAddr,
+      "--team-percent",
+      "2.5",
+      "--team-cliff-days",
+      "30",
+      "--team-vesting-days",
+      "365",
+    ]
+    const expectedGen2 = {
+      launchRules: {
+        openDelaySecs: 600,
+        maxBuyPerWalletRaw: "10000000000000000",
+        capWindowSecs: 3_600,
+        allowlist: [allowAddr],
+        allowlistWindowSecs: 1_800,
+        devBuyMaxRaw: "5000000000000000",
+        snipeFeeStartBps: 1_500,
+        snipeFeeDecaySecs: 300,
+      },
+      snipeExempt: [exemptAddr],
+      feeWallet: feeAddr,
+      creatorFeeBps: 150,
+      teamAllocation: {
+        recipient: teamAddr,
+        percent: 2.5,
+        cliffDays: 30,
+        vestingDays: 365,
+      },
+    }
+
+    // 1. TEE --dry-run -> /api/v1/launch/self/dry-run
+    const teeDry = await fixture()
+    expect(
+      await run([...base("hood-tee"), ...makeFlags(await teeDry.file("allow.txt", `${allowAddr}\n`))], teeDry.deps),
+    ).toBe(0)
+    expect(teeDry.dryRunBody()).toMatchObject(expectedGen2)
+    expect(teeDry.dryRunBody()).not.toHaveProperty("hoodGen2Options")
+
+    // 2. TEE live -> /api/v1/launch/self/build, and Embedded live -> /headless/dry-run + /headless
+    for (const [wallet, expectedPaths] of [
+      ["hood-tee", ["/api/v1/launch/self/build"]],
+      ["embedded", ["/api/v1/launch/headless/dry-run", "/api/v1/launch/headless"]],
+    ] as const) {
+      const f = await fixture()
+      const allowPath = await f.file("hood-allow.txt", `${allowAddr}\n`)
+      await run(
+        [
+          "launch",
+          "--name",
+          "Hood Gen2",
+          "--symbol",
+          "HG2",
+          "--image-url",
+          "https://example.test/image.png",
+          "--wallet",
+          wallet,
+          "--client-trade-id",
+          "hood-launch-1",
+          ...makeFlags(allowPath),
+          "--yes",
+          "--json",
+        ],
+        f.deps,
+      )
+      for (const path of expectedPaths) {
+        const body = f.calls.find((call) => call.path === path)?.body ?? {}
+        expect(body).toMatchObject(expectedGen2)
+        expect(body).not.toHaveProperty("hoodGen2Options")
+      }
+    }
+
+    // Hood launch with no gen 2 options sends none of the five keys.
+    const plainHood = await fixture()
+    expect(await run([...base("hood-tee"), "--dex-version", "v4"], plainHood.deps)).toBe(0)
+    for (const key of [
+      "launchRules",
+      "snipeExempt",
+      "feeWallet",
+      "creatorFeeBps",
+      "teamAllocation",
+      "hoodGen2Options",
+    ]) {
+      expect(plainHood.dryRunBody()).not.toHaveProperty(key)
+    }
+
+    // Hood allowlist supports > 4,096 up to 10,000 EVM addresses; 10,001 is refused.
+    const bigHood = await fixture()
+    const list5000 = await bigHood.file("fivek.txt", evmWallets(5_000).join("\n"))
+    expect(
+      await run(
+        [...base("hood-tee"), "--dex-version", "v4", "--allowlist", list5000, "--allowlist-window", "1h"],
+        bigHood.deps,
+      ),
+    ).toBe(0)
+    expect((bigHood.dryRunBody().launchRules as { allowlist: string[] }).allowlist).toHaveLength(5_000)
+
+    const overHood = await fixture()
+    const list10001 = await overHood.file("over10k.txt", evmWallets(10_001).join("\n"))
+    expect(
+      await run(
+        [...base("hood-tee"), "--dex-version", "v4", "--allowlist", list10001, "--allowlist-window", "1h"],
+        overHood.deps,
+      ),
+    ).toBe(2)
+    expect(overHood.paths()).toEqual([])
+
+    // Team vesting defaults to 0 days when omitted on Hood.
+    const cliffOnly = await fixture()
+    expect(
+      await run(
+        [
+          ...base("hood-tee"),
+          "--dex-version",
+          "v4",
+          "--team-recipient",
+          teamAddr,
+          "--team-percent",
+          "1.25",
+          "--team-cliff-days",
+          "30",
+        ],
+        cliffOnly.deps,
+      ),
+    ).toBe(0)
+    expect(cliffOnly.dryRunBody().teamAllocation).toEqual({
+      recipient: teamAddr,
+      percent: 1.25,
+      cliffDays: 30,
+      vestingDays: 0,
+    })
+
+    const nullVesting = await fixture()
+    expect(
+      await run(
+        [
+          ...base("hood-tee"),
+          "--dex-version",
+          "v4",
+          "--team-recipient",
+          teamAddr,
+          "--team-percent",
+          "1.25",
+          "--team-cliff-days",
+          "30",
+          "--team-vesting-days",
+          "null",
+        ],
+        nullVesting.deps,
+      ),
+    ).toBe(0)
+    expect(nullVesting.dryRunBody().teamAllocation).toEqual({
+      recipient: teamAddr,
+      percent: 1.25,
+      cliffDays: 30,
+      vestingDays: 0,
+    })
+
+    // Client-side refusal of Hood-only flags and arbitrary creatorFeeBps on Solana before any request.
+    const solanaRefusals: [string[], string][] = [
+      [
+        ["--snipe-fee-start-bps", "500", "--snipe-fee-decay", "1m"],
+        "--snipe-fee-start-bps is only available on Hood launches.",
+      ],
+      [["--snipe-exempt", exemptAddr], "--snipe-exempt is only available on Hood launches."],
+      [
+        ["--team-recipient", teamAddr, "--team-percent", "2", "--team-cliff-days", "30"],
+        "--team-recipient is only available on Hood launches.",
+      ],
+      [["--mode", "exp-a", "--creator-fee-bps", "150"], "--creator-fee-bps takes 0, 100, 200."],
+    ]
+    for (const [extra, message] of solanaRefusals) {
+      const r = await refused(extra)
+      expect(r.code).toBe(2)
+      expect(r.paths).toEqual([])
+      expect(r.text).toContain(message)
+    }
+
+    // --snipe-exempt accepts explicit empty "" (0 addresses) and caps at 32 distinct non-zero 0x addresses; 33 is refused.
+    const emptyExempt = await fixture()
+    expect(await run([...base("hood-tee"), "--dex-version", "v4", "--snipe-exempt", ""], emptyExempt.deps)).toBe(0)
+    expect(emptyExempt.dryRunBody().snipeExempt).toEqual([])
+
+    const overExempt = await fixture()
+    expect(
+      await run(
+        [...base("hood-tee"), "--dex-version", "v4", "--snipe-exempt", evmWallets(33).join(",")],
+        overExempt.deps,
+      ),
+    ).toBe(2)
+    expect(overExempt.paths()).toEqual([])
+
+    // Mixed-case non-EIP-55 EVM addresses are accepted and checksum-normalized on Hood options and allowlists.
+    const mixedNonChecksumA = "0xAbCd111111111111111111111111111111111111"
+    const mixedNonChecksumB = "0xdEaD222222222222222222222222222222222222"
+    const mixedNonChecksumC = "0xCaFe333333333333333333333333333333333333"
+    const mixedNonChecksumD = "0xbEeF444444444444444444444444444444444444"
+    const mixedHood = await fixture()
+    const mixedAllowPath = await mixedHood.file("mixed-allow.txt", `${mixedNonChecksumA}\n`)
+    expect(
+      await run(
+        [
+          ...base("hood-tee"),
+          "--dex-version",
+          "v4",
+          "--allowlist",
+          mixedAllowPath,
+          "--allowlist-window",
+          "30m",
+          "--snipe-exempt",
+          mixedNonChecksumB,
+          "--fee-wallet",
+          mixedNonChecksumC,
+          "--creator-fee-bps",
+          "100",
+          "--team-recipient",
+          mixedNonChecksumD,
+          "--team-percent",
+          "1",
+          "--team-cliff-days",
+          "30",
+        ],
+        mixedHood.deps,
+      ),
+    ).toBe(0)
+    const mixedBody = mixedHood.dryRunBody()
+    expect((mixedBody.launchRules as { allowlist: string[] }).allowlist[0]?.toLowerCase()).toBe(
+      mixedNonChecksumA.toLowerCase(),
+    )
+    expect((mixedBody.snipeExempt as string[])[0]?.toLowerCase()).toBe(mixedNonChecksumB.toLowerCase())
+    expect((mixedBody.feeWallet as string).toLowerCase()).toBe(mixedNonChecksumC.toLowerCase())
+    expect((mixedBody.teamAllocation as { recipient: string }).recipient.toLowerCase()).toBe(
+      mixedNonChecksumD.toLowerCase(),
+    )
+
+    // --fee-wallet-multisig stays Solana-only and is refused on Hood before any request.
+    const multisigOnHood = await fixture()
+    expect(
+      await run(
+        [...base("hood-tee"), "--dex-version", "v4", "--fee-wallet", feeAddr, "--fee-wallet-multisig", WALLET],
+        multisigOnHood.deps,
+      ),
+    ).toBe(2)
+    expect(multisigOnHood.paths()).toEqual([])
+
+    // Hood combined-rate guard: 100 + 8500 + 1400 = 10000 is refused before any request.
+    const overSum = await fixture()
+    expect(
+      await run(
+        [
+          ...base("hood-tee"),
+          "--dex-version",
+          "v4",
+          "--creator-fee-bps",
+          "8500",
+          "--snipe-fee-start-bps",
+          "1400",
+          "--snipe-fee-decay",
+          "1m",
+        ],
+        overSum.deps,
+      ),
+    ).toBe(2)
+    expect(overSum.paths()).toEqual([])
   })
 })
 

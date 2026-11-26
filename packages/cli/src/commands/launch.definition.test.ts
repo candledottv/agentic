@@ -26,7 +26,8 @@ describe("CLI launch definition conformance in both directions", () => {
       command +
       readFileSync(resolve(import.meta.dir, "pool-options.ts"), "utf8") +
       readFileSync(resolve(import.meta.dir, "../fee-wallet.ts"), "utf8") +
-      readFileSync(resolve(import.meta.dir, "../launch-rules.ts"), "utf8")
+      readFileSync(resolve(import.meta.dir, "../launch-rules.ts"), "utf8") +
+      readFileSync(resolve(import.meta.dir, "../hood-launch-options.ts"), "utf8")
     const handled = sorted(
       [...handlers.matchAll(/flags\["(--[a-z-]+)"\]/g)].flatMap((match) => (match[1] ? [match[1]] : [])),
     )

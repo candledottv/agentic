@@ -9,9 +9,14 @@ import {
 } from "./launch-preflight"
 import type { FetchLike } from "./orchestrate"
 
+const HOOD_GEN2_WRAPPER_MESSAGE =
+  "Send Hood generation 2 options as top-level fields (launchRules, snipeExempt, creatorFeeBps, teamAllocation), not hoodGen2Options."
+
 /** Runs before image handling and orchestration. Refusals preserve the server's full body. */
 export async function launchCheck(args: Record<string, unknown>, cfg: RequestConfig, fetch: FetchLike) {
   try {
+    if ("hoodGen2Options" in args && args.hoodGen2Options !== undefined)
+      throw new LaunchCheckError("VALIDATION_FAILED", HOOD_GEN2_WRAPPER_MESSAGE, "hoodGen2Options")
     if (!cfg.apiKey) throw new LaunchCheckError("UNAUTHORIZED", "An API key is required for launch checks.")
     const input = args as unknown as LaunchCheckRequest
     const path = launchCheckPath(input)
@@ -53,6 +58,8 @@ export function launchControlError(error: unknown) {
 
 /** Strip controls and map fixed-pair aliases before any upload, conversion or POST. */
 export function launchExecutionArgs(args: Record<string, unknown>): Record<string, unknown> {
+  if ("hoodGen2Options" in args && args.hoodGen2Options !== undefined)
+    throw new LaunchCheckError("VALIDATION_FAILED", HOOD_GEN2_WRAPPER_MESSAGE, "hoodGen2Options")
   const { quote, check: _check, ...body } = args
   const quoteAsset = fixedLaunchQuote({ quote, quoteAsset: args.quoteAsset, chain: args.chain } as Parameters<
     typeof fixedLaunchQuote

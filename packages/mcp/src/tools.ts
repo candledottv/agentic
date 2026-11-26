@@ -77,6 +77,7 @@ import { executeLabTool, LAB_DESCRIPTIONS, type LabToolName, labShapes } from ".
 import { launchCheck, launchControlError, launchExecutionArgs } from "./launch-check"
 import { LaunchCheckError } from "./launch-preflight"
 import {
+  chainLaunchOptionsRefusal,
   checkableLaunchShape,
   LAUNCH_SHARED_SENTENCES,
   launchAndSeedShape,
@@ -347,6 +348,8 @@ export const PROFILE_EDIT_TOOL_NAMES = [
 ] as const satisfies readonly ToolName[]
 const isProfileEditTool = (name: ToolName): name is (typeof PROFILE_EDIT_TOOL_NAMES)[number] =>
   (PROFILE_EDIT_TOOL_NAMES as readonly ToolName[]).includes(name)
+const isLaunchTool = (name: ToolName): name is "candle_launch_token" | "candle_launch_and_seed" =>
+  name === "candle_launch_token" || name === "candle_launch_and_seed"
 
 /**
  * Resolves the CANDLE_MCP_TOOLS allowlist (CLI P0 plan, Task 2): a comma-separated subset of
@@ -2048,11 +2051,28 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         ? z.object(definition.inputSchema, { errorMap: signalRecordValidationErrorMap }).strict()
         : isProfileEditTool(name) || isTokenPageTool(name)
           ? z.object(definition.inputSchema).strict()
-          : definition.inputSchema
+          : isLaunchTool(name)
+            ? // BE-4350: prevent McpServer from stripping unknown top-level keys (such as a misplaced
+              // hoodGen2Options wrapper) before the launch handler refuses them with VALIDATION_FAILED.
+              z.object(definition.inputSchema).passthrough()
+            : definition.inputSchema
+    const wrappedHandler =
+      isLaunchTool(name) && !imageDir
+        ? (args: z.infer<z.ZodObject<Shape>>, extra?: unknown) => {
+            // Over MCP transport with no local image directory (such as the hosted server), local
+            // path keys are not part of the URL-only schema and are dropped before the handler runs;
+            // direct 1-arg handler calls in unit tests still reach resolveLaunchImage's refusal.
+            if (extra !== undefined && args && typeof args === "object") {
+              const { imagePath: _ip, bannerPath: _bp, ...rest } = args as Record<string, unknown>
+              return handler(rest as z.infer<z.ZodObject<Shape>>)
+            }
+            return handler(args)
+          }
+        : handler
     const registered = (server.registerTool as (...a: unknown[]) => RegisteredTool)(
       name,
       { ...definition, inputSchema, ...options.metadata?.[name] },
-      handler,
+      wrappedHandler,
     )
     if (isProfileEditTool(name) && registered) {
       const tools = localProfileTools.get(server) ?? new Map<ToolName, RegisteredTool>()
@@ -2261,18 +2281,33 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       ) as typeof localLaunchTokenShape,
     },
     async (args) => {
-      if ("check" in args && args.check === true) return launchCheck(args, getConfig(), doFetch)
+      if ("check" in args && args.check === true) {
+        if ("hoodGen2Options" in args && args.hoodGen2Options !== undefined)
+          return launchCheck(args, getConfig(), doFetch)
+        const checkParsed = z.object(checkableLaunchShape(localLaunchTokenShape)).strict().safeParse(args)
+        if (!checkParsed.success)
+          return launchControlError(new LaunchCheckError("VALIDATION_FAILED", checkParsed.error.message))
+        const checkChainProblem = chainLaunchOptionsRefusal(args as Record<string, unknown>)
+        if (checkChainProblem)
+          return { content: [{ type: "text", text: imageRefusalBody(checkChainProblem) }], isError: true }
+        return launchCheck(args, getConfig(), doFetch)
+      }
       try {
         args = launchExecutionArgs(args)
         if (!imageDir && args.imageUrl === undefined && !("imagePath" in args))
           return launchControlError(new LaunchCheckError("VALIDATION_FAILED", "imageUrl is required for a launch."))
         const parsed = z
-          .object(imageDir ? localLaunchTokenShape : launchTokenShape)
-          .omit({ imageUrl: true })
+          .object(localLaunchTokenShape)
+          .extend({ imageUrl: z.string().optional() })
+          .strict()
           .safeParse(args)
         if (!parsed.success) return launchControlError(new LaunchCheckError("VALIDATION_FAILED", parsed.error.message))
       } catch (error) {
         return launchControlError(error)
+      }
+      const chainProblem = chainLaunchOptionsRefusal(args as Record<string, unknown>)
+      if (chainProblem) {
+        return { content: [{ type: "text", text: imageRefusalBody(chainProblem) }], isError: true }
       }
       const socialsProblem = socialsRefusal("socials" in args ? (args as { socials?: unknown }).socials : undefined)
       if (socialsProblem) {
@@ -3439,14 +3474,25 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       ) as typeof localLaunchAndSeedShape,
     },
     async (args) => {
-      if ("check" in args && args.check === true) return launchCheck(args, getConfig(), doFetch)
+      if ("check" in args && args.check === true) {
+        if ("hoodGen2Options" in args && args.hoodGen2Options !== undefined)
+          return launchCheck(args, getConfig(), doFetch)
+        const checkParsed = z.object(checkableLaunchShape(localLaunchAndSeedShape)).strict().safeParse(args)
+        if (!checkParsed.success)
+          return launchControlError(new LaunchCheckError("VALIDATION_FAILED", checkParsed.error.message))
+        const checkChainProblem = chainLaunchOptionsRefusal(args as Record<string, unknown>)
+        if (checkChainProblem)
+          return { content: [{ type: "text", text: imageRefusalBody(checkChainProblem) }], isError: true }
+        return launchCheck(args, getConfig(), doFetch)
+      }
       try {
         args = launchExecutionArgs(args)
         if (!imageDir && args.imageUrl === undefined && !("imagePath" in args))
           return launchControlError(new LaunchCheckError("VALIDATION_FAILED", "imageUrl is required for a launch."))
         const parsed = z
-          .object(imageDir ? localLaunchAndSeedShape : launchAndSeedShape)
-          .omit({ imageUrl: true })
+          .object(localLaunchAndSeedShape)
+          .extend({ imageUrl: z.string().optional() })
+          .strict()
           .safeParse(args)
         if (!parsed.success) return launchControlError(new LaunchCheckError("VALIDATION_FAILED", parsed.error.message))
       } catch (error) {

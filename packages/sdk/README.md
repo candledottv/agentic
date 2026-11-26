@@ -248,6 +248,18 @@ open), and `devBuyMaxRaw` (only with a delay). The dry run and the build answer 
 caller that builds `register_buyer` itself; Candle's own buys attach it. See
 [Launch rules](https://docs.candle.tv/developers/headless-launch#launch-rules-solana).
 
+On Hood, where the server has `HOOD_GEN2_LAUNCH_ENABLED` on, `launch()` and `dryRunLaunch()` send
+the generation 2 options as top-level request keys (never nested under `hoodGen2Options`):
+`launchRules` (the same window and raw-unit fields with an EVM allowlist of 1 to 10,000 `0x`
+addresses, plus `snipeFeeStartBps` 0 to 2500 paired with `snipeFeeDecaySecs` 0 to 600),
+`snipeExempt` (0 to 32 distinct non-zero `0x` addresses), `feeWallet` (a non-zero `0x` EOA or Safe
+address; `feeWalletMultisig` stays Solana-only), `creatorFeeBps` (whole integer 0 to 9999 with
+`100 + creatorFeeBps + snipeFeeStartBps < 10000`), and `teamAllocation` (`{ recipient, percent,
+cliffDays, vestingDays }`, `percent` above 0 to 5 with at most 2 decimals, `cliffDays` 30 to 3650,
+`vestingDays` 0 to 3650). Solana launches keep `creatorFeeBps` at `0 | 100 | 200` and refuse the
+Hood-only fields locally before any request. See
+[Hood generation 2 launch options](https://docs.candle.tv/developers/headless-launch#hood-generation-2-launch-options).
+
 Embedded launches use `/launch/headless` with or without a buy. TEE launches use `/launch/self/build`
 and the existing sign/broadcast/confirm flow; a Solana TEE buy signs the returned bundle and sends
 it to `/launch/atomic/submit`. Dry runs use the selected family's `/dry-run`. Existing server

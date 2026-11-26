@@ -29,7 +29,7 @@ import type { RequestConfig } from "./client"
 import { decimalToRaw, defaultQuoteId, percentOfBalance, QUOTE_DECIMALS } from "./convert"
 import { hideEchoed, hideField, hideNotConfirmedMessage, hideUnsupportedByDryRunMessage, isHideFlag } from "./hide"
 import { checkedFields, type ImageFs, imageRefusalBody, resolveLaunchImage, uploadedFields } from "./image"
-import { socialsRefusal } from "./launch-schema"
+import { chainLaunchOptionsRefusal, socialsRefusal } from "./launch-schema"
 import { requestAddressChain } from "./request-chain"
 import { noteVersionHeaders, updateAvailable } from "./update-notice"
 
@@ -586,8 +586,12 @@ export interface LaunchAndSeedArgs {
   poolFee?: { tier: 25 | 50 | 100 } | { startBps: number; endBps: 25 | 50 | 100; minutes: number }
   poolOpen?: "legacy" | "curve_price"
   expPoolShape?: "floor" | "full_range"
-  /** BE-2794: Solana launch rules in seconds and raw units; forwarded as given. See `launchTokenShape.launchRules`. */
+  /** BE-2794 / BE-4350: launch rules in seconds and raw units; forwarded as given. See `launchTokenShape.launchRules`. */
   launchRules?: Record<string, unknown>
+  /** BE-4350: Hood generation 2 options; forwarded as top-level keys on `chain: "hood"`. */
+  snipeExempt?: string[]
+  creatorFeeBps?: number | null
+  teamAllocation?: Record<string, unknown>
   dexVersion?: string | null
   description?: string
   socials?: Record<string, string>
@@ -616,6 +620,8 @@ export async function executeLaunchAndSeed(
 ): Promise<ToolText> {
   const apiKey = requireApiKey(cfg)
   const clientLaunchId = args.clientLaunchId ?? randomUUID()
+  const chainProblem = chainLaunchOptionsRefusal(args as unknown as Record<string, unknown>)
+  if (chainProblem) return { text: imageRefusalBody(chainProblem, { clientLaunchId }), isError: true }
   const socialsProblem = socialsRefusal(args.socials)
   if (socialsProblem) return { text: imageRefusalBody(socialsProblem, { clientLaunchId }), isError: true }
   // buyAmount is destructured off and never forwarded: see LaunchAndSeedArgs.buyAmount.

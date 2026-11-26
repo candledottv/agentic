@@ -36,6 +36,8 @@ const requestKeys = {
   feeWalletMultisig: true,
   buy: true,
   launchRules: true,
+  snipeExempt: true,
+  teamAllocation: true,
   buyAmount: true,
 } satisfies Record<keyof LaunchRequest, true>
 

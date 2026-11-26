@@ -890,7 +890,10 @@ function toolsWith(names: readonly ToolName[], doFetch: FetchLike, extra: { embe
       definition: { inputSchema: Record<string, { description?: string }> },
       handler: (args: Record<string, unknown>) => Promise<Result>,
     ) {
-      tools.set(name, { inputSchema: definition.inputSchema, handler })
+      const raw = definition.inputSchema as unknown
+      const inputSchema =
+        raw instanceof z.ZodObject ? (raw.shape as Record<string, { description?: string }>) : definition.inputSchema
+      tools.set(name, { inputSchema, handler })
     },
   } as unknown as Parameters<typeof registerToolSubset>[0]
   registerToolSubset(server, {
@@ -1179,7 +1182,9 @@ describe("exp-custom on both launch tools", () => {
     const tools: Record<string, { description: string; inputSchema: z.ZodRawShape }> = {}
     const server = {
       registerTool(name: string, config: { description?: string; inputSchema: z.ZodRawShape }) {
-        tools[name] = { description: config.description ?? "", inputSchema: config.inputSchema }
+        const raw = config.inputSchema as unknown
+        const inputSchema = raw instanceof z.ZodObject ? (raw.shape as z.ZodRawShape) : config.inputSchema
+        tools[name] = { description: config.description ?? "", inputSchema }
       },
     }
     registerTools(server as never, {})
@@ -1253,7 +1258,9 @@ describe("pool choices on both launch tools", () => {
   registerTools(
     {
       registerTool(name: string, config: { inputSchema: z.ZodRawShape }) {
-        tools[name] = { inputSchema: config.inputSchema }
+        const raw = config.inputSchema as unknown
+        const inputSchema = raw instanceof z.ZodObject ? (raw.shape as z.ZodRawShape) : config.inputSchema
+        tools[name] = { inputSchema }
       },
     } as never,
     {},
@@ -1382,15 +1389,32 @@ describe("launch parity (BE-1806)", () => {
     expect(JSON.parse(text).resolved).toEqual(RESOLVED)
   })
 
-  test("creatorFeeBps takes 0, 100 or 200 and nothing else", () => {
-    const shape = z.object(
-      toolsWith(["candle_launch_token"], async () => answer(200, "{}")).tools.get("candle_launch_token")
-        ?.inputSchema as z.ZodRawShape,
-    )
-    for (const creatorFeeBps of [0, 100, 200])
+  test("creatorFeeBps takes 0, 100 or 200 on Solana and whole bps 0..9999 on Hood", async () => {
+    const sent: unknown[] = []
+    const { tools, call } = toolsWith(["candle_launch_token"], async (_url, init) => {
+      sent.push(JSON.parse(String(init?.body)))
+      return answer(200, JSON.stringify({ success: true, dryRun: true }))
+    })
+    const shape = z.object(tools.get("candle_launch_token")?.inputSchema as z.ZodRawShape)
+    for (const creatorFeeBps of [0, 100, 150, 200])
       expect(shape.parse({ ...BASE, creatorFeeBps }).creatorFeeBps).toBe(creatorFeeBps)
-    expect(() => shape.parse({ ...BASE, creatorFeeBps: 150 })).toThrow()
+    expect(() => shape.parse({ ...BASE, creatorFeeBps: 1.5 })).toThrow()
     expect(() => shape.parse({ ...BASE, creatorFeeBps: "100" })).toThrow()
+
+    const refused = await call("candle_launch_token", { ...BASE, mode: "exp-a", creatorFeeBps: 150, dryRun: true })
+    expect(refused.result.isError).toBe(true)
+    expect(JSON.parse(refused.text).error?.code).toBe("VALIDATION_FAILED")
+    expect(sent).toEqual([])
+
+    const accepted = await call("candle_launch_token", {
+      ...BASE,
+      chain: "hood",
+      dexVersion: "v4",
+      creatorFeeBps: 150,
+      dryRun: true,
+    })
+    expect(accepted.result.isError).toBeUndefined()
+    expect(sent).toEqual([{ ...BASE, chain: "hood", dexVersion: "v4", creatorFeeBps: 150 }])
   })
 
   test("candle_launch_and_seed forwards creatorFeeBps beside its converted seed", async () => {

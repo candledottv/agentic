@@ -109,6 +109,17 @@ On Solana, where the API has `CURVE_LAUNCH_RULES_ENABLED` on, both launch tools 
 `LAUNCH_RULES_INVALID` with the field and the reason. See
 [Launch rules](https://docs.candle.tv/developers/headless-launch#launch-rules-solana).
 
+On Hood, where the API has `HOOD_GEN2_LAUNCH_ENABLED` on, `candle_launch_token` and
+`candle_launch_and_seed` take the generation 2 options as top-level arguments (never
+`hoodGen2Options`): `launchRules` (with up to 10,000 `0x` allowlist addresses, plus
+`snipeFeeStartBps` 0 to 2500 and `snipeFeeDecaySecs` 0 to 600), `snipeExempt` (0 to 32 `0x`
+addresses), `creatorFeeBps` (whole integer 0 to 9999 with `100 + creatorFeeBps +
+snipeFeeStartBps < 10000`), and `teamAllocation` (`{ recipient, percent, cliffDays,
+vestingDays? }`). `feeWallet` and `feeWalletMultisig` remain withheld on MCP. Solana calls keep
+`creatorFeeBps` at `0 | 100 | 200` and refuse the Hood-only options locally before any upload or
+request. See
+[Hood generation 2 launch options](https://docs.candle.tv/developers/headless-launch#hood-generation-2-launch-options).
+
 For a full walkthrough of `candle_launch_and_seed` and `candle_trade`, including the keyless read
 tools, getting a key, funding the embedded wallet, and idempotent retries, see
 [Candle MCP server](https://docs.candle.tv/developers/mcp-server).

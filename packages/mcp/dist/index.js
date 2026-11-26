@@ -101,7 +101,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.47";
+var SERVER_VERSION = "0.10.48";
 
 // src/client.ts
 var DEFAULT_API_URL = "https://api.alpha.candle.tv";
@@ -6071,6 +6071,11 @@ var LAUNCH_DEFINITION = {
       }
     }
   },
+  hoodGen2: {
+    curveFeeBps: 100,
+    maxCreatorFeeBps: 9999,
+    maxTeamBps: 500
+  },
   surfacesIntro: [
     "CLI: scripts and terminals. Agents always pass --json.",
     "MCP: chat agents (Claude, the connector). The same launch fields and results as the CLI's --json.",
@@ -6436,18 +6441,26 @@ var LAUNCH_DEFINITION = {
     },
     {
       key: "creatorFeeBps",
-      type: "enum",
-      help: "An exp- mode's extra creator fee: 0, 100 or 200 bps on the curve and pool, paid to the creator in full.",
-      values: [
-        0,
-        100,
-        200
-      ],
+      type: "integer",
+      help: "Extra creator fee in bps: on Solana exp- modes, 0, 100 or 200 on the curve and pool; on Hood generation 2 (while HOOD_GEN2_LAUNCH_ENABLED is on), a whole number from 0 to the factory's maxCreatorFeeBps, with curve fee + creatorFeeBps + snipeFeeStartBps under 10000.",
+      wireType: "number | null",
+      valuesByChain: {
+        solana: [
+          0,
+          100,
+          200
+        ]
+      },
+      range: {
+        min: "0",
+        max: "9999",
+        unit: "bps"
+      },
       default: 0,
       surfaces: {
         cli: {
           flag: "--creator-fee-bps",
-          value: "0|100|200"
+          value: "<bps>"
         },
         mcp: {
           key: "creatorFeeBps"
@@ -6689,10 +6702,7 @@ var LAUNCH_DEFINITION = {
     {
       key: "feeWallet",
       type: "string",
-      help: "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the wallet that launches the token (the account wallet on a server without LAUNCH_FEE_WALLET_FROM_LAUNCHER, except an embedded launch).",
-      chains: [
-        "solana"
-      ],
+      help: "The launch fee wallet: on Solana, an on-curve wallet or a Squads v4 vault earning curve and pool fees (defaults to the launching wallet where LAUNCH_FEE_WALLET_FROM_LAUNCHER is on, else the account wallet, except an embedded launch); on Hood generation 2 (while HOOD_GEN2_LAUNCH_ENABLED is on), a non-zero 0x EOA or Safe earning the extra creator fee (send creatorFeeBps above 0 unless it is the creator).",
       surfaces: {
         cli: {
           flag: "--fee-wallet",
@@ -6783,16 +6793,13 @@ var LAUNCH_DEFINITION = {
     {
       key: "launchRules.openDelaySecs",
       type: "duration",
-      help: "Launch rules, Solana only, where the server has CURVE_LAUNCH_RULES_ENABLED on: how long after the launch buys open, at most 7 days (604800 seconds); before then only the launching wallet may buy. The CLI takes a duration (90m, 6h, 2d, or seconds); the request field is whole seconds.",
+      help: "Launch rules (Solana where CURVE_LAUNCH_RULES_ENABLED is on; Hood generation 2 where HOOD_GEN2_LAUNCH_ENABLED is on): how long after the launch buys open, at most 7 days (604800 seconds); before then only the launching wallet may buy. The CLI takes a duration (90m, 6h, 2d, or seconds); the request field is whole seconds.",
       wireType: "number",
       range: {
         min: "0",
         max: "604800",
         unit: "seconds"
       },
-      chains: [
-        "solana"
-      ],
       surfaces: {
         cli: {
           flag: "--open-in",
@@ -6809,13 +6816,11 @@ var LAUNCH_DEFINITION = {
     {
       key: "launchRules.maxBuyPerWalletRaw",
       type: "decimal",
-      help: "The most quote one wallet may spend on the curve during --cap-window, curve fee included and Candle's fee not; needs --cap-window. The CLI takes whole quote units; the request field is raw units as a decimal string.",
+      help: "The most quote one wallet may spend on the curve during --cap-window, curve fee included and Candle's fee not; needs --cap-window. The CLI takes whole quote units; the request field is raw units as a decimal string (fits u64 on Solana, uint256 on Hood).",
+      wireType: "string | number",
       range: {
         unit: "whole quote units"
       },
-      chains: [
-        "solana"
-      ],
       requires: [
         "launchRules.capWindowSecs"
       ],
@@ -6842,9 +6847,6 @@ var LAUNCH_DEFINITION = {
         max: "86400",
         unit: "seconds"
       },
-      chains: [
-        "solana"
-      ],
       requires: [
         "launchRules.maxBuyPerWalletRaw"
       ],
@@ -6864,16 +6866,23 @@ var LAUNCH_DEFINITION = {
     {
       key: "launchRules.allowlist",
       type: "file",
-      help: "Only these wallets may buy during --allowlist-window: 1 to 4,096 distinct Solana addresses; needs --allowlist-window. The CLI reads a file, one address per line or comma separated; the request field is the list.",
+      help: "Only these wallets may buy during --allowlist-window: 1 to 4,096 distinct Solana addresses, or on Hood generation 2 1 to 10,000 distinct non-zero 0x EVM addresses; needs --allowlist-window. The CLI reads a file, one address per line or comma separated; the request field is the list.",
       wireType: "string[]",
       range: {
         min: "1",
         max: "4096",
-        unit: "wallets"
+        unit: "wallets",
+        byChain: {
+          solana: {
+            min: "1",
+            max: "4096"
+          },
+          hood: {
+            min: "1",
+            max: "10000"
+          }
+        }
       },
-      chains: [
-        "solana"
-      ],
       requires: [
         "launchRules.allowlistWindowSecs"
       ],
@@ -6900,9 +6909,6 @@ var LAUNCH_DEFINITION = {
         max: "86400",
         unit: "seconds"
       },
-      chains: [
-        "solana"
-      ],
       requires: [
         "launchRules.allowlist"
       ],
@@ -6922,13 +6928,11 @@ var LAUNCH_DEFINITION = {
     {
       key: "launchRules.devBuyMaxRaw",
       type: "decimal",
-      help: "The most the launching wallet may buy before the open, only with --open-in: at least the launch's own buy, at most the dev-buy ceiling, and the buy by default. That spend counts toward the per-wallet cap after the open. The CLI takes whole quote units; the request field is raw units as a decimal string.",
+      help: "The most the launching wallet may buy before the open, only with --open-in above 0: at least the launch's own buy (and at most the dev-buy ceiling on Solana, where it defaults to the buy and counts toward the per-wallet cap after the open). The CLI takes whole quote units; the request field is raw units as a decimal string.",
+      wireType: "string | number",
       range: {
         unit: "whole quote units"
       },
-      chains: [
-        "solana"
-      ],
       requires: [
         "launchRules.openDelaySecs"
       ],
@@ -6942,6 +6946,200 @@ var LAUNCH_DEFINITION = {
         },
         sdk: {
           key: "launchRules.devBuyMaxRaw"
+        }
+      }
+    },
+    {
+      key: "launchRules.snipeFeeStartBps",
+      type: "integer",
+      help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): starting sniper fee on buys, 0 to 2500 bps; needs --snipe-fee-decay above 0 when non-zero, and curve fee + creatorFeeBps + snipeFeeStartBps must stay under 10000.",
+      wireType: "number | null",
+      range: {
+        min: "0",
+        max: "2500",
+        unit: "bps"
+      },
+      chains: [
+        "hood"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--snipe-fee-start-bps",
+          value: "<bps>"
+        },
+        mcp: {
+          key: "launchRules.snipeFeeStartBps"
+        },
+        sdk: {
+          key: "launchRules.snipeFeeStartBps"
+        }
+      }
+    },
+    {
+      key: "launchRules.snipeFeeDecaySecs",
+      type: "duration",
+      help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): how long the sniper fee decays from snipeFeeStartBps to 0 after the open, 0 to 600 seconds (or a duration such as 2m or 10m); must be above 0 when snipeFeeStartBps is above 0.",
+      wireType: "number | null",
+      range: {
+        min: "0",
+        max: "600",
+        unit: "seconds"
+      },
+      chains: [
+        "hood"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--snipe-fee-decay",
+          value: "<duration>"
+        },
+        mcp: {
+          key: "launchRules.snipeFeeDecaySecs"
+        },
+        sdk: {
+          key: "launchRules.snipeFeeDecaySecs"
+        }
+      }
+    },
+    {
+      key: "snipeExempt",
+      type: "string",
+      help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): up to 32 distinct non-zero 0x EVM bundle wallets exempt from the sniper fee. Comma-separated on the CLI; an array on MCP and the SDK.",
+      wireType: "string[]",
+      range: {
+        min: "0",
+        max: "32",
+        unit: "wallets"
+      },
+      chains: [
+        "hood"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--snipe-exempt",
+          value: "<0x,...>"
+        },
+        mcp: {
+          key: "snipeExempt"
+        },
+        sdk: {
+          key: "snipeExempt"
+        }
+      }
+    },
+    {
+      key: "teamAllocation.recipient",
+      type: "string",
+      help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): the non-zero 0x EVM recipient of the team vesting escrow; takes --team-percent, --team-cliff-days and optional --team-vesting-days.",
+      chains: [
+        "hood"
+      ],
+      requires: [
+        "teamAllocation.percent",
+        "teamAllocation.cliffDays"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--team-recipient",
+          value: "<0x-address>"
+        },
+        mcp: {
+          key: "teamAllocation.recipient"
+        },
+        sdk: {
+          key: "teamAllocation.recipient"
+        }
+      }
+    },
+    {
+      key: "teamAllocation.percent",
+      type: "decimal",
+      help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): team supply share above 0 and at most 5%, with at most two decimals; takes --team-recipient and --team-cliff-days.",
+      wireType: "number",
+      range: {
+        min: "0.01",
+        max: "5",
+        unit: "percent"
+      },
+      chains: [
+        "hood"
+      ],
+      requires: [
+        "teamAllocation.recipient",
+        "teamAllocation.cliffDays"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--team-percent",
+          value: "<percent>"
+        },
+        mcp: {
+          key: "teamAllocation.percent"
+        },
+        sdk: {
+          key: "teamAllocation.percent"
+        }
+      }
+    },
+    {
+      key: "teamAllocation.cliffDays",
+      type: "integer",
+      help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): whole days before team vesting begins, 30 to 3650; required with --team-recipient and --team-percent.",
+      wireType: "number",
+      range: {
+        min: "30",
+        max: "3650",
+        unit: "days"
+      },
+      chains: [
+        "hood"
+      ],
+      requires: [
+        "teamAllocation.recipient",
+        "teamAllocation.percent"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--team-cliff-days",
+          value: "<days>"
+        },
+        mcp: {
+          key: "teamAllocation.cliffDays"
+        },
+        sdk: {
+          key: "teamAllocation.cliffDays"
+        }
+      }
+    },
+    {
+      key: "teamAllocation.vestingDays",
+      type: "integer",
+      help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): whole days of linear team vesting after the cliff, 0 to 3650 (defaults to 0, unlocking at the cliff).",
+      wireType: "number | null",
+      range: {
+        min: "0",
+        max: "3650",
+        unit: "days"
+      },
+      default: 0,
+      chains: [
+        "hood"
+      ],
+      requires: [
+        "teamAllocation.recipient",
+        "teamAllocation.percent",
+        "teamAllocation.cliffDays"
+      ],
+      surfaces: {
+        cli: {
+          flag: "--team-vesting-days",
+          value: "<days>"
+        },
+        mcp: {
+          key: "teamAllocation.vestingDays"
+        },
+        sdk: {
+          key: "teamAllocation.vestingDays"
         }
       }
     },
@@ -7082,8 +7280,11 @@ function readLaunchCheck(value, input) {
 }
 
 // src/launch-check.ts
+var HOOD_GEN2_WRAPPER_MESSAGE = "Send Hood generation 2 options as top-level fields (launchRules, snipeExempt, creatorFeeBps, teamAllocation), not hoodGen2Options.";
 async function launchCheck(args, cfg, fetch2) {
   try {
+    if ("hoodGen2Options" in args && args.hoodGen2Options !== undefined)
+      throw new LaunchCheckError("VALIDATION_FAILED", HOOD_GEN2_WRAPPER_MESSAGE, "hoodGen2Options");
     if (!cfg.apiKey)
       throw new LaunchCheckError("UNAUTHORIZED", "An API key is required for launch checks.");
     const input = args;
@@ -7123,6 +7324,8 @@ function launchControlError(error) {
   };
 }
 function launchExecutionArgs(args) {
+  if ("hoodGen2Options" in args && args.hoodGen2Options !== undefined)
+    throw new LaunchCheckError("VALIDATION_FAILED", HOOD_GEN2_WRAPPER_MESSAGE, "hoodGen2Options");
   const { quote, check: _check, ...body } = args;
   const quoteAsset = fixedLaunchQuote({ quote, quoteAsset: args.quoteAsset, chain: args.chain });
   const chain = quote === undefined || body.chain !== undefined ? body.chain : LAUNCH_DEFINITION.quoteChains[quoteAsset];
@@ -7132,7 +7335,7 @@ function launchExecutionArgs(args) {
 // src/launch-schema.ts
 import { z as z8 } from "zod";
 var M2_TOP_KEYS = new Set(["wallet", "buy", "feeWallet", "feeWalletMultisig"]);
-var GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee", "launchRules"]);
+var GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee", "launchRules", "teamAllocation"]);
 function mcpKey(field) {
   const surface = field.surfaces.mcp;
   return "key" in surface ? surface.key : undefined;
@@ -7273,11 +7476,81 @@ function launchRulesSchema() {
     if (!key?.startsWith("launchRules."))
       continue;
     const wire = "wireType" in field ? field.wireType : undefined;
-    const schema = wire === "number" ? z8.number().int() : wire === "string[]" ? z8.array(z8.string()) : z8.string();
+    const schema = wire === "number | null" ? z8.number().int().nullable() : field.type === "integer" || wire === "number" ? z8.number().int() : wire === "string | number" ? z8.union([z8.string(), z8.number().int().safe()]) : wire === "string[]" ? z8.array(z8.string()) : z8.string();
     shape[key.slice("launchRules.".length)] = schema.optional().describe(field.help);
     helps.push(field.help);
   }
-  return z8.object(shape).passthrough().optional().describe(helps.join(" "));
+  return z8.object(shape).strict().optional().describe(helps.join(" "));
+}
+function teamAllocationSchema() {
+  const recipient = launchFieldHelp("teamAllocation.recipient");
+  const percent = launchFieldHelp("teamAllocation.percent");
+  const cliffDays = launchFieldHelp("teamAllocation.cliffDays");
+  const vestingDays = launchFieldHelp("teamAllocation.vestingDays");
+  return z8.object({
+    recipient: z8.string().describe(recipient),
+    percent: z8.number().describe(percent),
+    cliffDays: z8.number().int().describe(cliffDays),
+    vestingDays: z8.number().int().nullable().optional().describe(vestingDays)
+  }).strict().optional().describe([recipient, percent, cliffDays, vestingDays].join(" "));
+}
+function chainLaunchOptionsRefusal(args) {
+  const quote = typeof args.quoteAsset === "string" ? args.quoteAsset.toLowerCase() : undefined;
+  const quoteChain = quote ? LAUNCH_DEFINITION.quoteChains[quote] : undefined;
+  const resolvedChain = (typeof args.chain === "string" ? args.chain : undefined) ?? quoteChain ?? "solana";
+  const rules = args.launchRules !== null && typeof args.launchRules === "object" && !Array.isArray(args.launchRules) ? args.launchRules : undefined;
+  if (resolvedChain === "solana") {
+    if (args.teamAllocation !== undefined)
+      return {
+        code: "VALIDATION_FAILED",
+        message: "teamAllocation is only available on Hood launches.",
+        field: "teamAllocation"
+      };
+    if (args.snipeExempt !== undefined)
+      return {
+        code: "VALIDATION_FAILED",
+        message: "snipeExempt is only available on Hood launches.",
+        field: "snipeExempt"
+      };
+    if (rules?.snipeFeeStartBps !== undefined)
+      return {
+        code: "VALIDATION_FAILED",
+        message: "launchRules.snipeFeeStartBps is only available on Hood launches.",
+        field: "launchRules.snipeFeeStartBps"
+      };
+    if (rules?.snipeFeeDecaySecs !== undefined)
+      return {
+        code: "VALIDATION_FAILED",
+        message: "launchRules.snipeFeeDecaySecs is only available on Hood launches.",
+        field: "launchRules.snipeFeeDecaySecs"
+      };
+    const creatorField = fieldByKey("creatorFeeBps");
+    const solanaAllowed = "valuesByChain" in creatorField && creatorField.valuesByChain?.solana ? creatorField.valuesByChain.solana : [0, 100, 200];
+    if (args.creatorFeeBps !== undefined && args.creatorFeeBps !== null && !solanaAllowed.includes(args.creatorFeeBps)) {
+      return { code: "VALIDATION_FAILED", message: "creatorFeeBps must be 0, 100 or 200.", field: "creatorFeeBps" };
+    }
+    return;
+  }
+  if (args.creatorFeeBps !== undefined && args.creatorFeeBps !== null) {
+    const bps2 = args.creatorFeeBps;
+    const { curveFeeBps, maxCreatorFeeBps } = LAUNCH_DEFINITION.hoodGen2;
+    if (typeof bps2 !== "number" || !Number.isInteger(bps2) || bps2 < 0 || bps2 > maxCreatorFeeBps) {
+      return {
+        code: "VALIDATION_FAILED",
+        message: `creatorFeeBps must be a whole number from 0 to ${maxCreatorFeeBps}.`,
+        field: "creatorFeeBps"
+      };
+    }
+    const snipeStart = typeof rules?.snipeFeeStartBps === "number" ? rules.snipeFeeStartBps : 0;
+    if (curveFeeBps + bps2 + snipeStart >= 1e4) {
+      return {
+        code: "VALIDATION_FAILED",
+        message: "the curve fee, creator fee and sniper fee at its peak must total under 100%",
+        field: "creatorFeeBps"
+      };
+    }
+  }
+  return;
 }
 function scalarSchema(field) {
   const values = "values" in field ? field.values : undefined;
@@ -7288,8 +7561,16 @@ function scalarSchema(field) {
     schema = z8.enum(stringValues(field.key));
   else if (field.type === "boolean")
     schema = z8.boolean();
-  else if (field.type === "integer" || "wireType" in field && field.wireType === "number")
+  else if ("wireType" in field && field.wireType === "number | null")
+    schema = z8.number().int().nullable();
+  else if (field.type === "integer")
+    schema = z8.number().int();
+  else if ("wireType" in field && field.wireType === "number")
     schema = z8.number();
+  else if ("wireType" in field && field.wireType === "string | number")
+    schema = z8.union([z8.string(), z8.number().int().safe()]);
+  else if ("wireType" in field && field.wireType === "string[]")
+    schema = z8.array(z8.string());
   else
     schema = z8.string();
   return described(schema, field.help, isRequired(field));
@@ -7313,6 +7594,7 @@ function buildLaunchTokenShape() {
   shape.curve = curveSchema();
   shape.poolFee = poolFeeSchema();
   shape.launchRules = launchRulesSchema();
+  shape.teamAllocation = teamAllocationSchema();
   shape.buyAmount = z8.union([z8.string(), z8.number()]).optional().describe(BUY_AMOUNT_DESCRIPTION);
   return shape;
 }
@@ -7658,6 +7940,9 @@ async function executeTrade(args, cfg, doFetch, forceMarketRead = false) {
 async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs, opts = {}) {
   const apiKey = requireApiKey(cfg);
   const clientLaunchId = args.clientLaunchId ?? randomUUID();
+  const chainProblem = chainLaunchOptionsRefusal(args);
+  if (chainProblem)
+    return { text: imageRefusalBody(chainProblem, { clientLaunchId }), isError: true };
   const socialsProblem = socialsRefusal(args.socials);
   if (socialsProblem)
     return { text: imageRefusalBody(socialsProblem, { clientLaunchId }), isError: true };
@@ -8904,6 +9189,7 @@ var PROFILE_EDIT_TOOL_NAMES = [
   "candle_delete_post"
 ];
 var isProfileEditTool = (name) => PROFILE_EDIT_TOOL_NAMES.includes(name);
+var isLaunchTool = (name) => name === "candle_launch_token" || name === "candle_launch_and_seed";
 function resolveToolAllowlist(env) {
   const raw2 = env.CANDLE_MCP_TOOLS?.trim();
   if (!raw2)
@@ -9893,8 +10179,15 @@ function registerToolSubset(server, options) {
   const register = (name, definition, handler) => {
     if (!allowed.has(name))
       return;
-    const inputSchema = isSignalRecordTool(name) ? z13.object(definition.inputSchema, { errorMap: signalRecordValidationErrorMap }).strict() : isProfileEditTool(name) || isTokenPageTool(name) ? z13.object(definition.inputSchema).strict() : definition.inputSchema;
-    const registered = server.registerTool(name, { ...definition, inputSchema, ...options.metadata?.[name] }, handler);
+    const inputSchema = isSignalRecordTool(name) ? z13.object(definition.inputSchema, { errorMap: signalRecordValidationErrorMap }).strict() : isProfileEditTool(name) || isTokenPageTool(name) ? z13.object(definition.inputSchema).strict() : isLaunchTool(name) ? z13.object(definition.inputSchema).passthrough() : definition.inputSchema;
+    const wrappedHandler = isLaunchTool(name) && !imageDir ? (args, extra) => {
+      if (extra !== undefined && args && typeof args === "object") {
+        const { imagePath: _ip, bannerPath: _bp, ...rest } = args;
+        return handler(rest);
+      }
+      return handler(args);
+    } : handler;
+    const registered = server.registerTool(name, { ...definition, inputSchema, ...options.metadata?.[name] }, wrappedHandler);
     if (isProfileEditTool(name) && registered) {
       const tools = localProfileTools.get(server) ?? new Map;
       localProfileTools.set(server, tools.set(name, registered));
@@ -10002,17 +10295,30 @@ function registerToolSubset(server, options) {
     description: "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything. " + LAUNCH_SHARED_SENTENCES + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
     inputSchema: checkableLaunchShape(imageDir ? localLaunchTokenShape : launchTokenShape)
   }, async (args) => {
-    if ("check" in args && args.check === true)
+    if ("check" in args && args.check === true) {
+      if ("hoodGen2Options" in args && args.hoodGen2Options !== undefined)
+        return launchCheck(args, getConfig(), doFetch);
+      const checkParsed = z13.object(checkableLaunchShape(localLaunchTokenShape)).strict().safeParse(args);
+      if (!checkParsed.success)
+        return launchControlError(new LaunchCheckError("VALIDATION_FAILED", checkParsed.error.message));
+      const checkChainProblem = chainLaunchOptionsRefusal(args);
+      if (checkChainProblem)
+        return { content: [{ type: "text", text: imageRefusalBody(checkChainProblem) }], isError: true };
       return launchCheck(args, getConfig(), doFetch);
+    }
     try {
       args = launchExecutionArgs(args);
       if (!imageDir && args.imageUrl === undefined && !("imagePath" in args))
         return launchControlError(new LaunchCheckError("VALIDATION_FAILED", "imageUrl is required for a launch."));
-      const parsed = z13.object(imageDir ? localLaunchTokenShape : launchTokenShape).omit({ imageUrl: true }).safeParse(args);
+      const parsed = z13.object(localLaunchTokenShape).extend({ imageUrl: z13.string().optional() }).strict().safeParse(args);
       if (!parsed.success)
         return launchControlError(new LaunchCheckError("VALIDATION_FAILED", parsed.error.message));
     } catch (error) {
       return launchControlError(error);
+    }
+    const chainProblem = chainLaunchOptionsRefusal(args);
+    if (chainProblem) {
+      return { content: [{ type: "text", text: imageRefusalBody(chainProblem) }], isError: true };
     }
     const socialsProblem = socialsRefusal("socials" in args ? args.socials : undefined);
     if (socialsProblem) {
@@ -10459,13 +10765,22 @@ function registerToolSubset(server, options) {
     description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed, then " + "return the fresh market state and token links in one result. On solana a seed makes this " + (options.headlessSeed === true ? "the seed is a separate first-buy transaction in the same Jito bundle as the launch, so " + "both land or neither does. That works on every plan, Free included, and needs no " + "swap:write. On hood the seed is " : "the atomic launch: the launch and the seed are two transactions Candle signs and sends as " + "one Jito bundle, so both land or neither does. That needs Pro or Max (TIER_REQUIRED " + "otherwise) and swap:write on the key, and the result carries bundleId. On hood the seed is ") + "a best-effort follow-up. A launch with no seed works on every plan, Free included. MOVES " + "REAL FUNDS unless dryRun; dry-run first, which spends nothing. Seeds above the platform " + "dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH): at most 0.5 SOL / 500 USDC / 2,000,000 " + "CNDL, or on an exp- curve 10% of the threshold when that is lower; the server holds the " + "creator's own seed to the effective ceiling, so launch with the largest devBuy it allows " + "and top up with candle_trade. " + LAUNCH_SHARED_SENTENCES + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
     inputSchema: checkableLaunchShape(imageDir ? localLaunchAndSeedShape : launchAndSeedShape)
   }, async (args) => {
-    if ("check" in args && args.check === true)
+    if ("check" in args && args.check === true) {
+      if ("hoodGen2Options" in args && args.hoodGen2Options !== undefined)
+        return launchCheck(args, getConfig(), doFetch);
+      const checkParsed = z13.object(checkableLaunchShape(localLaunchAndSeedShape)).strict().safeParse(args);
+      if (!checkParsed.success)
+        return launchControlError(new LaunchCheckError("VALIDATION_FAILED", checkParsed.error.message));
+      const checkChainProblem = chainLaunchOptionsRefusal(args);
+      if (checkChainProblem)
+        return { content: [{ type: "text", text: imageRefusalBody(checkChainProblem) }], isError: true };
       return launchCheck(args, getConfig(), doFetch);
+    }
     try {
       args = launchExecutionArgs(args);
       if (!imageDir && args.imageUrl === undefined && !("imagePath" in args))
         return launchControlError(new LaunchCheckError("VALIDATION_FAILED", "imageUrl is required for a launch."));
-      const parsed = z13.object(imageDir ? localLaunchAndSeedShape : launchAndSeedShape).omit({ imageUrl: true }).safeParse(args);
+      const parsed = z13.object(localLaunchAndSeedShape).extend({ imageUrl: z13.string().optional() }).strict().safeParse(args);
       if (!parsed.success)
         return launchControlError(new LaunchCheckError("VALIDATION_FAILED", parsed.error.message));
     } catch (error) {

@@ -15,8 +15,49 @@ export function launchInputError(field: string, message: string, code = "VALIDAT
   return new CandleApiError({ status: 400, code, field, message, retryable: false })
 }
 
+const solanaCreatorFeeValues = (): readonly number[] => {
+  const found = LAUNCH_DEFINITION.fields.find((field) => field.key === "creatorFeeBps")
+  return found && "valuesByChain" in found && found.valuesByChain?.solana ? found.valuesByChain.solana : [0, 100, 200]
+}
+
+const KNOWN_LAUNCH_RULE_KEYS = new Set(
+  LAUNCH_DEFINITION.fields
+    .filter((field) => field.key.startsWith("launchRules."))
+    .map((field) => field.key.slice("launchRules.".length)),
+)
+const KNOWN_TEAM_KEYS = new Set(
+  LAUNCH_DEFINITION.fields
+    .filter((field) => field.key.startsWith("teamAllocation."))
+    .map((field) => field.key.slice("teamAllocation.".length)),
+)
+
+function validateStructuredGen2Objects(req: LaunchRequest): void {
+  if (req.launchRules !== undefined && req.launchRules !== null) {
+    if (typeof req.launchRules !== "object" || Array.isArray(req.launchRules))
+      throw launchInputError("launchRules", "launchRules must be an object.")
+    for (const [key, value] of Object.entries(req.launchRules)) {
+      if (value !== undefined && !KNOWN_LAUNCH_RULE_KEYS.has(key))
+        throw launchInputError(`launchRules.${key}`, `launchRules.${key} is not a launch rule.`)
+    }
+  }
+  if (req.teamAllocation !== undefined && req.teamAllocation !== null) {
+    if (typeof req.teamAllocation !== "object" || Array.isArray(req.teamAllocation))
+      throw launchInputError("teamAllocation", "teamAllocation must be an object.")
+    for (const [key, value] of Object.entries(req.teamAllocation)) {
+      if (value !== undefined && !KNOWN_TEAM_KEYS.has(key))
+        throw launchInputError(`teamAllocation.${key}`, `teamAllocation.${key} is not a teamAllocation field.`)
+    }
+  }
+}
+
 /** Local shape refusals happen before discovery, build or signing. Server limits stay server-owned. */
 export function validateLaunchInput(req: LaunchRequest): void {
+  if ("hoodGen2Options" in req && (req as Record<string, unknown>).hoodGen2Options !== undefined)
+    throw launchInputError(
+      "hoodGen2Options",
+      "Send Hood generation 2 options as top-level fields (launchRules, snipeExempt, feeWallet, creatorFeeBps, teamAllocation), not hoodGen2Options.",
+    )
+  validateStructuredGen2Objects(req)
   try {
     fixedLaunchQuote(req)
   } catch (error) {
@@ -87,6 +128,45 @@ export function launchBody(req: LaunchRequest, chain?: Chain): Omit<LaunchReques
   if (_quote !== undefined && body.chain === undefined) body.chain = quoteChain
   if (body.chain !== undefined && body.chain !== quoteChain)
     throw launchInputError("quoteAsset", "The quote asset disagrees with the launch chain.", "CHAIN_MISMATCH")
+  const rules = body.launchRules as Record<string, unknown> | undefined
+  if (quoteChain === "solana") {
+    if ("teamAllocation" in body && body.teamAllocation !== undefined)
+      throw launchInputError("teamAllocation", "teamAllocation is only available on Hood launches.")
+    if ("snipeExempt" in body && body.snipeExempt !== undefined)
+      throw launchInputError("snipeExempt", "snipeExempt is only available on Hood launches.")
+    if (rules?.snipeFeeStartBps !== undefined)
+      throw launchInputError(
+        "launchRules.snipeFeeStartBps",
+        "launchRules.snipeFeeStartBps is only available on Hood launches.",
+      )
+    if (rules?.snipeFeeDecaySecs !== undefined)
+      throw launchInputError(
+        "launchRules.snipeFeeDecaySecs",
+        "launchRules.snipeFeeDecaySecs is only available on Hood launches.",
+      )
+    if (
+      body.creatorFeeBps !== undefined &&
+      body.creatorFeeBps !== null &&
+      !solanaCreatorFeeValues().includes(body.creatorFeeBps)
+    )
+      throw launchInputError("creatorFeeBps", "creatorFeeBps must be 0, 100 or 200.")
+  } else if (body.creatorFeeBps !== undefined && body.creatorFeeBps !== null) {
+    const { curveFeeBps, maxCreatorFeeBps } = LAUNCH_DEFINITION.hoodGen2
+    if (
+      typeof body.creatorFeeBps !== "number" ||
+      !Number.isInteger(body.creatorFeeBps) ||
+      body.creatorFeeBps < 0 ||
+      body.creatorFeeBps > maxCreatorFeeBps
+    ) {
+      throw launchInputError("creatorFeeBps", `creatorFeeBps must be a whole number from 0 to ${maxCreatorFeeBps}.`)
+    }
+    const snipeStart = typeof rules?.snipeFeeStartBps === "number" ? rules.snipeFeeStartBps : 0
+    if (curveFeeBps + body.creatorFeeBps + snipeStart >= 10_000)
+      throw launchInputError(
+        "creatorFeeBps",
+        "the curve fee, creator fee and sniper fee at its peak must total under 100%",
+      )
+  }
   if (buy === undefined || buy.trim() === "" || /^0+(\.0+)?$/.test(buy)) return body
   const decimals = LAUNCH_DEFINITION.quoteDecimals[quote]
   const [whole = "0", fraction = ""] = buy.split(".")

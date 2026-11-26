@@ -11,7 +11,7 @@ import { LAUNCH_DEFINITION } from "./launch-definition"
 // `feeWallet` and `feeWalletMultisig` (BE-2519) ship on the CLI first; the MCP surface waits for
 // its own card, exactly like wallet and buy wait for M2.
 const M2_TOP_KEYS = new Set(["wallet", "buy", "feeWallet", "feeWalletMultisig"])
-const GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee", "launchRules"])
+const GROUPED_TOP_KEYS = new Set(["socials", "curve", "poolFee", "launchRules", "teamAllocation"])
 
 type LaunchField = (typeof LAUNCH_DEFINITION.fields)[number]
 
@@ -190,10 +190,9 @@ function poolFeeSchema() {
 }
 
 /**
- * BE-2794 (BE-2791 spec 7.1): the request's nested `launchRules`, in seconds and raw units like
- * this tool's other amounts. Bounds stay the API's: it answers LAUNCH_RULES_INVALID with the field
- * and the reason. Passthrough, so a key the API refuses (the sniper fee) reaches it and gets that
- * refusal, rather than failing inside the MCP SDK before any envelope exists.
+ * BE-2794 / BE-4350: the request's nested `launchRules`, in seconds and raw units (decimal string or
+ * safe integer) like the API parser accepts. Strict so unknown or misplaced nested gen 2 keys are
+ * refused during input validation rather than stripped before any request.
  */
 function launchRulesSchema() {
   const helps: string[] = []
@@ -202,11 +201,111 @@ function launchRulesSchema() {
     const key = mcpKey(field)
     if (!key?.startsWith("launchRules.")) continue
     const wire = "wireType" in field ? field.wireType : undefined
-    const schema = wire === "number" ? z.number().int() : wire === "string[]" ? z.array(z.string()) : z.string()
+    const schema =
+      wire === "number | null"
+        ? z.number().int().nullable()
+        : field.type === "integer" || wire === "number"
+          ? z.number().int()
+          : wire === "string | number"
+            ? z.union([z.string(), z.number().int().safe()])
+            : wire === "string[]"
+              ? z.array(z.string())
+              : z.string()
     shape[key.slice("launchRules.".length)] = schema.optional().describe(field.help)
     helps.push(field.help)
   }
-  return z.object(shape).passthrough().optional().describe(helps.join(" "))
+  return z.object(shape).strict().optional().describe(helps.join(" "))
+}
+
+function teamAllocationSchema() {
+  const recipient = launchFieldHelp("teamAllocation.recipient")
+  const percent = launchFieldHelp("teamAllocation.percent")
+  const cliffDays = launchFieldHelp("teamAllocation.cliffDays")
+  const vestingDays = launchFieldHelp("teamAllocation.vestingDays")
+  return z
+    .object({
+      recipient: z.string().describe(recipient),
+      percent: z.number().describe(percent),
+      cliffDays: z.number().int().describe(cliffDays),
+      vestingDays: z.number().int().nullable().optional().describe(vestingDays),
+    })
+    .strict()
+    .optional()
+    .describe([recipient, percent, cliffDays, vestingDays].join(" "))
+}
+
+/** Per-chain client validation for Hood-only options and `creatorFeeBps` before any upload or request. */
+export function chainLaunchOptionsRefusal(
+  args: Record<string, unknown>,
+): { code: "VALIDATION_FAILED"; message: string; field: string } | undefined {
+  const quote = typeof args.quoteAsset === "string" ? args.quoteAsset.toLowerCase() : undefined
+  const quoteChain = quote
+    ? LAUNCH_DEFINITION.quoteChains[quote as keyof typeof LAUNCH_DEFINITION.quoteChains]
+    : undefined
+  const resolvedChain = (typeof args.chain === "string" ? args.chain : undefined) ?? quoteChain ?? "solana"
+  const rules =
+    args.launchRules !== null && typeof args.launchRules === "object" && !Array.isArray(args.launchRules)
+      ? (args.launchRules as Record<string, unknown>)
+      : undefined
+  if (resolvedChain === "solana") {
+    if (args.teamAllocation !== undefined)
+      return {
+        code: "VALIDATION_FAILED",
+        message: "teamAllocation is only available on Hood launches.",
+        field: "teamAllocation",
+      }
+    if (args.snipeExempt !== undefined)
+      return {
+        code: "VALIDATION_FAILED",
+        message: "snipeExempt is only available on Hood launches.",
+        field: "snipeExempt",
+      }
+    if (rules?.snipeFeeStartBps !== undefined)
+      return {
+        code: "VALIDATION_FAILED",
+        message: "launchRules.snipeFeeStartBps is only available on Hood launches.",
+        field: "launchRules.snipeFeeStartBps",
+      }
+    if (rules?.snipeFeeDecaySecs !== undefined)
+      return {
+        code: "VALIDATION_FAILED",
+        message: "launchRules.snipeFeeDecaySecs is only available on Hood launches.",
+        field: "launchRules.snipeFeeDecaySecs",
+      }
+    const creatorField = fieldByKey("creatorFeeBps")
+    const solanaAllowed: readonly number[] =
+      "valuesByChain" in creatorField && creatorField.valuesByChain?.solana
+        ? creatorField.valuesByChain.solana
+        : [0, 100, 200]
+    if (
+      args.creatorFeeBps !== undefined &&
+      args.creatorFeeBps !== null &&
+      !solanaAllowed.includes(args.creatorFeeBps as number)
+    ) {
+      return { code: "VALIDATION_FAILED", message: "creatorFeeBps must be 0, 100 or 200.", field: "creatorFeeBps" }
+    }
+    return undefined
+  }
+  if (args.creatorFeeBps !== undefined && args.creatorFeeBps !== null) {
+    const bps = args.creatorFeeBps
+    const { curveFeeBps, maxCreatorFeeBps } = LAUNCH_DEFINITION.hoodGen2
+    if (typeof bps !== "number" || !Number.isInteger(bps) || bps < 0 || bps > maxCreatorFeeBps) {
+      return {
+        code: "VALIDATION_FAILED",
+        message: `creatorFeeBps must be a whole number from 0 to ${maxCreatorFeeBps}.`,
+        field: "creatorFeeBps",
+      }
+    }
+    const snipeStart = typeof rules?.snipeFeeStartBps === "number" ? rules.snipeFeeStartBps : 0
+    if (curveFeeBps + bps + snipeStart >= 10_000) {
+      return {
+        code: "VALIDATION_FAILED",
+        message: "the curve fee, creator fee and sniper fee at its peak must total under 100%",
+        field: "creatorFeeBps",
+      }
+    }
+  }
+  return undefined
 }
 
 function scalarSchema(field: LaunchField): z.ZodTypeAny {
@@ -215,7 +314,12 @@ function scalarSchema(field: LaunchField): z.ZodTypeAny {
   if (values?.every((value) => typeof value === "number")) schema = numberEnum(field.key)
   else if (values?.every((value) => typeof value === "string")) schema = z.enum(stringValues(field.key))
   else if (field.type === "boolean") schema = z.boolean()
-  else if (field.type === "integer" || ("wireType" in field && field.wireType === "number")) schema = z.number()
+  else if ("wireType" in field && field.wireType === "number | null") schema = z.number().int().nullable()
+  else if (field.type === "integer") schema = z.number().int()
+  else if ("wireType" in field && field.wireType === "number") schema = z.number()
+  else if ("wireType" in field && field.wireType === "string | number")
+    schema = z.union([z.string(), z.number().int().safe()])
+  else if ("wireType" in field && field.wireType === "string[]") schema = z.array(z.string())
   else schema = z.string()
   return described(schema, field.help, isRequired(field))
 }
@@ -245,6 +349,7 @@ export function buildLaunchTokenShape(): Record<string, z.ZodTypeAny> {
   shape.curve = curveSchema()
   shape.poolFee = poolFeeSchema()
   shape.launchRules = launchRulesSchema()
+  shape.teamAllocation = teamAllocationSchema()
   shape.buyAmount = z.union([z.string(), z.number()]).optional().describe(BUY_AMOUNT_DESCRIPTION)
   return shape
 }

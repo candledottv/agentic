@@ -90,6 +90,11 @@ export declare const LAUNCH_DEFINITION: {
             };
         };
     };
+    readonly hoodGen2: {
+        readonly curveFeeBps: 100;
+        readonly maxCreatorFeeBps: 9999;
+        readonly maxTeamBps: 500;
+    };
     readonly surfacesIntro: readonly ["CLI: scripts and terminals. Agents always pass --json.", "MCP: chat agents (Claude, the connector). The same launch fields and results as the CLI's --json.", "SDK: code that embeds Candle."];
     readonly fields: readonly [{
         readonly key: "wallet";
@@ -404,14 +409,22 @@ export declare const LAUNCH_DEFINITION: {
         };
     }, {
         readonly key: "creatorFeeBps";
-        readonly type: "enum";
-        readonly help: "An exp- mode's extra creator fee: 0, 100 or 200 bps on the curve and pool, paid to the creator in full.";
-        readonly values: readonly [0, 100, 200];
+        readonly type: "integer";
+        readonly help: "Extra creator fee in bps: on Solana exp- modes, 0, 100 or 200 on the curve and pool; on Hood generation 2 (while HOOD_GEN2_LAUNCH_ENABLED is on), a whole number from 0 to the factory's maxCreatorFeeBps, with curve fee + creatorFeeBps + snipeFeeStartBps under 10000.";
+        readonly wireType: "number | null";
+        readonly valuesByChain: {
+            readonly solana: readonly [0, 100, 200];
+        };
+        readonly range: {
+            readonly min: "0";
+            readonly max: "9999";
+            readonly unit: "bps";
+        };
         readonly default: 0;
         readonly surfaces: {
             readonly cli: {
                 readonly flag: "--creator-fee-bps";
-                readonly value: "0|100|200";
+                readonly value: "<bps>";
             };
             readonly mcp: {
                 readonly key: "creatorFeeBps";
@@ -601,8 +614,7 @@ export declare const LAUNCH_DEFINITION: {
     }, {
         readonly key: "feeWallet";
         readonly type: "string";
-        readonly help: "Solana only: the wallet this launch's curve and pool fees earn to, an on-curve wallet or a Squads v4 vault; defaults to the wallet that launches the token (the account wallet on a server without LAUNCH_FEE_WALLET_FROM_LAUNCHER, except an embedded launch).";
-        readonly chains: readonly ["solana"];
+        readonly help: "The launch fee wallet: on Solana, an on-curve wallet or a Squads v4 vault earning curve and pool fees (defaults to the launching wallet where LAUNCH_FEE_WALLET_FROM_LAUNCHER is on, else the account wallet, except an embedded launch); on Hood generation 2 (while HOOD_GEN2_LAUNCH_ENABLED is on), a non-zero 0x EOA or Safe earning the extra creator fee (send creatorFeeBps above 0 unless it is the creator).";
         readonly surfaces: {
             readonly cli: {
                 readonly flag: "--fee-wallet";
@@ -681,14 +693,13 @@ export declare const LAUNCH_DEFINITION: {
     }, {
         readonly key: "launchRules.openDelaySecs";
         readonly type: "duration";
-        readonly help: "Launch rules, Solana only, where the server has CURVE_LAUNCH_RULES_ENABLED on: how long after the launch buys open, at most 7 days (604800 seconds); before then only the launching wallet may buy. The CLI takes a duration (90m, 6h, 2d, or seconds); the request field is whole seconds.";
+        readonly help: "Launch rules (Solana where CURVE_LAUNCH_RULES_ENABLED is on; Hood generation 2 where HOOD_GEN2_LAUNCH_ENABLED is on): how long after the launch buys open, at most 7 days (604800 seconds); before then only the launching wallet may buy. The CLI takes a duration (90m, 6h, 2d, or seconds); the request field is whole seconds.";
         readonly wireType: "number";
         readonly range: {
             readonly min: "0";
             readonly max: "604800";
             readonly unit: "seconds";
         };
-        readonly chains: readonly ["solana"];
         readonly surfaces: {
             readonly cli: {
                 readonly flag: "--open-in";
@@ -704,11 +715,11 @@ export declare const LAUNCH_DEFINITION: {
     }, {
         readonly key: "launchRules.maxBuyPerWalletRaw";
         readonly type: "decimal";
-        readonly help: "The most quote one wallet may spend on the curve during --cap-window, curve fee included and Candle's fee not; needs --cap-window. The CLI takes whole quote units; the request field is raw units as a decimal string.";
+        readonly help: "The most quote one wallet may spend on the curve during --cap-window, curve fee included and Candle's fee not; needs --cap-window. The CLI takes whole quote units; the request field is raw units as a decimal string (fits u64 on Solana, uint256 on Hood).";
+        readonly wireType: "string | number";
         readonly range: {
             readonly unit: "whole quote units";
         };
-        readonly chains: readonly ["solana"];
         readonly requires: readonly ["launchRules.capWindowSecs"];
         readonly surfaces: {
             readonly cli: {
@@ -732,7 +743,6 @@ export declare const LAUNCH_DEFINITION: {
             readonly max: "86400";
             readonly unit: "seconds";
         };
-        readonly chains: readonly ["solana"];
         readonly requires: readonly ["launchRules.maxBuyPerWalletRaw"];
         readonly surfaces: {
             readonly cli: {
@@ -749,14 +759,23 @@ export declare const LAUNCH_DEFINITION: {
     }, {
         readonly key: "launchRules.allowlist";
         readonly type: "file";
-        readonly help: "Only these wallets may buy during --allowlist-window: 1 to 4,096 distinct Solana addresses; needs --allowlist-window. The CLI reads a file, one address per line or comma separated; the request field is the list.";
+        readonly help: "Only these wallets may buy during --allowlist-window: 1 to 4,096 distinct Solana addresses, or on Hood generation 2 1 to 10,000 distinct non-zero 0x EVM addresses; needs --allowlist-window. The CLI reads a file, one address per line or comma separated; the request field is the list.";
         readonly wireType: "string[]";
         readonly range: {
             readonly min: "1";
             readonly max: "4096";
             readonly unit: "wallets";
+            readonly byChain: {
+                readonly solana: {
+                    readonly min: "1";
+                    readonly max: "4096";
+                };
+                readonly hood: {
+                    readonly min: "1";
+                    readonly max: "10000";
+                };
+            };
         };
-        readonly chains: readonly ["solana"];
         readonly requires: readonly ["launchRules.allowlistWindowSecs"];
         readonly surfaces: {
             readonly cli: {
@@ -780,7 +799,6 @@ export declare const LAUNCH_DEFINITION: {
             readonly max: "86400";
             readonly unit: "seconds";
         };
-        readonly chains: readonly ["solana"];
         readonly requires: readonly ["launchRules.allowlist"];
         readonly surfaces: {
             readonly cli: {
@@ -797,11 +815,11 @@ export declare const LAUNCH_DEFINITION: {
     }, {
         readonly key: "launchRules.devBuyMaxRaw";
         readonly type: "decimal";
-        readonly help: "The most the launching wallet may buy before the open, only with --open-in: at least the launch's own buy, at most the dev-buy ceiling, and the buy by default. That spend counts toward the per-wallet cap after the open. The CLI takes whole quote units; the request field is raw units as a decimal string.";
+        readonly help: "The most the launching wallet may buy before the open, only with --open-in above 0: at least the launch's own buy (and at most the dev-buy ceiling on Solana, where it defaults to the buy and counts toward the per-wallet cap after the open). The CLI takes whole quote units; the request field is raw units as a decimal string.";
+        readonly wireType: "string | number";
         readonly range: {
             readonly unit: "whole quote units";
         };
-        readonly chains: readonly ["solana"];
         readonly requires: readonly ["launchRules.openDelaySecs"];
         readonly surfaces: {
             readonly cli: {
@@ -813,6 +831,166 @@ export declare const LAUNCH_DEFINITION: {
             };
             readonly sdk: {
                 readonly key: "launchRules.devBuyMaxRaw";
+            };
+        };
+    }, {
+        readonly key: "launchRules.snipeFeeStartBps";
+        readonly type: "integer";
+        readonly help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): starting sniper fee on buys, 0 to 2500 bps; needs --snipe-fee-decay above 0 when non-zero, and curve fee + creatorFeeBps + snipeFeeStartBps must stay under 10000.";
+        readonly wireType: "number | null";
+        readonly range: {
+            readonly min: "0";
+            readonly max: "2500";
+            readonly unit: "bps";
+        };
+        readonly chains: readonly ["hood"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--snipe-fee-start-bps";
+                readonly value: "<bps>";
+            };
+            readonly mcp: {
+                readonly key: "launchRules.snipeFeeStartBps";
+            };
+            readonly sdk: {
+                readonly key: "launchRules.snipeFeeStartBps";
+            };
+        };
+    }, {
+        readonly key: "launchRules.snipeFeeDecaySecs";
+        readonly type: "duration";
+        readonly help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): how long the sniper fee decays from snipeFeeStartBps to 0 after the open, 0 to 600 seconds (or a duration such as 2m or 10m); must be above 0 when snipeFeeStartBps is above 0.";
+        readonly wireType: "number | null";
+        readonly range: {
+            readonly min: "0";
+            readonly max: "600";
+            readonly unit: "seconds";
+        };
+        readonly chains: readonly ["hood"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--snipe-fee-decay";
+                readonly value: "<duration>";
+            };
+            readonly mcp: {
+                readonly key: "launchRules.snipeFeeDecaySecs";
+            };
+            readonly sdk: {
+                readonly key: "launchRules.snipeFeeDecaySecs";
+            };
+        };
+    }, {
+        readonly key: "snipeExempt";
+        readonly type: "string";
+        readonly help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): up to 32 distinct non-zero 0x EVM bundle wallets exempt from the sniper fee. Comma-separated on the CLI; an array on MCP and the SDK.";
+        readonly wireType: "string[]";
+        readonly range: {
+            readonly min: "0";
+            readonly max: "32";
+            readonly unit: "wallets";
+        };
+        readonly chains: readonly ["hood"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--snipe-exempt";
+                readonly value: "<0x,...>";
+            };
+            readonly mcp: {
+                readonly key: "snipeExempt";
+            };
+            readonly sdk: {
+                readonly key: "snipeExempt";
+            };
+        };
+    }, {
+        readonly key: "teamAllocation.recipient";
+        readonly type: "string";
+        readonly help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): the non-zero 0x EVM recipient of the team vesting escrow; takes --team-percent, --team-cliff-days and optional --team-vesting-days.";
+        readonly chains: readonly ["hood"];
+        readonly requires: readonly ["teamAllocation.percent", "teamAllocation.cliffDays"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--team-recipient";
+                readonly value: "<0x-address>";
+            };
+            readonly mcp: {
+                readonly key: "teamAllocation.recipient";
+            };
+            readonly sdk: {
+                readonly key: "teamAllocation.recipient";
+            };
+        };
+    }, {
+        readonly key: "teamAllocation.percent";
+        readonly type: "decimal";
+        readonly help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): team supply share above 0 and at most 5%, with at most two decimals; takes --team-recipient and --team-cliff-days.";
+        readonly wireType: "number";
+        readonly range: {
+            readonly min: "0.01";
+            readonly max: "5";
+            readonly unit: "percent";
+        };
+        readonly chains: readonly ["hood"];
+        readonly requires: readonly ["teamAllocation.recipient", "teamAllocation.cliffDays"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--team-percent";
+                readonly value: "<percent>";
+            };
+            readonly mcp: {
+                readonly key: "teamAllocation.percent";
+            };
+            readonly sdk: {
+                readonly key: "teamAllocation.percent";
+            };
+        };
+    }, {
+        readonly key: "teamAllocation.cliffDays";
+        readonly type: "integer";
+        readonly help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): whole days before team vesting begins, 30 to 3650; required with --team-recipient and --team-percent.";
+        readonly wireType: "number";
+        readonly range: {
+            readonly min: "30";
+            readonly max: "3650";
+            readonly unit: "days";
+        };
+        readonly chains: readonly ["hood"];
+        readonly requires: readonly ["teamAllocation.recipient", "teamAllocation.percent"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--team-cliff-days";
+                readonly value: "<days>";
+            };
+            readonly mcp: {
+                readonly key: "teamAllocation.cliffDays";
+            };
+            readonly sdk: {
+                readonly key: "teamAllocation.cliffDays";
+            };
+        };
+    }, {
+        readonly key: "teamAllocation.vestingDays";
+        readonly type: "integer";
+        readonly help: "Hood generation 2 only (while HOOD_GEN2_LAUNCH_ENABLED is on): whole days of linear team vesting after the cliff, 0 to 3650 (defaults to 0, unlocking at the cliff).";
+        readonly wireType: "number | null";
+        readonly range: {
+            readonly min: "0";
+            readonly max: "3650";
+            readonly unit: "days";
+        };
+        readonly default: 0;
+        readonly chains: readonly ["hood"];
+        readonly requires: readonly ["teamAllocation.recipient", "teamAllocation.percent", "teamAllocation.cliffDays"];
+        readonly surfaces: {
+            readonly cli: {
+                readonly flag: "--team-vesting-days";
+                readonly value: "<days>";
+            };
+            readonly mcp: {
+                readonly key: "teamAllocation.vestingDays";
+            };
+            readonly sdk: {
+                readonly key: "teamAllocation.vestingDays";
             };
         };
     }, {
@@ -870,7 +1048,7 @@ export interface GeneratedLaunchFields {
         virtualQuote?: string;
         threshold?: string;
     };
-    creatorFeeBps?: 0 | 100 | 200;
+    creatorFeeBps?: number | null;
     stakerAllocationBps?: number;
     poolFee?: {
         tier?: 25 | 50 | 100;
@@ -890,11 +1068,20 @@ export interface GeneratedLaunchFields {
     buy?: string;
     launchRules?: {
         openDelaySecs?: number;
-        maxBuyPerWalletRaw?: string;
+        maxBuyPerWalletRaw?: string | number;
         capWindowSecs?: number;
         allowlist?: string[];
         allowlistWindowSecs?: number;
-        devBuyMaxRaw?: string;
+        devBuyMaxRaw?: string | number;
+        snipeFeeStartBps?: number | null;
+        snipeFeeDecaySecs?: number | null;
+    };
+    snipeExempt?: string[];
+    teamAllocation?: {
+        recipient?: string;
+        percent?: number;
+        cliffDays?: number;
+        vestingDays?: number | null;
     };
     dryRun?: boolean;
     hide?: boolean;

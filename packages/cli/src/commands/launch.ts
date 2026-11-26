@@ -22,6 +22,13 @@ import {
   feeWalletSelection,
 } from "../fee-wallet"
 import {
+  creatorFeeProblemForChain,
+  type HoodGen2TopFields,
+  hoodGen2TopRequestFields,
+  hoodOnlyFlagOnSolanaProblem,
+  isNonZeroEvmAddress,
+} from "../hood-launch-options"
+import {
   createCurveLegOk,
   curveCreatedBy,
   feeLegOk,
@@ -198,8 +205,6 @@ function curveFlagProblem(flags: Record<string, string>): string | undefined {
   if (v !== undefined && mode !== "exp-custom") return "--curve-v and --curve-g take --mode exp-custom."
   if (mode === "exp-custom" && v === undefined)
     return "--mode exp-custom needs --curve-v and --curve-g: the curve's V and G in whole units of the quote asset."
-  const fee = flags["--creator-fee-bps"]
-  if (fee !== undefined && !mode?.startsWith("exp-")) return "--creator-fee-bps takes an exp- --mode."
   return undefined
 }
 
@@ -251,7 +256,13 @@ function flagChain(flags: Record<string, string>): TradeChain | undefined {
 
 export async function launch(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(
-    args.map((arg, index) => (args[index - 1] === "--buy" && arg.trim() === "" ? "0" : arg)),
+    args.map((arg, index) => {
+      if (args[index - 1] === "--buy" && arg.trim() === "") return "0"
+      if (args[index - 1] === "--snipe-exempt" && arg.trim() === "") return ","
+      if (args[index - 1] === "--team-vesting-days" && (arg.trim() === "" || arg.trim().toLowerCase() === "null"))
+        return "0"
+      return arg
+    }),
     LAUNCH_ARG_SPEC,
   )
   if ("error" in parsed) {
@@ -362,18 +373,9 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     writeUsageFailure(ctx.deps, `${(error as Error).message}. ${USAGE}`, ctx.json)
     return 2
   }
-  // BE-2519: the fee-wallet flags are validated here, mirroring the API's parseFeeWallet, so a bad
-  // address or a bad multisig pair is refused before any request -- under --check included.
-  let feeWallet: FeeWalletSelection | undefined
-  try {
-    feeWallet = feeWalletSelection(flags)
-  } catch (error) {
-    writeUsageFailure(ctx.deps, `${(error as Error).message}. ${USAGE}`, ctx.json)
-    return 2
-  }
   // BE-2572 (W6): the opt-in strict flag refuses a launch whose fee wallet would default, before
   // any request -- under --check and --dry-run included.
-  if (parsed.booleans.has("--require-fee-wallet") && !feeWallet) {
+  if (parsed.booleans.has("--require-fee-wallet") && flags["--fee-wallet"] === undefined) {
     writeUsageFailure(
       ctx.deps,
       `--require-fee-wallet needs --fee-wallet <address>: pass the wallet this launch's fees earn to. ${USAGE}`,
@@ -393,13 +395,43 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
           "Launching against this quote is not enabled: only a Solana token mint or a listed pair can launch today. Run candle launch --quote <symbol|address> --check to inspect admission and economics; nothing was uploaded or built.",
         ),
       )
-    // BE-2519: the fee wallet is Solana only, as the API's parseFeeWallet refuses it on Hood.
-    if (hinted === "hood" && feeWalletGiven(flags)) {
-      writeUsageFailure(ctx.deps, `--fee-wallet is Solana only; a Hood launch cannot take it. ${USAGE}`, ctx.json)
-      return 2
-    }
     if (!check && hinted === "hood" && flags["--dex-version"] === undefined) {
       writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE}`, ctx.json)
+      return 2
+    }
+    // Every valid non-check Hood launch carries --dex-version (making `hinted` "hood"), so without
+    // a Hood hint the launch options validate against Solana before any request is sent.
+    const optionChain: TradeChain = hinted ?? "solana"
+    let feeWallet: FeeWalletSelection | undefined
+    let hoodOptions: HoodGen2TopFields = {}
+    if (!check && optionChain === "solana") {
+      const hoodFlag = hoodOnlyFlagOnSolanaProblem(flags)
+      if (hoodFlag) {
+        writeUsageFailure(ctx.deps, `${hoodFlag} ${USAGE}`, ctx.json)
+        return 2
+      }
+    }
+    if (!check) {
+      const creatorProblem = creatorFeeProblemForChain(flags, optionChain)
+      if (creatorProblem) {
+        writeUsageFailure(ctx.deps, `${creatorProblem} ${USAGE}`, ctx.json)
+        return 2
+      }
+    }
+    try {
+      if (optionChain === "solana") {
+        if (
+          !check ||
+          flags["--fee-wallet-multisig"] !== undefined ||
+          !isNonZeroEvmAddress(flags["--fee-wallet"] ?? "")
+        ) {
+          feeWallet = feeWalletSelection(flags)
+        }
+      } else {
+        hoodOptions = hoodGen2TopRequestFields(flags)
+      }
+    } catch (error) {
+      writeUsageFailure(ctx.deps, `${(error as Error).message}. ${USAGE}`, ctx.json)
       return 2
     }
     // BE-1283: a file that is unreadable, over 10MB or not one of the four image types is refused
@@ -416,16 +448,12 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         return tradingFailure(ctx, error)
       }
     }
-    // BE-2794: launch rules are read, converted and checked here, before any request. Under --check
-    // nothing is read, as with the image.
+    // BE-2794 / BE-4350: launch rules are read, converted and checked here, before any request.
+    // Under --check nothing is read, as with the image.
     let rules: LaunchRulesBody | undefined
     if (!check && launchRulesGiven(flags)) {
-      if (hinted === "hood") {
-        writeUsageFailure(ctx.deps, `${LAUNCH_RULES_SOLANA_ONLY} ${USAGE}`, ctx.json)
-        return 2
-      }
       try {
-        rules = await launchRulesFor(ctx, flags)
+        rules = await launchRulesFor(ctx, flags, optionChain)
       } catch (error) {
         if (error instanceof TradingError) throw error
         writeUsageFailure(ctx.deps, (error as Error).message, ctx.json)
@@ -500,6 +528,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         yes: parsed.booleans.has("--yes"),
         dryRun,
         rules,
+        hoodOptions,
       })
     // Past --check, the required-flags refusal above guarantees --wallet is present.
     const wallet = await tradingWallet(ctx, key, flags["--wallet"] ?? "", "launch:write", hinted ?? "any")
@@ -507,14 +536,11 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     if (chain === "hood" && flags["--dex-version"] === undefined)
       throw new TradingUsage(`${wallet.address} is a Hood TEE wallet, and a Hood launch needs --dex-version v3|v4.`)
     // BE-2572 (W6): a live Solana launch with no fee wallet warns on stderr before anything is
-    // sent. A dry run keeps the preview's ordinary info line; Hood has no fee wallet.
+    // sent. A dry run keeps the preview's ordinary info line; Hood has no default fee-wallet warning.
     if (chain === "solana" && !dryRun && !feeWallet) notice(ctx.deps, "stderr", "warning", FEE_WALLET_DEFAULT_WARNING)
     const buy = launchBuy(flags, chain)
-    if (chain === "hood" && (Object.keys(poolRequestFields(flags)).length || feeWalletGiven(flags)))
-      throw new TradingUsage(
-        "Pool fee and pool shape choices are Solana only, and so is --fee-wallet; a Hood launch cannot take them.",
-      )
-    if (chain === "hood" && launchRulesGiven(flags)) throw new TradingUsage(LAUNCH_RULES_SOLANA_ONLY)
+    if (chain === "hood" && Object.keys(poolRequestFields(flags)).length)
+      throw new TradingUsage("Pool fee and pool shape choices are Solana only; a Hood launch cannot take them.")
     // BE-1721 (D1): a Solana TEE launch with a first buy is an atomic launch, the buy its own leg.
     // Its local refusals come here, before the upload and before the id is claimed.
     const atomic = chain === "solana" && buy !== undefined
@@ -539,6 +565,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         imageChecked: uploaded.imageChecked,
         bannerChecked: uploaded.bannerChecked,
         rules,
+        hoodOptions,
         used,
       })
     if (atomic)
@@ -562,6 +589,8 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         buy,
         imageUrl,
         bannerUrl,
+        rules,
+        hoodOptions,
         used,
         yes: parsed.booleans.has("--yes"),
       })
@@ -748,8 +777,10 @@ interface LaunchBodyArgs {
   bannerUrl?: string
   imageChecked?: boolean
   bannerChecked?: boolean
-  /** BE-2794: the request's `launchRules`, read and checked before any request; Solana only. */
+  /** BE-2794 / BE-4350: the request's `launchRules`, read and checked before any request. */
   rules?: LaunchRulesBody
+  /** BE-4350: top-level Hood generation 2 options (`snipeExempt`, `feeWallet`, `teamAllocation`). */
+  hoodOptions?: HoodGen2TopFields
 }
 
 /** Optional metadata is identical on every launch route. */
@@ -831,6 +862,7 @@ function hoodBody(args: LaunchBodyArgs): Json {
   const quoteAsset = args.flags["--quote-asset"]
   return {
     ...launchFields(args),
+    ...args.hoodOptions,
     chain: "hood",
     buyAmount: args.buy ? args.buy.raw : 0,
     linkedWalletId: args.wallet.id,
@@ -930,28 +962,28 @@ function rulesBlock(answer: unknown, chain: TradeChain, flags: Record<string, st
   return lines.length ? `${lines.join("\n")}\n` : ""
 }
 
-const LAUNCH_RULES_SOLANA_ONLY =
-  "Launch rules (--open-in, --max-buy-per-wallet, --cap-window, --allowlist, --allowlist-window, --dev-buy-max) are only available on Solana launches."
-
 /**
- * BE-2794: the launch rules flags as the request's `launchRules`, in raw units of the Solana quote
- * asset, held to this launch's own `--buy` and its dev-buy ceiling as the API holds them (spec
- * 3.3). Rules are Solana only, so the quote is `--quote-asset` or SOL. Throws a usage message.
+ * BE-2794 / BE-4350: the launch rules flags as the request's `launchRules`, in raw units of the
+ * launch's quote asset, held to this launch's own `--buy` (and on Solana its dev-buy ceiling).
+ * Throws a usage message.
  */
 async function launchRulesFor(
   ctx: CommandContext,
   flags: Record<string, string>,
+  chain: TradeChain = "solana",
 ): Promise<LaunchRulesBody | undefined> {
-  const quote = flags["--quote-asset"] ?? LAUNCH_DEFINITION.defaultQuote.solana
+  const quote = (flags["--quote-asset"] ?? LAUNCH_DEFINITION.defaultQuote[chain]).toLowerCase()
   const decimals = LAUNCH_DEFINITION.quoteDecimals[quote as keyof typeof LAUNCH_DEFINITION.quoteDecimals]
-  if (decimals === undefined || QUOTE_CHAIN[quote] !== "solana") throw new Error(LAUNCH_RULES_SOLANA_ONLY)
-  const buy = launchBuy(flags, "solana")
-  const allowlist = flags["--allowlist"] !== undefined ? await readAllowlist(flags["--allowlist"]) : undefined
+  if (decimals === undefined || QUOTE_CHAIN[quote] !== chain)
+    throw new Error(`--quote-asset ${safeText(quote)} is not a ${chainName(chain)} quote asset.`)
+  const buy = launchBuy(flags, chain)
+  const allowlist = flags["--allowlist"] !== undefined ? await readAllowlist(flags["--allowlist"], chain) : undefined
   return launchRulesRequest(flags, {
+    chain,
     quote,
     decimals,
     buyRaw: buy ? BigInt(buy.raw) : 0n,
-    ceilingRaw: effectiveDevBuyCeiling(ctx, flags, quote),
+    ceilingRaw: chain === "solana" ? effectiveDevBuyCeiling(ctx, flags, quote) : null,
     ...(allowlist ? { allowlist } : {}),
   })
 }
@@ -976,8 +1008,9 @@ async function dryRunLaunch(
       throw buyRefusal(error)
     })
     .then((answered) => requireHideEcho(args.flags, answered))
+  const solanaFeeWallet = chain === "solana" ? feeWalletSelection(args.flags) : undefined
   ctx.deps.stderr.write(
-    `Dry run: nothing was built, signed or recorded, and launch id ${args.id} is unused.\n${previewLines(answer, chain, feeWalletSelection(args.flags))}`,
+    `Dry run: nothing was built, signed or recorded, and launch id ${args.id} is unused.\n${previewLines(answer, chain, solanaFeeWallet)}`,
   )
   return printTradingResult(ctx, { ...answer, clientTradeId: args.id, kind: "launch", ...args.used })
 }
@@ -1408,18 +1441,17 @@ async function embeddedLaunch(
     yes: boolean
     dryRun: boolean
     rules?: LaunchRulesBody
+    hoodOptions?: HoodGen2TopFields
   },
 ): Promise<number> {
   const { flags, id } = args
   const chain = flagChain(flags) ?? "solana"
   const buy = launchBuy(flags, chain)
   if (buy && chain === "solana") firstBuyCeiling(ctx, flags, buy)
-  if (chain === "hood" && (Object.keys(poolRequestFields(flags)).length || feeWalletGiven(flags)))
-    throw new TradingUsage(
-      "Pool fee and pool shape choices are Solana only, and so is --fee-wallet; a Hood launch cannot take them.",
-    )
+  if (chain === "hood" && Object.keys(poolRequestFields(flags)).length)
+    throw new TradingUsage("Pool fee and pool shape choices are Solana only; a Hood launch cannot take them.")
   // BE-2572 (W6): a live Solana launch with no fee wallet warns on stderr before anything is
-  // sent. A dry run keeps the preview's ordinary info line; Hood has no fee wallet.
+  // sent. A dry run keeps the preview's ordinary info line; Hood has no default fee-wallet warning.
   if (chain === "solana" && !args.dryRun && !feeWalletGiven(flags))
     notice(ctx.deps, "stderr", "warning", FEE_WALLET_DEFAULT_WARNING)
   const wallet = await embeddedLaunchWallet(ctx, key, chain)
@@ -1441,8 +1473,8 @@ async function embeddedLaunch(
     ...launchCurveFields(flags),
     ...launchMetadataFields(flags),
     ...poolRequestFields(flags),
-    // BE-2519: the headless route takes the same Solana fee-wallet fields as the self build.
-    ...feeWalletRequestFields(flags),
+    // BE-2519 / BE-4350: Solana sends feeWallet/feeWalletMultisig; Hood sends top-level gen 2 options.
+    ...(chain === "solana" ? feeWalletRequestFields(flags) : args.hoodOptions),
     ...(args.rules ? { launchRules: args.rules } : {}),
     ...hideBodyField(flags),
     ...(buy
@@ -1451,15 +1483,14 @@ async function embeddedLaunch(
   }
   // The dry run is the pre-check for the server-executed launch below: no echo, no launch.
   const answer = requireHideEcho(flags, await request(ctx, key, "/api/v1/launch/headless/dry-run", body))
+  const solanaFeeWallet = chain === "solana" ? feeWalletSelection(flags) : undefined
   let quote: QuoteDisplay & Json = {
     intent: `Launch ${flags["--name"]} (${flags["--symbol"]})${buy ? ` with a first buy of ${buy.display}` : ""} from the embedded wallet`,
     wallet,
     venue: "curve launch (signed by Candle)",
     priceImpactPct: null,
     minimumReceived: "0 tokens (no first buy)",
-    ...(chain === "solana"
-      ? { feeWallet: feeWalletQuoteLine(feeWalletSelection(flags), feeWalletEchoOf(answer)) }
-      : {}),
+    ...(chain === "solana" ? { feeWallet: feeWalletQuoteLine(solanaFeeWallet, feeWalletEchoOf(answer)) } : {}),
     tokenRisks: [],
   }
   if (buy && chain === "solana") {
@@ -1502,7 +1533,7 @@ async function embeddedLaunch(
     previewSchema.parse(answer)
     if (buy) quote.minimumReceived = "not quoted (best-effort first buy after creation)"
   }
-  ctx.deps.stderr.write(previewLines(answer, chain, feeWalletSelection(flags)))
+  ctx.deps.stderr.write(previewLines(answer, chain, solanaFeeWallet))
   if (args.dryRun) {
     ctx.deps.stderr.write(`Dry run: nothing was built, signed or recorded, and launch id ${id} is unused.\n`)
     return printTradingResult(ctx, { ...answer, clientTradeId: id, kind: "launch", quote, ...used })
@@ -1678,6 +1709,8 @@ async function hoodLaunch(
     /** The image the build is made with: `--image-url`, or the URL `--image`'s upload returned. */
     imageUrl: string
     bannerUrl?: string
+    rules?: LaunchRulesBody
+    hoodOptions?: HoodGen2TopFields
     /** What the result carries beside the launch: the uploaded image's URL, with `--image`. */
     used: Json
     yes: boolean

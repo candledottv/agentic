@@ -7,9 +7,10 @@
  */
 import { readFile, stat } from "node:fs/promises"
 import { z } from "zod"
+import { looksLikeEvmAddress, toChecksumAddress } from "./evm-lite"
 import { LAUNCH_DEFINITION } from "./launch-definition"
 import { decodePubkey, encodePubkey } from "./solana-lite"
-import { decimalAmount, rawAmount, safeText } from "./trading"
+import { decimalAmount, rawAmount, safeText, type TradeChain } from "./trading"
 
 type Flags = Partial<Record<string, string | undefined>>
 
@@ -20,11 +21,15 @@ export const LAUNCH_RULES_FLAGS = [
   "--allowlist",
   "--allowlist-window",
   "--dev-buy-max",
+  "--snipe-fee-start-bps",
+  "--snipe-fee-decay",
 ] as const
 
 const U64_MAX = 0xffff_ffff_ffff_ffffn
+const U256_MAX = (1n << 256n) - 1n
+const ZERO_EVM_ADDRESS = "0x0000000000000000000000000000000000000000"
 const UNITS: Record<string, number> = { s: 1, m: 60, h: 3_600, d: 86_400 }
-/** 4,096 addresses with separators is under 200 KB; a file far past that is not an allowlist. */
+/** 10,000 EVM addresses with separators is under 500 KB; a file past 1 MB is not an allowlist. */
 const MAX_ALLOWLIST_FILE_BYTES = 1_000_000
 
 const rulesField = (key: string) => {
@@ -32,7 +37,13 @@ const rulesField = (key: string) => {
   if (!found || !("range" in found)) throw new Error(`Missing launch rules field ${key}`)
   return found.range
 }
-const maxAllowlist = Number((rulesField("allowlist") as { max: string }).max)
+const maxAllowlistFor = (chain: TradeChain): number => {
+  const range = rulesField("allowlist") as {
+    max: string
+    byChain?: Partial<Record<TradeChain, { min: string; max: string }>>
+  }
+  return Number(range.byChain?.[chain]?.max ?? range.max)
+}
 
 export function launchRulesGiven(flags: Flags): boolean {
   return LAUNCH_RULES_FLAGS.some((flag) => flags[flag] !== undefined)
@@ -69,6 +80,13 @@ export function launchRulesFlagProblem(flags: Flags): string | undefined {
     return "--allowlist and --allowlist-window go together: pass both or neither."
   if (given(flags, "--dev-buy-max") && openDelay(flags) === 0)
     return "--dev-buy-max needs --open-in above 0: it only applies before the open."
+  const snipeStart = flags["--snipe-fee-start-bps"]
+  if (
+    snipeStart !== undefined &&
+    Number(snipeStart) > 0 &&
+    (parseDuration(flags["--snipe-fee-decay"] ?? "0") ?? 0) === 0
+  )
+    return "--snipe-fee-start-bps needs --snipe-fee-decay above 0."
   for (const flag of ["--max-buy-per-wallet", "--dev-buy-max"]) {
     const value = flags[flag]
     if (value !== undefined && !/^\d+(\.\d+)?$/.test(value)) return amountFormat(flag)
@@ -77,53 +95,64 @@ export function launchRulesFlagProblem(flags: Flags): string | undefined {
   return undefined
 }
 
-const amountFormat = (flag: string) =>
-  `${flag} must be a positive amount in whole quote units, at most the quote asset's decimals, that fits in u64.`
+const amountFormat = (flag: string, chain: TradeChain = "solana") =>
+  `${flag} must be a positive amount in whole quote units, at most the quote asset's decimals, that fits in ${chain === "solana" ? "u64" : "uint256"}.`
 
 /**
  * The addresses in an allowlist file: one per line, or comma separated, blank lines skipped and a
- * value in double quotes unquoted. Every entry must be a base58 Solana address; duplicates are
- * dropped, and the API sorts the list. Throws a usage message naming the line.
+ * value in double quotes unquoted. On Solana every entry is a base58 Solana address (1 to 4,096);
+ * on Hood every entry is a non-zero 0x EVM address (1 to 10,000, checksummed). Duplicates are
+ * dropped. Throws a usage message naming the line.
  */
-export function parseAllowlist(text: string, path: string): string[] {
+export function parseAllowlist(text: string, path: string, chain: TradeChain = "solana"): string[] {
+  const max = maxAllowlistFor(chain)
   const wallets = new Set<string>()
   for (const [index, line] of text.split(/\r?\n/).entries()) {
     for (const cell of line.split(",")) {
       const entry = cell.trim().replace(/^"(.*)"$/, "$1")
       if (entry === "") continue
-      let canonical: string | undefined
-      try {
-        canonical = encodePubkey(decodePubkey(entry))
-      } catch {}
-      if (canonical !== entry)
-        throw new Error(
-          `--allowlist ${safeText(path)}, line ${index + 1}: ${safeText(entry.slice(0, 64))} is not a base58 Solana address.`,
-        )
-      wallets.add(entry)
+      if (chain === "solana") {
+        let canonical: string | undefined
+        try {
+          canonical = encodePubkey(decodePubkey(entry))
+        } catch {}
+        if (canonical !== entry)
+          throw new Error(
+            `--allowlist ${safeText(path)}, line ${index + 1}: ${safeText(entry.slice(0, 64))} is not a base58 Solana address.`,
+          )
+        wallets.add(entry)
+      } else {
+        if (!looksLikeEvmAddress(entry) || entry.toLowerCase() === ZERO_EVM_ADDRESS)
+          throw new Error(
+            `--allowlist ${safeText(path)}, line ${index + 1}: ${safeText(entry.slice(0, 64))} is not a non-zero 0x EVM address.`,
+          )
+        wallets.add(toChecksumAddress(entry))
+      }
     }
   }
-  if (wallets.size < 1 || wallets.size > maxAllowlist)
-    throw new Error(`--allowlist holds 1 to ${maxAllowlist} distinct wallets; ${safeText(path)} has ${wallets.size}.`)
+  if (wallets.size < 1 || wallets.size > max)
+    throw new Error(`--allowlist holds 1 to ${max} distinct wallets; ${safeText(path)} has ${wallets.size}.`)
   return [...wallets]
 }
 
 /** `--allowlist <path>` read and parsed. Throws a usage message. */
-export async function readAllowlist(path: string): Promise<string[]> {
+export async function readAllowlist(path: string, chain: TradeChain = "solana"): Promise<string[]> {
+  const max = maxAllowlistFor(chain)
   let text: string
   try {
     const info = await stat(path)
     if (!info.isFile()) throw new Error("not a file")
     if (info.size > MAX_ALLOWLIST_FILE_BYTES)
-      throw new Error(`--allowlist ${safeText(path)} is over 1MB, far more than ${maxAllowlist} addresses.`)
+      throw new Error(`--allowlist ${safeText(path)} is over 1MB, far more than ${max} addresses.`)
     text = await readFile(path, "utf8")
   } catch (error) {
     if ((error as Error).message.startsWith("--allowlist")) throw error
     throw new Error(`--allowlist ${safeText(path)} could not be read as a file.`)
   }
-  return parseAllowlist(text, path)
+  return parseAllowlist(text, path, chain)
 }
 
-/** The request's `launchRules`, as the API takes it (3.1). */
+/** The request's `launchRules`, as the API takes it on Solana (3.1) and Hood generation 2. */
 export interface LaunchRulesBody {
   openDelaySecs?: number
   maxBuyPerWalletRaw?: string
@@ -131,28 +160,37 @@ export interface LaunchRulesBody {
   allowlist?: string[]
   allowlistWindowSecs?: number
   devBuyMaxRaw?: string
+  snipeFeeStartBps?: number
+  snipeFeeDecaySecs?: number
 }
 
 /**
  * The flags as the request's nested object, in raw units of the launch's quote asset, with the
- * cross-checks 3.3 makes against the launch's own dev buy. Undefined when no rule is set (every
- * flag absent, or `--open-in 0` alone), so the request is the one it was without the flags.
- * Throws a usage message.
+ * cross-checks against the launch's own dev buy. Undefined when no rule is set (every flag absent,
+ * or `--open-in 0` alone), so the request is the one it was without the flags. Throws a usage message.
  */
 export function launchRulesRequest(
   flags: Flags,
   launch: {
+    chain?: TradeChain
     quote: string
     decimals: number
     /** The launch's own dev buy, `--buy`, raw; 0 without one. */
     buyRaw: bigint
-    /** The dev-buy ceiling this launch is held to, raw. */
-    ceilingRaw: bigint
+    /** The dev-buy ceiling this launch is held to on Solana, raw; null on Hood. */
+    ceilingRaw: bigint | null
     allowlist?: string[]
   },
 ): LaunchRulesBody | undefined {
+  const chain = launch.chain ?? "solana"
+  if (chain === "solana") {
+    for (const flag of ["--snipe-fee-start-bps", "--snipe-fee-decay"] as const) {
+      if (flags[flag] !== undefined) throw new Error(`${flag} is only available on Hood launches.`)
+    }
+  }
   const problem = launchRulesFlagProblem(flags)
   if (problem) throw new Error(problem)
+  const maxRaw = chain === "solana" ? U64_MAX : U256_MAX
   const symbol = launch.quote.toUpperCase()
   const whole = (raw: bigint) => `${shortAmount(raw.toString(), launch.decimals)} ${symbol}`
   const raw = (flag: string, value: string | undefined): bigint | undefined => {
@@ -161,9 +199,9 @@ export function launchRulesRequest(
     try {
       amount = BigInt(rawAmount(value, launch.decimals))
     } catch {
-      throw new Error(amountFormat(flag))
+      throw new Error(amountFormat(flag, chain))
     }
-    if (amount > U64_MAX) throw new Error(amountFormat(flag))
+    if (amount > maxRaw) throw new Error(amountFormat(flag, chain))
     return amount
   }
   const body: LaunchRulesBody = {}
@@ -184,12 +222,17 @@ export function launchRulesRequest(
       throw new Error(
         `--dev-buy-max (${whole(devBuyMax)}) is below this launch's own dev buy, --buy (${whole(launch.buyRaw)}).`,
       )
-    if (devBuyMax > launch.ceilingRaw)
+    if (launch.ceilingRaw !== null && devBuyMax > launch.ceilingRaw)
       throw new Error(`--dev-buy-max is above the dev-buy ceiling for this launch (${whole(launch.ceilingRaw)}).`)
     body.devBuyMaxRaw = devBuyMax.toString()
   }
-  // With no open delay the dev buy is an ordinary buy under the cap.
-  if (cap !== undefined && delay === 0 && launch.buyRaw > cap)
+  if (chain !== "solana") {
+    if (flags["--snipe-fee-start-bps"] !== undefined) body.snipeFeeStartBps = Number(flags["--snipe-fee-start-bps"])
+    if (flags["--snipe-fee-decay"] !== undefined)
+      body.snipeFeeDecaySecs = parseDuration(flags["--snipe-fee-decay"]) ?? 0
+  }
+  // On Solana with no open delay the dev buy is an ordinary buy under the cap.
+  if (chain === "solana" && cap !== undefined && delay === 0 && launch.buyRaw > cap)
     throw new Error(
       `This launch's dev buy (--buy ${whole(launch.buyRaw)}) is over --max-buy-per-wallet (${whole(cap)}); with no open delay the dev buy is held to the cap.`,
     )
