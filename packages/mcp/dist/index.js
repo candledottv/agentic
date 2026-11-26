@@ -101,7 +101,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.46";
+var SERVER_VERSION = "0.10.47";
 
 // src/client.ts
 var DEFAULT_API_URL = "https://api.alpha.candle.tv";
