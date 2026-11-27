@@ -208,7 +208,7 @@ var init_api_key_file = __esm(() => {
 });
 
 // src/version.ts
-var CLI_VERSION = "0.13.50";
+var CLI_VERSION = "0.13.51";
 
 // src/client.ts
 function withCliClientSurface(doFetch) {
@@ -802,18 +802,34 @@ var init_terminal_theme = __esm(() => {
       positive: { hex: "#087443", ansi256: 22, ansi16: 32 },
       negative: { hex: "#b4233c", ansi256: 125, ansi16: 31 },
       warning: { hex: "#875400", ansi256: 94, ansi16: 33 }
+    },
+    neutral: {
+      brand: { hex: "#008647", ansi256: 29, ansi16: 32 },
+      positive: { hex: "#008743", ansi256: 29, ansi16: 32 },
+      negative: { hex: "#ea0026", ansi256: 161, ansi16: 31 },
+      warning: { hex: "#a56600", ansi256: 130, ansi16: 33 }
     }
   };
 });
 
 // src/presentation.ts
+function themeForBackground(colorfgbg) {
+  const last = colorfgbg?.split(";").at(-1)?.trim();
+  if (!last || !/^\d+$/.test(last))
+    return "neutral";
+  const background = Number(last);
+  if (background <= 6)
+    return "dark";
+  if (background <= 15)
+    return "light";
+  return "neutral";
+}
 function terminalStyle(deps, stream, machine = false) {
   const { env, presentation } = deps;
   const styled = !(machine || presentation?.plain || env.CANDLE_PLAIN === "1" || !deps.isTTY[stream] || env.CI || env.TERM === "dumb");
   const noColor = presentation?.noColor || Boolean(env.NO_COLOR);
   const color = !styled || noColor ? 0 : /truecolor|24bit/i.test(env.COLORTERM ?? "") ? 24 : /256color/i.test(env.TERM ?? "") ? 256 : env.TERM ? 16 : 0;
-  const background = Number(env.COLORFGBG?.split(";").at(-1));
-  const theme = Number.isFinite(background) && background >= 0 && background <= 6 ? "dark" : "light";
+  const theme = themeForBackground(env.COLORFGBG);
   const columns = deps.columns?.[stream];
   return {
     width: columns && Number.isFinite(columns) ? Math.max(20, Math.floor(columns)) : 118,
@@ -961,20 +977,24 @@ function estimateDisplayWidth(text) {
     width += estimateGrapheme(segment);
   return width;
 }
+function wordmark(text, style) {
+  return style.color ? `\x1B[1m${accent(text, style, "brand")}` : text;
+}
 function brandHeader(style) {
   if (!style.styled)
     return [];
   const lines = [
-    ...style.width >= 80 ? WORDMARK : ["CANDLE"],
-    `CLI ${CLI_VERSION}`,
-    "",
-    ...wrapText("Your wallets and agent tools, one command away.", style.width - 6)
+    { text: WORDMARK, mark: true },
+    { text: `CLI ${CLI_VERSION}` },
+    { text: "" },
+    ...wrapText("Your wallets and agent tools, one command away.", style.width - 6).map((text) => ({ text }))
   ];
   const width = Math.min(style.width - 2, 68);
+  const frame = (text) => dim(text, style);
   return [
-    accent(`┌${"─".repeat(width - 2)}┐`, style),
-    ...lines.map((line) => `│ ${accent(line, style)}${" ".repeat(Math.max(0, width - 4 - line.length))} │`),
-    accent(`└${"─".repeat(width - 2)}┘`, style),
+    frame(`┌${"─".repeat(width - 2)}┐`),
+    ...lines.map(({ text, mark }) => `${frame("│")} ${mark ? wordmark(text, style) : text}${" ".repeat(Math.max(0, width - 4 - text.length))} ${frame("│")}`),
+    frame(`└${"─".repeat(width - 2)}┘`),
     ""
   ];
 }
@@ -1087,11 +1107,10 @@ function success(text, style) {
 function failure(text, style) {
   return accent(`${symbols(style).danger} ${text}`, style, "negative");
 }
-var GRAPHEMES, ORDINARY_WORD = 24, WORDMARK, PROSE_MAX = 100, UNICODE_SYMBOLS, ASCII_SYMBOLS;
+var GRAPHEMES, ORDINARY_WORD = 24, WORDMARK = "candle", PROSE_MAX = 100, UNICODE_SYMBOLS, ASCII_SYMBOLS;
 var init_presentation = __esm(() => {
   init_terminal_theme();
   GRAPHEMES = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-  WORDMARK = ["█▀▀ ▄▀█ █▄░█ █▀▄ █░░ █▀▀", "█▄▄ █▀█ █░▀█ █▄▀ █▄▄ ██▄"];
   UNICODE_SYMBOLS = { ok: "✓", warning: "!", danger: "✗", note: "·", ellipsis: "…", missing: "–" };
   ASCII_SYMBOLS = { ok: "ok", warning: "!", danger: "x", note: "-", ellipsis: "...", missing: "-" };
 });

@@ -17,12 +17,29 @@ export interface TerminalStyle {
   width: number
   styled: boolean
   color: 0 | 16 | 256 | 24
-  theme: "light" | "dark"
+  theme: TerminalTheme
   motion: boolean
 }
 
-/** Inspect the stream being rendered, never stdin or a different output stream. Unknown
- * backgrounds use the conservative light palette; foreground/background remain terminal defaults. */
+/** Which token set paints accents: `dark` or `light` when the terminal reports its background,
+ * `neutral` when it does not. */
+export type TerminalTheme = "light" | "dark" | "neutral"
+
+/** The palette for a `COLORFGBG` value (`fg;bg` or `fg;default;bg`). Background 0 to 6 is dark and
+ * 7 to 15 light. No value, or one we cannot read, is `neutral`: accents that meet 4.5:1 on black
+ * and on white, so nothing vanishes on a dark terminal that does not report itself (most do
+ * not), and nothing vanishes on a light one either. */
+export function themeForBackground(colorfgbg: string | undefined): TerminalTheme {
+  const last = colorfgbg?.split(";").at(-1)?.trim()
+  if (!last || !/^\d+$/.test(last)) return "neutral"
+  const background = Number(last)
+  if (background <= 6) return "dark"
+  if (background <= 15) return "light"
+  return "neutral"
+}
+
+/** Inspect the stream being rendered, never stdin or a different output stream. A background the
+ * terminal does not report uses the neutral palette; foreground/background remain terminal defaults. */
 export function terminalStyle(deps: StyleDeps, stream: "stdout" | "stderr", machine = false): TerminalStyle {
   const { env, presentation } = deps
   const styled = !(
@@ -44,8 +61,7 @@ export function terminalStyle(deps: StyleDeps, stream: "stdout" | "stderr", mach
           : env.TERM
             ? 16
             : 0
-  const background = Number(env.COLORFGBG?.split(";").at(-1))
-  const theme = Number.isFinite(background) && background >= 0 && background <= 6 ? "dark" : "light"
+  const theme = themeForBackground(env.COLORFGBG)
   const columns = deps.columns?.[stream]
   return {
     width: columns && Number.isFinite(columns) ? Math.max(20, Math.floor(columns)) : 118,
@@ -214,22 +230,33 @@ export function estimateDisplayWidth(text: string): number {
   return width
 }
 
-// The established block-letter CANDLE, condensed to three lines for a compact terminal header.
-const WORDMARK = ["█▀▀ ▄▀█ █▄░█ █▀▄ █░░ █▀▀", "█▄▄ █▀█ █░▀█ █▄▀ █▄▄ ██▄"]
+/** The wordmark is lowercase "candle" in mint at every width (brand decision 2D). The block-letter
+ * CANDLE it replaces is not the logo. */
+export const WORDMARK = "candle"
+
+/** The wordmark in bold brand mint. `accent` escapes its text and ends with a full reset, so the
+ * bold code goes in front of it rather than around it. */
+function wordmark(text: string, style: TerminalStyle): string {
+  return style.color ? `\x1b[1m${accent(text, style, "brand")}` : text
+}
 
 export function brandHeader(style: TerminalStyle): string[] {
   if (!style.styled) return []
-  const lines = [
-    ...(style.width >= 80 ? WORDMARK : ["CANDLE"]),
-    `CLI ${CLI_VERSION}`,
-    "",
-    ...wrapText("Your wallets and agent tools, one command away.", style.width - 6),
+  const lines: { text: string; mark?: boolean }[] = [
+    { text: WORDMARK, mark: true },
+    { text: `CLI ${CLI_VERSION}` },
+    { text: "" },
+    ...wrapText("Your wallets and agent tools, one command away.", style.width - 6).map((text) => ({ text })),
   ]
   const width = Math.min(style.width - 2, 68)
+  const frame = (text: string) => dim(text, style)
   return [
-    accent(`┌${"─".repeat(width - 2)}┐`, style),
-    ...lines.map((line) => `│ ${accent(line, style)}${" ".repeat(Math.max(0, width - 4 - line.length))} │`),
-    accent(`└${"─".repeat(width - 2)}┘`, style),
+    frame(`┌${"─".repeat(width - 2)}┐`),
+    ...lines.map(
+      ({ text, mark }) =>
+        `${frame("│")} ${mark ? wordmark(text, style) : text}${" ".repeat(Math.max(0, width - 4 - text.length))} ${frame("│")}`,
+    ),
+    frame(`└${"─".repeat(width - 2)}┘`),
     "",
   ]
 }

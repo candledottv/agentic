@@ -19,5 +19,11 @@ export const TERMINAL_TOKENS = {
     "positive": { "hex": "#087443", "ansi256": 22, "ansi16": 32 },
     "negative": { "hex": "#b4233c", "ansi256": 125, "ansi16": 31 },
     "warning": { "hex": "#875400", "ansi256": 94, "ansi16": 33 }
+  },
+  "neutral": {
+    "brand": { "hex": "#008647", "ansi256": 29, "ansi16": 32 },
+    "positive": { "hex": "#008743", "ansi256": 29, "ansi16": 32 },
+    "negative": { "hex": "#ea0026", "ansi256": 161, "ansi16": 31 },
+    "warning": { "hex": "#a56600", "ansi256": 130, "ansi16": 33 }
   }
 } as const

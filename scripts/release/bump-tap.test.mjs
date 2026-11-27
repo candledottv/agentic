@@ -71,6 +71,8 @@ test("writes the formula with all four checksums substituted and commits it", ()
     expect(formula).not.toContain("__SHA_")
     expect(formula).not.toContain("__VERSION__")
     expect(formula).toContain(`version "${VERSION}"`)
+    // Brand 2D (BE-4482): the formula's one-line description, word for word.
+    expect(formula).toContain('  desc "Candle CLI: wallets, API keys and the MCP server from your terminal"\n')
     // The release binaries need macOS 13; without this brew installs a candle that cannot start.
     expect(formula).toContain("depends_on macos: :ventura")
     for (const target of TARGETS) {

@@ -3,7 +3,7 @@ import { existsSync } from "node:fs"
 import { renderTopic, renderTopLevel } from "./help"
 import { run } from "./index"
 import { LAUNCH_DEFINITION } from "./launch-definition"
-import { brandHeader, terminalStyle } from "./presentation"
+import { brandHeader, terminalStyle, themeForBackground, WORDMARK } from "./presentation"
 import { TERMINAL_TOKENS } from "./terminal-theme"
 import { createCapture, createTestDeps } from "./test-support"
 import { CLI_VERSION } from "./version"
@@ -68,7 +68,10 @@ describe("terminal presentation", () => {
           if (!styled) expect([...text].some((char) => char.charCodeAt(0) > 127)).toBe(false)
           if (styled) {
             expect(text).toContain(`CLI ${CLI_VERSION}`)
-            expect(text.includes("█")).toBe(width >= 80)
+            // Brand 2D (BE-4482): lowercase "candle" at every width, never the block-letter CANDLE.
+            expect(text).toMatch(/│ candle +│/)
+            expect(text).not.toContain("█")
+            expect(text).not.toContain("CANDLE\n")
           }
           // Long tokens may soft-wrap in a terminal; words and identifiers are never split.
           for (const line of text.split("\n")) {
@@ -109,7 +112,7 @@ describe("terminal presentation", () => {
     expect(terminalStyle(deps, "stderr").styled).toBe(true)
   })
 
-  test("16/256/truecolor support and light-safe unknown background", () => {
+  test("16/256/truecolor support; an unreported background uses the neutral palette, never light", () => {
     for (const [env, color] of [
       [{ TERM: "xterm" }, 16],
       [{ TERM: "xterm-256color" }, 256],
@@ -117,8 +120,70 @@ describe("terminal presentation", () => {
     ] as const) {
       const style = terminalStyle(createTestDeps({ fetch: unusedFetch, env }), "stdout")
       expect(style.color).toBe(color)
-      expect(style.theme).toBe("light")
+      expect(style.theme).toBe("neutral")
     }
+  })
+
+  test("COLORFGBG picks dark or light; anything else is neutral (BE-4482)", () => {
+    for (const [value, theme] of [
+      ["15;0", "dark"],
+      ["7;6", "dark"],
+      ["15;default;0", "dark"],
+      ["0;15", "light"],
+      ["0;7", "light"],
+      ["0;default;15", "light"],
+      [undefined, "neutral"],
+      ["", "neutral"],
+      ["15;", "neutral"],
+      ["15;default", "neutral"],
+      ["15;-1", "neutral"],
+      ["15;16", "neutral"],
+      ["15;0x0", "neutral"],
+    ] as const) {
+      expect([value, themeForBackground(value)]).toEqual([value, theme])
+    }
+  })
+
+  test("with no reported background the banner never paints in the light palette", () => {
+    const luminance = (hex: string) => {
+      const [r = 0, g = 0, b = 0] = (hex.slice(1).match(/../g) ?? []).map((part) => {
+        const c = Number.parseInt(part, 16) / 255
+        return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+      })
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+    const style = terminalStyle(
+      createTestDeps({ fetch: unusedFetch, env: { TERM: "xterm-256color", COLORTERM: "truecolor" } }),
+      "stdout",
+    )
+    const header = brandHeader(style).join("\n")
+    const [r, g, b] = (TERMINAL_TOKENS.neutral.brand.hex.slice(1).match(/../g) ?? []).map((part) =>
+      Number.parseInt(part, 16),
+    )
+    expect(header).toContain(`\x1b[38;2;${r};${g};${b}m${WORDMARK}`)
+    for (const token of Object.values(TERMINAL_TOKENS.light)) {
+      const [lr, lg, lb] = (token.hex.slice(1).match(/../g) ?? []).map((part) => Number.parseInt(part, 16))
+      expect(header).not.toContain(`38;2;${lr};${lg};${lb}m`)
+    }
+    // Every neutral accent reads on a black terminal and on a white one.
+    for (const token of Object.values(TERMINAL_TOKENS.neutral)) {
+      const l = luminance(token.hex)
+      expect((l + 0.05) / 0.05).toBeGreaterThanOrEqual(4.5)
+      expect(1.05 / (l + 0.05)).toBeGreaterThanOrEqual(4.5)
+    }
+  })
+
+  test("the dark banner is lowercase candle in brand mint", () => {
+    const style = terminalStyle(
+      createTestDeps({
+        fetch: unusedFetch,
+        env: { TERM: "xterm-256color", COLORTERM: "truecolor", COLORFGBG: "15;0" },
+      }),
+      "stdout",
+    )
+    expect(TERMINAL_TOKENS.dark.brand.hex).toBe("#32fe9f")
+    expect(brandHeader(style).join("\n")).toContain(`\x1b[1m\x1b[38;2;50;254;159m${WORDMARK}\x1b[0m`)
+    expect(WORDMARK).toBe("candle")
   })
 
   test("long topic commands and addresses stay inspectable", () => {
@@ -174,7 +239,7 @@ describe("terminal presentation", () => {
     })
     expect(await run([], deps)).toBe(1)
     expect(stdout.text).toBe("")
-    expect(clean(stderr.text)).toContain("CANDLE")
+    expect(clean(stderr.text)).toMatch(/│ candle +│/)
     expect(await run(["--plain"], deps)).toBe(1)
   })
 

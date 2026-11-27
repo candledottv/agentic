@@ -1,5 +1,5 @@
 class Candle < Formula
-  desc "Authorize a device, manage API keys and wallets, run the MCP server"
+  desc "Candle CLI: wallets, API keys and the MCP server from your terminal"
   homepage "https://candle.tv"
   version "__VERSION__"
   license "MIT"
