@@ -1,14 +1,17 @@
 # Candle Agentic
 
-Candle is the agentic terminal: give an agent a wallet, launch a token on Solana or Hood
-(Robinhood Chain), trade it from live market state, and earn creator fees, all through a scoped
-API key instead of a private key. This repo holds the developer tooling for that rail, all of it
-open source under the MIT license: the `candle` CLI, a TypeScript SDK, an MCP server, and a
-packaged skill library that teaches an agent these workflows directly.
+[Harness](https://github.com/candledottv/harness) · [CLI](https://github.com/candledottv/cli) · **Agentic** · [TUI](https://github.com/candledottv/tui) · [Homebrew](https://github.com/candledottv/homebrew-tap)
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
-[![Docs](https://img.shields.io/badge/docs-docs.candle.tv-black.svg)](https://docs.candle.tv)
-[![MCP](https://img.shields.io/badge/MCP-server-black.svg)](https://docs.candle.tv/developers/mcp-server)
+Candle is the onchain terminal and launchpad your coding agent can drive. Give an agent a wallet,
+launch a token on Solana or Hood (Robinhood Chain), trade it from live market state, and earn
+creator fees, all through a scoped API key instead of a private key. This repo is the MIT source
+for the developer tooling: the `candle` CLI, a TypeScript SDK, an MCP server, and a packaged skill
+library that teaches an agent these workflows directly. Signed CLI binary releases (`0.13+`) live
+in [candledottv/cli](https://github.com/candledottv/cli/releases/latest).
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-111113)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-docs.candle.tv-111113)](https://docs.candle.tv)
+[![MCP](https://img.shields.io/badge/MCP-server-111113)](https://docs.candle.tv/developers/mcp-server)
 
 Full documentation lives at [docs.candle.tv](https://docs.candle.tv). Start with the
 [Agent quickstart](https://docs.candle.tv/developers/quickstart).
@@ -225,7 +228,7 @@ Selling a fraction is the same shape with `{ "side": "sell", "percent": 50 }`.
 
 ## The CLI
 
-`candle` (install the latest release) is the terminal half of all of this: it authorizes a device,
+`candle` ([install the latest release](https://github.com/candledottv/cli/releases/latest)) is the terminal half of all of this: it authorizes a device,
 holds your API key in the OS keychain, runs the MCP server with no config file, keeps your own keys
 in a local encrypted vault, and hands an agent a TEE wallet it can trade.
 
@@ -535,7 +538,7 @@ here cannot be merged. Issues are read and welcome. See [CONTRIBUTING.md](CONTRI
 where each kind of change actually goes.
 
 MIT, see [LICENSE](LICENSE). That covers everything here: the CLI, the SDK, the MCP server and the
-skills. The CLI's release binaries are built and signed from this repository's `release.yaml`.
+skills. The CLI's signed release binaries are published at [candledottv/cli](https://github.com/candledottv/cli/releases/latest).
 
 
 Staking writes require `swap:write` and the deployment's agent-staking flag (off by default in code, on at api.alpha.candle.tv).
